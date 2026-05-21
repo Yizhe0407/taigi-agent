@@ -2,6 +2,7 @@ import json
 import os
 import re
 import sys
+import time
 
 from openai import OpenAI
 
@@ -12,6 +13,32 @@ from agent.tools import TOOL_HANDLERS, TOOL_SCHEMAS
 # 路線號碼 pattern：Y01 / 101 / 7126 等
 # negative lookahead 排除常見非路線用法：101大樓、3號出口、5樓、30分鐘
 _ROUTE_RE = re.compile(r'\b([A-Za-z]?\d{2,4})\b(?!大樓|號出口|出口|樓層|樓|棟|館|分鐘|分|秒|公里|公尺|元|歲)')
+
+_LLM_MAX_RETRIES = 3   # LLM API 暫時失敗的最大重試次數
+_MAX_TOOL_ROUNDS = 8   # 單輪對話最多幾次 tool call，防止 LLM 無限迴圈
+
+
+def _call_llm(client, model: str, messages: list, tools: list | None, extra_body: dict):
+    """呼叫 LLM，失敗時指數退避 retry。
+
+    為什麼獨立成函式？
+    loop 結構不動（learn-claude-code s11 原則），retry 邏輯包在 helper 裡，
+    呼叫端看不到重試細節，只知道「成功回傳 response」或「全部失敗拋例外」。
+    """
+    for attempt in range(_LLM_MAX_RETRIES):
+        try:
+            return client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tools,
+                extra_body=extra_body,
+            )
+        except Exception as e:
+            if attempt == _LLM_MAX_RETRIES - 1:
+                raise
+            wait = 2 ** attempt  # 1s → 2s → 4s
+            print(f"[retry] LLM 呼叫失敗（{e}），{wait}s 後重試…")
+            time.sleep(wait)
 
 def _prefetch(user_input: str) -> str:
     """偵測路線號碼，主動查詢本站到站時間並注入 user message。
@@ -73,15 +100,20 @@ def run() -> None:
         # 內層迴圈：agent 思考 + 工具呼叫
         # 為什麼要內層迴圈？
         # 因為 agent 可能需要多次工具呼叫才能回答一個問題
-        # 例：「雲科到北港怎麼搭」→ 先查位置 → 再查路線 → 才能回答
         # 每次工具呼叫完就繼續這個迴圈，直到 LLM 決定「我可以直接回答了」
+        tool_rounds = 0
         while True:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "system", "content": system_prompt}] + messages,
-                tools=TOOL_SCHEMAS or None,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-            )
+            try:
+                response = _call_llm(
+                    client, model,
+                    messages=[{"role": "system", "content": system_prompt}] + messages,
+                    tools=TOOL_SCHEMAS or None,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                )
+            except Exception as e:
+                print(f"\n助理: 系統暫時無法回應，請稍後再試。\n")
+                print(f"[error] LLM 呼叫失敗：{e}")
+                break
 
             message = response.choices[0].message
 
@@ -117,15 +149,34 @@ def run() -> None:
                 messages = trim_history(messages)
                 break
 
+            # tool_rounds 超過上限：LLM 卡在 tool-call 迴圈，強制跳出
+            tool_rounds += 1
+            if tool_rounds >= _MAX_TOOL_ROUNDS:
+                print(f"\n助理: 查詢逾時，請換個方式再問一次。\n")
+                print(f"[warn] 單輪 tool call 達到上限 {_MAX_TOOL_ROUNDS}，強制跳出")
+                break
+
             # 有 tool_calls → 逐一執行工具 → 把結果傳回給 LLM → 繼續內層迴圈
             tool_results = []
             for call in message.tool_calls:
                 tool_name = call.function.name
-                tool_args = json.loads(call.function.arguments)
+
+                try:
+                    tool_args = json.loads(call.function.arguments)
+                except json.JSONDecodeError:
+                    tool_results.append({
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": f"錯誤：工具參數格式有誤，無法執行 {tool_name}",
+                    })
+                    continue
 
                 handler = TOOL_HANDLERS.get(tool_name)
                 if handler:
-                    result = handler(**tool_args)
+                    try:
+                        result = handler(**tool_args)
+                    except Exception as e:
+                        result = f"工具 {tool_name} 執行失敗：{e}"
                 else:
                     result = f"錯誤：找不到工具 {tool_name}"
 

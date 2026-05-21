@@ -17,7 +17,7 @@
 | ✅ | Context 截斷（sliding window，`agent/context.py`） |
 | ✅ | Token 計數（tiktoken cl100k_base token budget 取代 message count） |
 | ✅ | `_prefetch` regex 防誤觸（negative lookahead 排除大樓 / 出口 / 樓層等） |
-| ⬜ | 錯誤處理強化（tool 失敗 retry / graceful degradation） |
+| ✅ | 錯誤處理強化（LLM retry 指數退避、JSON parse 保護、tool call 上限防無限迴圈） |
 
 ## 公車工具（TDX API）
 
