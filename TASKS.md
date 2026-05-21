@@ -19,18 +19,17 @@
 | ✅ | `_prefetch` regex 防誤觸（negative lookahead 排除大樓 / 出口 / 樓層等） |
 | ✅ | 錯誤處理強化（LLM retry 指數退避、JSON parse 保護、tool call 上限防無限迴圈） |
 
-## 公車工具（TDX API）
+## 公車工具（雲林 ebus）
 
 | 狀態 | 項目 |
 |------|------|
-| ✅ | TDX OAuth token 取得 + 快取 |
 | ✅ | `get_next_arrivals`：即時到站時間 |
-| ✅ | `get_schedule`：今日時刻表 |
-| ✅ | `get_route_stops`：路線站牌列表（TDX 路線用 StopOfRoute；ebus 路線從 estimate endpoint 重組） |
+| ✅ | `get_stop_arrival_statuses_here`：本站全部路線目前到站狀態 |
+| ✅ | `get_route_stops`：本站停靠路線的站牌列表（從 estimate endpoint 重組） |
+| ✅ | `get_routes_at_stop`：站名查停靠路線 |
 | ✅ | 站名縮寫對照（`_ALIASES`） |
+| ✅ | stop-based route cache：從 `/api/stop/route?stop_name=KIOSK_STOP` 解析 route id |
 | ⬜ | `get_nearby_stops`：附近站牌（需 GPS 座標） |
-| ⬜ | **重構考慮**：若 `get_schedule` 移除，yunlin_ebus 的 provider filter 可改成 stop-based lookup（從 `/api/stop/route?stop_name=KIOSK_STOP` 建立 route cache，天然去歧義，不需 `_LOCAL_PROVIDER_IDS`） |
-| ✅ | 雲林縣府自管路線支援（201 / Y01 等）：ebus.yunlin.gov.tw，`_LOCAL_PROVIDER_IDS` 過濾確保是雲林本地路線 |
 
 ## 路線規劃（OTP）
 

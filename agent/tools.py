@@ -1,5 +1,9 @@
-from tools.bus import get_arrivals_here, get_route_stops, get_schedule
-from tools.yunlin_ebus import get_routes_at_stop
+from tools.kiosk_bus import (
+    get_arrivals_here,
+    get_route_stops,
+    get_routes_at_stop,
+    get_stop_arrival_statuses_here,
+)
 
 TOOL_SCHEMAS: list = [
     {
@@ -22,17 +26,14 @@ TOOL_SCHEMAS: list = [
     {
         "type": "function",
         "function": {
-            "name": "get_schedule",
-            "description": "查詢公車路線的班次時間。公路客運（7126 等）回傳完整全日時刻表；縣府路線（201 等）只回傳接下來幾班，非完整全日時刻表",
+            "name": "get_stop_arrival_statuses_here",
+            "description": (
+                "查詢本站目前所有停靠路線的到站狀態，適合回答現在還有哪些車、"
+                "哪些還沒末班駛離、剩下路線是否還有車"
+            ),
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "route": {
-                        "type": "string",
-                        "description": "路線號碼，例如 '7126'、'201'",
-                    },
-                },
-                "required": ["route"],
+                "properties": {},
             },
         },
     },
@@ -57,7 +58,7 @@ TOOL_SCHEMAS: list = [
         "type": "function",
         "function": {
             "name": "get_route_stops",
-            "description": "查詢某路線的所有站牌名稱（去程與回程）",
+            "description": "查詢本站有停靠的某路線所有站牌名稱（去程與回程）",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -74,7 +75,7 @@ TOOL_SCHEMAS: list = [
 
 TOOL_HANDLERS: dict = {
     "get_arrivals_here": get_arrivals_here,
-    "get_schedule": get_schedule,
+    "get_stop_arrival_statuses_here": get_stop_arrival_statuses_here,
     "get_route_stops": get_route_stops,
     "get_routes_at_stop": get_routes_at_stop,
 }

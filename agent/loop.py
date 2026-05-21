@@ -12,7 +12,10 @@ from agent.tools import TOOL_HANDLERS, TOOL_SCHEMAS
 
 # 路線號碼 pattern：Y01 / 101 / 7126 等
 # negative lookahead 排除常見非路線用法：101大樓、3號出口、5樓、30分鐘
-_ROUTE_RE = re.compile(r'\b([A-Za-z]?\d{2,4})\b(?!大樓|號出口|出口|樓層|樓|棟|館|分鐘|分|秒|公里|公尺|元|歲)')
+_ROUTE_RE = re.compile(
+    r"\b([A-Za-z]?\d{2,4})\b"
+    r"(?!大樓|號出口|出口|樓層|樓|棟|館|分鐘|分|秒|公里|公尺|元|歲)"
+)
 
 _LLM_MAX_RETRIES = 3   # LLM API 暫時失敗的最大重試次數
 _MAX_TOOL_ROUNDS = 8   # 單輪對話最多幾次 tool call，防止 LLM 無限迴圈
@@ -40,6 +43,9 @@ def _call_llm(client, model: str, messages: list, tools: list | None, extra_body
             print(f"[retry] LLM 呼叫失敗（{e}），{wait}s 後重試…")
             time.sleep(wait)
 
+    raise RuntimeError("LLM retry loop ended unexpectedly")
+
+
 def _prefetch(user_input: str) -> str:
     """偵測路線號碼，主動查詢本站到站時間並注入 user message。
 
@@ -55,9 +61,12 @@ def _prefetch(user_input: str) -> str:
         return ""
 
     route = m.group(1)
-    from tools.bus import get_arrivals_here
+    from tools.kiosk_bus import get_arrivals_here
     result = get_arrivals_here(route)
-    return f"\n\n[工具查詢結果，必須直接使用，禁止用訓練資料替代]\n路線 {route} 到本站的資訊：\n{result}"
+    return (
+        "\n\n[工具查詢結果，必須直接使用，禁止用訓練資料替代]\n"
+        f"路線 {route} 到本站的資訊：\n{result}"
+    )
 
 
 def run() -> None:
@@ -111,16 +120,19 @@ def run() -> None:
                     extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                 )
             except Exception as e:
-                print(f"\n助理: 系統暫時無法回應，請稍後再試。\n")
+                print("\n助理: 系統暫時無法回應，請稍後再試。\n")
                 print(f"[error] LLM 呼叫失敗：{e}")
                 break
 
             message = response.choices[0].message
+            function_tool_calls = [
+                call for call in message.tool_calls or [] if call.type == "function"
+            ]
 
             # 把 assistant 的回覆加到歷史
             # 為什麼不管有沒有 tool call 都要加？
             # 因為下一輪呼叫 LLM 時，它需要看到自己說過什麼
-            if message.tool_calls:
+            if function_tool_calls:
                 messages.append({
                     "role": "assistant",
                     "content": message.content,
@@ -133,14 +145,14 @@ def run() -> None:
                                 "arguments": tc.function.arguments,
                             },
                         }
-                        for tc in message.tool_calls
+                        for tc in function_tool_calls
                     ],
                 })
             else:
                 messages.append({"role": "assistant", "content": message.content})
 
             # 沒有 tool_calls → LLM 決定直接回答 → 跳出內層迴圈
-            if not message.tool_calls:
+            if not function_tool_calls:
                 print(f"\n助理: {message.content}\n")
                 # 一輪對話結束，截斷過長的歷史
                 # 為什麼在這裡截，不在 LLM 呼叫前截？
@@ -152,13 +164,13 @@ def run() -> None:
             # tool_rounds 超過上限：LLM 卡在 tool-call 迴圈，強制跳出
             tool_rounds += 1
             if tool_rounds >= _MAX_TOOL_ROUNDS:
-                print(f"\n助理: 查詢逾時，請換個方式再問一次。\n")
+                print("\n助理: 查詢逾時，請換個方式再問一次。\n")
                 print(f"[warn] 單輪 tool call 達到上限 {_MAX_TOOL_ROUNDS}，強制跳出")
                 break
 
             # 有 tool_calls → 逐一執行工具 → 把結果傳回給 LLM → 繼續內層迴圈
             tool_results = []
-            for call in message.tool_calls:
+            for call in function_tool_calls:
                 tool_name = call.function.name
 
                 try:
