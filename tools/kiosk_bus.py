@@ -11,6 +11,7 @@
 """
 
 import os
+import re
 
 from tools import yunlin_ebus
 
@@ -21,6 +22,13 @@ _ALIASES: dict[str, str] = {
     "斗火":   "斗六火車站",
     "北港廟": "北港朝天宮",
 }
+
+# 路線號碼 pattern：Y01 / 101 / 7126 等。
+# negative lookahead 排除 101 大樓、3 號出口、30 分鐘等常見非路線用法。
+_ROUTE_RE = re.compile(
+    r"\b([A-Za-z]?\d{2,4})\b"
+    r"(?!\s*(?:大樓|號出口|出口|樓層|樓|棟|館|分鐘|分|秒|公里|公尺|元|歲))"
+)
 
 
 def _resolve(stop_name: str) -> str:
@@ -79,3 +87,17 @@ def get_arrivals_here(route: str) -> str:
     """
     stop = _kiosk_stop()
     return get_next_arrivals(route, stop, go_back_filter=_kiosk_go_back_filter())
+
+
+def prefetch_route_arrival_context(user_input: str) -> str:
+    """路線號碼很明確時先查本站到站資訊，降低小模型跳過工具的機率。"""
+    match = _ROUTE_RE.search(user_input)
+    if match is None:
+        return ""
+
+    route = match.group(1)
+    result = get_arrivals_here(route)
+    return (
+        "\n\n[工具查詢結果，必須直接使用，禁止用訓練資料替代]\n"
+        f"路線 {route} 到本站的資訊：\n{result}"
+    )

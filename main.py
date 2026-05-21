@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from agent.loop import run  # noqa: E402
+from tools.kiosk_bus import prefetch_route_arrival_context  # noqa: E402
 
 if __name__ == "__main__":
-    run()
+    run(input_enricher=prefetch_route_arrival_context)

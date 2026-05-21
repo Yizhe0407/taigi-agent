@@ -10,7 +10,7 @@
 ```
 使用者輸入
     ↓
-agent loop（harness 核心）
+AgentSession（harness 核心）
     ├─ LLM 決定要呼叫哪個工具
     ├─ 執行工具（雲林公車動態資料）
     └─ LLM 組成自然語言回答
@@ -19,6 +19,9 @@ agent loop（harness 核心）
 ```
 
 參考架構：[learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)
+
+CLI 目前只是 I/O 層；`AgentSession` 保持輸入輸出為文字，後續 ASR/TTS
+可沿用同一個 session runtime。Kiosk 路線號預取由入口注入，不寫死在 harness 核心。
 
 ## 場域
 

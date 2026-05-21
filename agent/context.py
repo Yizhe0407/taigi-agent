@@ -30,7 +30,9 @@ def _estimate_tokens(messages: list) -> int:
     return max(total, 1)
 
 
-def trim_history(messages: list) -> list:
+def trim_history(
+    messages: list, max_history_tokens: int = MAX_HISTORY_TOKENS
+) -> list:
     """截斷過長的對話歷史，使 token 估算值維持在 MAX_HISTORY_TOKENS 以內
 
     仍以「輪」為單位截斷（user msg 起頭到下一個 user msg 前），
@@ -58,7 +60,7 @@ def trim_history(messages: list) -> list:
     for exchange in reversed(exchanges):
         exchange_tokens = _estimate_tokens(exchange)
         # 至少保留一輪（即使單輪就超 budget）
-        if tokens_used + exchange_tokens > MAX_HISTORY_TOKENS and kept:
+        if tokens_used + exchange_tokens > max_history_tokens and kept:
             break
         kept.insert(0, exchange)
         tokens_used += exchange_tokens

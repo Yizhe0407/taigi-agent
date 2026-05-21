@@ -8,16 +8,20 @@
 
 | 狀態 | 項目 |
 |------|------|
-| ✅ | Main loop（外層 input loop + 內層 tool-call loop） |
+| ✅ | `AgentSession`：I/O 無關的 messages + tool-call loop |
+| ✅ | CLI loop：外層 input loop 呼叫 `AgentSession` |
 | ✅ | LLM client（OpenAI-compatible，env 設定） |
 | ✅ | Tool dispatcher（TOOL_SCHEMAS + TOOL_HANDLERS） |
 | ✅ | System prompt 組裝（`agent/prompt.py`） |
 | ✅ | Prompt grounding（正向約束防止 LLM 補充訓練資料、能力邊界明確化） |
 | ✅ | 非思考模式（vLLM `extra_body={"chat_template_kwargs": {"enable_thinking": False}}`） |
-| ✅ | Context 截斷（sliding window，`agent/context.py`） |
+| ✅ | Context 防守（LLM call 前 sliding-window trim + overflow retry） |
 | ✅ | Token 計數（tiktoken cl100k_base token budget 取代 message count） |
-| ✅ | `_prefetch` regex 防誤觸（negative lookahead 排除大樓 / 出口 / 樓層等） |
-| ✅ | 錯誤處理強化（LLM retry 指數退避、JSON parse 保護、tool call 上限防無限迴圈） |
+| ✅ | Kiosk input enricher：路線號預取與 regex 防誤觸 |
+| ✅ | 錯誤處理強化（LLM retry、context overflow retry、JSON parse 保護、tool call 上限） |
+| ✅ | Harness tests：context exchange 完整性、tool error、tool round limit |
+| ⬜ | Context compact：transcript + 摘要 / 長 tool result 壓縮 |
+| ⬜ | 可觀測性：LLM latency、tool latency、tool error、retry、tool routing trace |
 
 ## 公車工具（雲林 ebus）
 
