@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from agent.context import ContextStore
 from agent.session import AgentSession
 
 
@@ -92,17 +93,35 @@ def test_session_returns_tool_errors_to_model_before_final_answer():
     ]
 
 
-def test_session_retries_context_overflow_after_history_trim():
+def test_session_retries_context_overflow_after_context_recovery():
     session = make_session(
         [
             RuntimeError("maximum context length exceeded"),
             llm_response(assistant_message("恢復成功")),
         ]
     )
-    session.messages = [
-        {"role": "user", "content": "舊問題 " * 3000},
-        {"role": "assistant", "content": "舊回答"},
-    ]
 
     assert session.respond("新問題") == "恢復成功"
     assert len(session.client.chat.completions.calls) == 2
+
+
+def test_session_compacts_old_history_with_transcript_and_summary(tmp_path):
+    session = make_session(
+        [
+            llm_response(assistant_message("- 舊問題摘要")),
+            llm_response(assistant_message("新回答")),
+        ],
+        context_store=ContextStore(tmp_path),
+        max_history_tokens=120,
+    )
+    session.messages = [
+        {"role": "user", "content": "舊問題 " * 200},
+        {"role": "assistant", "content": "舊回答"},
+    ]
+
+    assert session.respond("新問題") == "新回答"
+    assert session.client.chat.completions.calls[0]["tools"] is None
+    assert session.messages[0]["content"].startswith("[先前對話已壓縮]")
+    transcripts = list((tmp_path / "transcripts").glob("*.jsonl"))
+    assert len(transcripts) == 1
+    assert "舊問題" in transcripts[0].read_text(encoding="utf-8")

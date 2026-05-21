@@ -28,7 +28,7 @@ agent/
   session.py       # Harness 核心：messages + LLM call + tool-call loop + recovery
   prompt.py        # build_system_prompt()，system prompt 組裝
   tools.py         # TOOL_SCHEMAS（告訴 LLM 有哪些工具）+ TOOL_HANDLERS（名稱→函式）
-  context.py       # trim_history()：token budget 截斷（tiktoken 計數），防 context window 爆炸
+  context.py       # token budget、ContextStore、transcript / 長 tool result compact
 tools/
   kiosk_bus.py     # Kiosk facade：單一路線 / 本站概況 / 站序工具，處理站名縮寫與 KIOSK_STOP
   yunlin_ebus.py   # 雲林公車資料源：用站牌停靠清單解析 route id，查到站 / ETA 概況 / 站序 / 停靠路線
@@ -45,7 +45,7 @@ tools/
 ## 已知技術債
 
 - **ebus 後端介面不是本專題控制的公開契約**：目前雲林站牌資料覆蓋足夠，provider 存取集中在 `tools/yunlin_ebus.py`。若 endpoint 或 payload 改版，先修這層，不把格式假設散到 agent loop。
-- **Context recovery 目前仍是裁剪式**：`AgentSession` 在每次 LLM call 前 trim history，遇到 context overflow 會以更小 budget 重試一次；尚未做 transcript 保存、LLM 摘要 compact 或長工具輸出落盤。
+- **Compact 後的完整內容暫無 retrieval tool**：`AgentSession` 會把 transcript 與長 tool result 保存到 `.agent_state/`，active context 只保留摘要、路徑與預覽。若後續讓 agent 主動回讀壓縮資料，需要明確的 retrieval tool 與資料保留策略。
 
 ## 已知 Gotcha
 
@@ -53,6 +53,7 @@ tools/
 - **站名縮寫要人工處理**：`"雲科大" in "雲林科技大學"` 是 `False`（非連續子字串）。縮寫對照表在 `tools/kiosk_bus.py` 的 `_ALIASES`
 - **tool_call_id 配對**：截斷 messages 必須以「輪」為單位，不能直接 `messages[-N:]`，否則 tool_call_id 沒有對應的 tool result，API 報錯
 - **tool round limit 也要保配對**：達到上限時不可先把新的 assistant `tool_calls` append 進 history 再跳出，否則下一輪送 API 會缺對應 tool result
+- **`.agent_state/` 是 runtime state**：transcript 與完整長 tool result 會寫在這裡，已由 `.gitignore` 排除；測試若要檢查內容應注入 `ContextStore(tmp_path)`
 - **load_dotenv() 必須在所有 import 之前**：Python import 時執行 module 層級 code，太晚 load 的話 os.getenv() 已經跑過，讀不到 .env
 - **vLLM 需要額外啟動參數才能使用 tool calling 與非思考模式**：缺少以下參數時 tool calling 回 400，`enable_thinking: false` 不生效
   ```

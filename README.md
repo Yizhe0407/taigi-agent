@@ -22,6 +22,8 @@ AgentSession（harness 核心）
 
 CLI 目前只是 I/O 層；`AgentSession` 保持輸入輸出為文字，後續 ASR/TTS
 可沿用同一個 session runtime。Kiosk 路線號預取由入口注入，不寫死在 harness 核心。
+Context 過長時會把 compact 前 transcript 與完整長工具輸出保存到 `.agent_state/`，
+active context 只保留摘要或預覽。
 
 ## 場域
 

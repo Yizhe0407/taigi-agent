@@ -20,7 +20,7 @@
 | ✅ | Kiosk input enricher：路線號預取與 regex 防誤觸 |
 | ✅ | 錯誤處理強化（LLM retry、context overflow retry、JSON parse 保護、tool call 上限） |
 | ✅ | Harness tests：context exchange 完整性、tool error、tool round limit |
-| ⬜ | Context compact：transcript + 摘要 / 長 tool result 壓縮 |
+| ✅ | Context compact：transcript + 摘要 / 長 tool result 壓縮 |
 | ⬜ | 可觀測性：LLM latency、tool latency、tool error、retry、tool routing trace |
 
 ## 公車工具（雲林 ebus）

@@ -3,7 +3,16 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from agent.context import MAX_HISTORY_TOKENS, trim_history
+from agent.context import (
+    LONG_TOOL_RESULT_CHARS,
+    MAX_HISTORY_TOKENS,
+    ContextStore,
+    compact_long_tool_results,
+    compacted_history_message,
+    estimate_tokens,
+    split_latest_exchange,
+    trim_history,
+)
 
 InputEnricher = Callable[[str], str]
 ToolHandler = Callable[..., str]
@@ -12,6 +21,10 @@ _LLM_MAX_RETRIES = 3
 _MAX_CONTEXT_RECOVERY_RETRIES = 1
 _DEFAULT_MAX_TOOL_ROUNDS = 8
 _TOOL_ROUND_LIMIT_MESSAGE = "查詢逾時，請換個方式再問一次。"
+_COMPACT_SUMMARY_SYSTEM_PROMPT = """你負責壓縮一段公車查詢助理的對話歷史。
+請保留使用者目標、已知站牌與方向、已查到的路線或到站狀態、
+重要工具錯誤、尚未回答的問題與所有限制。
+不要補充 transcript 沒有的事實。用繁體中文，條列簡短。"""
 _CONTEXT_ERROR_MARKERS = (
     "context length",
     "context_length",
@@ -131,6 +144,21 @@ def _execute_tool_calls(
     return results
 
 
+def _compact_summary_request(messages: list[dict], transcript_path: str) -> list[dict]:
+    transcript = json.dumps(messages, ensure_ascii=False)
+    return [
+        {"role": "system", "content": _COMPACT_SUMMARY_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"完整 transcript 已保存於 {transcript_path}。\n"
+                "請摘要以下即將移出 active context 的 messages：\n"
+                f"{transcript}"
+            ),
+        },
+    ]
+
+
 class AgentSession:
     """一段可持續的 agent 對話，不綁 CLI、語音或其他 I/O。"""
 
@@ -145,6 +173,9 @@ class AgentSession:
         input_enricher: InputEnricher | None = None,
         extra_body: dict | None = None,
         max_tool_rounds: int = _DEFAULT_MAX_TOOL_ROUNDS,
+        max_history_tokens: int = MAX_HISTORY_TOKENS,
+        compact_tool_result_chars: int = LONG_TOOL_RESULT_CHARS,
+        context_store: ContextStore | None = None,
     ) -> None:
         self.client = client
         self.model = model
@@ -156,6 +187,9 @@ class AgentSession:
             "chat_template_kwargs": {"enable_thinking": False}
         }
         self.max_tool_rounds = max_tool_rounds
+        self.max_history_tokens = max_history_tokens
+        self.compact_tool_result_chars = compact_tool_result_chars
+        self.context_store = context_store or ContextStore()
         self.messages: list[dict] = []
 
     def _request_messages(self) -> list[dict]:
@@ -163,8 +197,59 @@ class AgentSession:
 
     def _finish_with_assistant(self, content: str) -> str:
         self.messages.append({"role": "assistant", "content": content})
-        self.messages = trim_history(self.messages)
+        self.messages = trim_history(self.messages, self.max_history_tokens)
         return content
+
+    def _summary_compact(self) -> bool:
+        older_messages, latest_exchange = split_latest_exchange(self.messages)
+        if not older_messages:
+            return False
+
+        transcript_path = self.context_store.save_transcript(self.messages)
+        response = _call_llm(
+            self.client,
+            self.model,
+            _compact_summary_request(older_messages, str(transcript_path)),
+            None,
+            self.extra_body,
+        )
+        summary = response.choices[0].message.content
+        if not isinstance(summary, str) or not summary.strip():
+            return False
+
+        self.messages = [
+            compacted_history_message(summary.strip(), transcript_path),
+            *latest_exchange,
+        ]
+        print(f"[context] 對話歷史已摘要，完整 transcript：{transcript_path}")
+        return True
+
+    def _prepare_context(self) -> None:
+        self.messages = compact_long_tool_results(
+            self.messages,
+            self.context_store,
+            max_chars=self.compact_tool_result_chars,
+        )
+        if estimate_tokens(self.messages) > self.max_history_tokens:
+            try:
+                self._summary_compact()
+            except Exception as e:
+                print(f"[context] 摘要 compact 失敗，改用裁剪：{e}")
+        self.messages = trim_history(self.messages, self.max_history_tokens)
+
+    def _recover_context(self) -> None:
+        self.messages = compact_long_tool_results(
+            self.messages,
+            self.context_store,
+            max_chars=self.compact_tool_result_chars,
+        )
+        try:
+            self._summary_compact()
+        except Exception as e:
+            print(f"[context] overflow 摘要 compact 失敗，改用裁剪：{e}")
+
+        recovery_budget = max(self.max_history_tokens // 2, 1)
+        self.messages = trim_history(self.messages, recovery_budget)
 
     def respond(self, user_input: str) -> str:
         extra = self.input_enricher(user_input) if self.input_enricher else ""
@@ -173,8 +258,7 @@ class AgentSession:
         tool_rounds = 0
         context_retries = 0
         while True:
-            # 每次 LLM call 前先丟掉舊 exchange，避免長會話撞上 context limit。
-            self.messages = trim_history(self.messages)
+            self._prepare_context()
             try:
                 response = _call_llm(
                     self.client,
@@ -186,12 +270,9 @@ class AgentSession:
             except ContextWindowExceeded:
                 if context_retries >= _MAX_CONTEXT_RECOVERY_RETRIES:
                     raise
-                self.messages = trim_history(
-                    self.messages,
-                    max_history_tokens=max(MAX_HISTORY_TOKENS // 2, 1),
-                )
+                self._recover_context()
                 context_retries += 1
-                print("[context] LLM 拒收目前歷史，縮減 token budget 後重試")
+                print("[context] LLM 拒收目前歷史，compact 後重試")
                 continue
 
             message = response.choices[0].message
@@ -206,7 +287,7 @@ class AgentSession:
 
             self.messages.append(_assistant_message(message, tool_calls))
             if not tool_calls:
-                self.messages = trim_history(self.messages)
+                self.messages = trim_history(self.messages, self.max_history_tokens)
                 return message.content or ""
 
             tool_rounds += 1
