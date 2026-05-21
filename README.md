@@ -65,6 +65,22 @@ cp .env.example .env
 uv run python main.py
 ```
 
+## 可觀測性
+
+目前預設觀測後端選 SigNoz。Agent runtime 只依賴 OpenTelemetry，透過
+OTLP/HTTP 把 traces 與 metrics 送到 SigNoz；未設定 endpoint 時不會送出
+telemetry。若 self-host SigNoz 跑在本機，在 `.env` 設定：
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+OTEL_SERVICE_NAME=taigi-bus-agent
+```
+
+目前 spans 包含 `agent.turn`、`agent.llm.call`、`agent.tool.routing`、
+`agent.tool.call`。metrics 包含 `agent.llm.duration`、`agent.llm.retry`、
+`agent.tool.duration`、`agent.tool.error`。harness 預設不把 user input、
+prompt 或 tool result 放進 span attributes。
+
 ## 目前支援功能
 
 系統為 Kiosk 模式，部署在固定站牌，查詢「這站」的到站資訊。

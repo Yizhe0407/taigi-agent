@@ -4,7 +4,8 @@ import sys
 from openai import OpenAI
 
 from agent.prompt import build_system_prompt
-from agent.session import AgentSession, InputEnricher
+from agent.session import AgentSession, InputEnricher, summarize_error
+from agent.telemetry import configure_telemetry
 from agent.tools import TOOL_HANDLERS, TOOL_SCHEMAS
 
 
@@ -25,6 +26,7 @@ def run(input_enricher: InputEnricher | None = None) -> None:
         tool_schemas=TOOL_SCHEMAS,
         tool_handlers=TOOL_HANDLERS,
         input_enricher=input_enricher,
+        telemetry=configure_telemetry(),
     )
 
     print("雲林公車助理啟動（輸入 'exit' 結束）\n")
@@ -40,7 +42,7 @@ def run(input_enricher: InputEnricher | None = None) -> None:
             answer = session.respond(user_input)
         except Exception as e:
             print("\n助理: 系統暫時無法回應，請稍後再試。\n")
-            print(f"[error] Agent 回應失敗：{e}")
+            print(f"[error] Agent 回應失敗：{summarize_error(e)}")
             continue
 
         print(f"\n助理: {answer}\n")

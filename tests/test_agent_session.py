@@ -1,7 +1,8 @@
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 from agent.context import ContextStore
-from agent.session import AgentSession
+from agent.session import AgentSession, summarize_error
 
 
 def assistant_message(content="", tool_calls=None):
@@ -38,6 +39,55 @@ class FakeClient:
         self.chat = SimpleNamespace(completions=FakeCompletions(responses))
 
 
+class RecordingSpan:
+    def __init__(self, name, attributes):
+        self.name = name
+        self.attributes = attributes
+        self.errors = []
+
+
+class RecordingTelemetry:
+    def __init__(self):
+        self.spans = []
+        self.llm_durations = []
+        self.llm_retries = []
+        self.tool_routes = []
+        self.tool_durations = []
+        self.tool_errors = []
+
+    @contextmanager
+    def start_span(self, name, attributes=None):
+        span = RecordingSpan(name, attributes or {})
+        self.spans.append(span)
+        yield span
+
+    def mark_span_error(
+        self,
+        span,
+        *,
+        error_type,
+        exception=None,
+        description=None,
+    ):
+        exception_type = type(exception).__name__ if exception else None
+        span.errors.append((error_type, exception_type))
+
+    def record_llm_duration(self, duration_s, *, model, operation, outcome):
+        self.llm_durations.append((duration_s, model, operation, outcome))
+
+    def record_llm_retry(self, *, operation, error_type):
+        self.llm_retries.append((operation, error_type))
+
+    def trace_tool_routing(self, tool_names, *, accepted):
+        self.tool_routes.append((tuple(tool_names), accepted))
+
+    def record_tool_duration(self, duration_s, *, tool_name, outcome):
+        self.tool_durations.append((duration_s, tool_name, outcome))
+
+    def record_tool_error(self, *, tool_name, error_type):
+        self.tool_errors.append((tool_name, error_type))
+
+
 def make_session(responses, **kwargs):
     return AgentSession(
         client=FakeClient(responses),
@@ -63,6 +113,7 @@ def test_session_tool_limit_does_not_leave_unpaired_tool_call():
 
 
 def test_session_returns_tool_errors_to_model_before_final_answer():
+    telemetry = RecordingTelemetry()
     session = make_session(
         [
             llm_response(
@@ -74,7 +125,8 @@ def test_session_returns_tool_errors_to_model_before_final_answer():
                 )
             ),
             llm_response(assistant_message("已處理")),
-        ]
+        ],
+        telemetry=telemetry,
     )
 
     assert session.respond("查一下") == "已處理"
@@ -91,18 +143,66 @@ def test_session_returns_tool_errors_to_model_before_final_answer():
             "content": "錯誤：找不到工具 missing",
         },
     ]
+    assert telemetry.tool_errors == [
+        ("bad_args", "invalid_arguments"),
+        ("missing", "missing_handler"),
+    ]
 
 
 def test_session_retries_context_overflow_after_context_recovery():
+    telemetry = RecordingTelemetry()
     session = make_session(
         [
             RuntimeError("maximum context length exceeded"),
             llm_response(assistant_message("恢復成功")),
-        ]
+        ],
+        telemetry=telemetry,
     )
 
     assert session.respond("新問題") == "恢復成功"
     assert len(session.client.chat.completions.calls) == 2
+    assert telemetry.llm_retries == [("respond", "context_window")]
+
+
+def test_session_records_llm_tool_latency_and_routing():
+    telemetry = RecordingTelemetry()
+    session = make_session(
+        [
+            llm_response(
+                assistant_message(
+                    tool_calls=[tool_call("bus", '{"route": "201"}', "bus-1")]
+                )
+            ),
+            llm_response(assistant_message("201 快到了")),
+        ],
+        telemetry=telemetry,
+        tool_handlers={"bus": lambda route: f"{route} 約 3 分鐘"},
+    )
+
+    assert session.respond("201") == "201 快到了"
+    assert [span.name for span in telemetry.spans] == [
+        "agent.turn",
+        "agent.llm.call",
+        "agent.tool.call",
+        "agent.llm.call",
+    ]
+    assert telemetry.tool_routes == [(("bus",), True)]
+    assert [item[2] for item in telemetry.llm_durations] == ["respond", "respond"]
+    assert [item[3] for item in telemetry.llm_durations] == ["ok", "ok"]
+    assert [(item[1], item[2]) for item in telemetry.tool_durations] == [
+        ("bus", "ok")
+    ]
+
+
+def test_summarize_error_collapses_cloudflare_tunnel_html():
+    error = RuntimeError(
+        "<!DOCTYPE html><head><title>Cloudflare Tunnel error | example</title></head>"
+        "<body>Error 1033 Cloudflare Tunnel error</body>"
+    )
+
+    assert summarize_error(error) == (
+        "Cloudflare Tunnel error 1033，LLM endpoint 目前無法連線"
+    )
 
 
 def test_session_compacts_old_history_with_transcript_and_summary(tmp_path):

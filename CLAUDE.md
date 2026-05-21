@@ -26,6 +26,7 @@ main.py            # 入口：load_dotenv() → agent.loop.run()
 agent/
   loop.py          # CLI I/O：讀 input、印回答，呼叫 AgentSession
   session.py       # Harness 核心：messages + LLM call + tool-call loop + recovery
+  telemetry.py     # OpenTelemetry spans / metrics；有 OTLP endpoint 才啟用 exporter
   prompt.py        # build_system_prompt()，system prompt 組裝
   tools.py         # TOOL_SCHEMAS（告訴 LLM 有哪些工具）+ TOOL_HANDLERS（名稱→函式）
   context.py       # token budget、ContextStore、transcript / 長 tool result compact
@@ -54,6 +55,7 @@ tools/
 - **tool_call_id 配對**：截斷 messages 必須以「輪」為單位，不能直接 `messages[-N:]`，否則 tool_call_id 沒有對應的 tool result，API 報錯
 - **tool round limit 也要保配對**：達到上限時不可先把新的 assistant `tool_calls` append 進 history 再跳出，否則下一輪送 API 會缺對應 tool result
 - **`.agent_state/` 是 runtime state**：transcript 與完整長 tool result 會寫在這裡，已由 `.gitignore` 排除；測試若要檢查內容應注入 `ContextStore(tmp_path)`
+- **Telemetry 預設不外送內容**：harness 的 OTLP spans/metrics 只標 model、tool name、outcome、error type 與 latency，不把 user input、prompt、tool result 放進 attributes；若要開內容層級觀測，先定資料保留與遮罩策略
 - **load_dotenv() 必須在所有 import 之前**：Python import 時執行 module 層級 code，太晚 load 的話 os.getenv() 已經跑過，讀不到 .env
 - **vLLM 需要額外啟動參數才能使用 tool calling 與非思考模式**：缺少以下參數時 tool calling 回 400，`enable_thinking: false` 不生效
   ```
