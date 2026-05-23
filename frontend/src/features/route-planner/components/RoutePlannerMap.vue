@@ -14,6 +14,7 @@ import { Map, MapMarker, MapRoute, MarkerContent } from "@/components/ui/map"
 
 import { isInYunlinCounty } from "../geo/yunlin-service-area"
 import MapClickPicker from "../map/MapClickPicker.vue"
+import MapZoomControl from "../map/MapZoomControl.vue"
 import MoovoStationMarkers from "../map/MoovoStationMarkers.vue"
 import RouteViewportFit from "../map/RouteViewportFit.vue"
 import YunlinServiceAreaLayer from "../map/YunlinServiceAreaLayer.vue"
@@ -123,6 +124,7 @@ function selectStyle(id: StyleId) {
         @select="$emit('select-destination', $event)"
         @reject="$emit('reject-destination', $event)"
       />
+      <MapZoomControl position="bottom-right" />
       <YunlinServiceAreaLayer />
       <!-- Render each leg: BUS = solid blue, WALK = dashed gray -->
       <template v-if="route">
