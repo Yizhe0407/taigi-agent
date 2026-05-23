@@ -79,6 +79,65 @@
 - **手機與 Kiosk 共用 Vue app vs 獨立 mobile build**：先共用、加 share-mode flag；若 bundle 太大再切
 - **長輩單獨使用情境**：本流程預設不服務獨自長輩，分流由「使用者分眾」段落涵蓋
 
+## ASR（Qwen3-ASR 微調）
+
+> 後端 ASR endpoint 已備：Qwen3-ASR 微調版，OpenAI `/v1/audio/transcriptions`
+> 介面（multipart audio → text）。本段聚焦前端錄音、後端 proxy、轉文字
+> 接入既有聊天流程。Kiosk 為固定站點、單一使用者、turn-based 互動，
+> 不引入 LiveKit / WebRTC stack（見決策點）。
+
+### 後端整合
+
+| 狀態 | 項目 |
+|------|------|
+| ⬜ | `POST /api/asr` proxy：FastAPI 收 multipart audio，轉送 Qwen3-ASR endpoint。避免前端直連暴露 IP、加入 logging 與錯誤標準化 |
+| ⬜ | Env 設定：`ASR_BASE_URL`、`ASR_MODEL`、`ASR_API_KEY`（沿用 LLM_* 命名慣例） |
+| ⬜ | 錯誤映射：endpoint timeout / 5xx → 503 「語音服務暫時無法回應」；空白 transcription → 400 「未聽清楚，請再說一次」 |
+
+### 前端錄音
+
+| 狀態 | 項目 |
+|------|------|
+| ⬜ | 麥克風擷取：`getUserMedia({ audio: { echoCancellation, noiseSuppression, autoGainControl } })`，瀏覽器內建 AEC 處理喇叭回授 |
+| ⬜ | `MediaRecorder` 編碼 webm/opus 後 POST；若 ASR endpoint 只吃 wav，加 AudioWorklet 將 PCM 轉 wav |
+| ⬜ | VAD 端點偵測：`@ricky0123/vad-web`（Silero VAD JS port），偵測停頓自動切段（threshold + min/max duration） |
+| ⬜ | 互動模式：MVP 採「點一下開始錄音、再點一下結束」+ VAD auto-stop 後備。不做 push-to-talk（老人按不久）、不做 always-on（誤觸） |
+| ⬜ | 視覺回饋：錄音中波形或脈動指示、上傳中 loading、轉文字後填入 textarea 由使用者確認再送（避免 ASR 錯字直接餵 LLM） |
+| ⬜ | Mic permission 拒絕的引導頁：說明用途、提供關閉語音改用打字的入口 |
+
+### AgentChatView 接入
+
+| 狀態 | 項目 |
+|------|------|
+| ⬜ | textarea 旁加錄音按鈕（與 Send 並列），錄音結束的文字落到 textarea，按 Send 才實際送出 |
+| ⬜ | 錄音中其他 UI（Send、輸入框）禁用 |
+| ⬜ | Session 過期偵測：錄音上傳前確認 sessionId 仍有效，過期自動 re-create |
+
+### 模型側調校
+
+| 狀態 | 項目 |
+|------|------|
+| ⬜ | 地名 hotword injection：把雲林站名 + 路線號（從 `stop_catalog` 與 `routes.txt`）做成 hotword bias 字典，降低 OOV |
+| ⬜ | 數字 / 字母路線（7126、Y01、E-line）對應 ASR 文字格式：確認模型輸出與 `_ROUTE_RE` 相容，必要時前端 / proxy 層做後處理 |
+
+### 量化評估（論文用）
+
+| 狀態 | 項目 |
+|------|------|
+| ⬜ | ASR 延遲量測：capture-end → text-return 的 p50 / p95 |
+| ⬜ | 自建台語公車 test set：≥ 100 句涵蓋路線號、站名、查詢動詞、轉乘問句 |
+| ⬜ | WER / CER on 台語 test set |
+| ⬜ | 地名命中率（站名 / 路線號 recall） |
+
+### 風險與決策點
+
+- **不用 LiveKit / WebRTC**：Kiosk 場域單一使用者、固定網路、turn-based 互動，LiveKit 的 NAT traversal / 多方 room / sub-200ms 雙向沒對到痛點，反而多一個 token 服務與部署複雜度。論文上可寫為 fit-for-purpose 工程簡化
+- **MediaRecorder 編碼 vs raw PCM**：先 webm/opus（瀏覽器原生、檔小），若 endpoint 不接受再加 PCM 轉 wav 路徑
+- **VAD 在前端 vs 後端**：選前端，少一趟 RTT、不傳沒講話時的雜訊
+- **轉文字後自動送 vs 先 confirm**：MVP 先 confirm（防 ASR 錯字、老人有編輯機會）。熟練後可加 auto-send 設定
+- **錄音留存給論文評估**：預設不存。評估期開 env flag 暫存到 `.agent_state/audio/`，跑完關閉。同意書與隱私揭露要先到位
+- **隱私揭露**：錄音按鈕旁註明「按下表示同意音訊上傳轉文字處理」，符合分眾段落的對齊原則
+
 ## POI 與在地知識
 
 | 狀態 | 項目 |
@@ -87,14 +146,13 @@
 | ⬜ | `search_poi`：附近店家 / 景點查詢 |
 | ⬜ | 校園知識（雲科系所 / 行政 / 活動） |
 
-## 語音接入
+## 語音接入（TTS）
+
+> ASR 子計畫見「ASR（Qwen3-ASR 微調）」段落；LiveKit 不採用，原因見該段決策點。
 
 | 狀態 | 項目 |
 |------|------|
-| ⬜ | ASR 接入（打字 → 語音輸入）|
 | ⬜ | TTS 接入（文字輸出 → 語音輸出，Piper 台語模型）|
-| ⬜ | LiveKit 整合（WebRTC 傳輸）|
-| ⬜ | ASR 地名 hotword injection（雲林地名字典）|
 | ⬜ | TTS text normalization（公車代號 / 英文 / 數字）|
 
 ## 量化評估（論文用）
