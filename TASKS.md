@@ -12,7 +12,7 @@
 | ✅ | CLI loop：外層 input loop 呼叫 `AgentSession` |
 | ✅ | LLM client（OpenAI-compatible，env 設定） |
 | ✅ | Tool dispatcher（TOOL_SCHEMAS + TOOL_HANDLERS） |
-| ✅ | System prompt 組裝（`agent/prompt.py`） |
+| ✅ | System prompt 組裝（`backend/agent/prompt.py`） |
 | ✅ | Prompt grounding（正向約束防止 LLM 補充訓練資料、能力邊界明確化） |
 | ✅ | 非思考模式（vLLM `extra_body={"chat_template_kwargs": {"enable_thinking": False}}`） |
 | ✅ | Context 防守（LLM call 前 sliding-window trim + overflow retry） |
@@ -35,13 +35,28 @@
 | ✅ | stop-based route cache：從 `/api/stop/route?stop_name=KIOSK_STOP` 解析 route id |
 | ⬜ | `get_nearby_stops`：附近站牌（需 GPS 座標） |
 
-## 路線規劃（OTP）
+## 路線規劃後端（OTP）
 
 | 狀態 | 項目 |
 |------|------|
-| ⬜ | OTP Docker 跑起來（GTFS + OSM graph build） |
-| ⬜ | `plan_route`：從 A 到 B 的完整轉乘建議 |
+| ✅ | OTP Docker 跑起來（GTFS + OSM graph build） |
+| ✅ | `plan_route_to_coordinate`：Kiosk 出發到前端地圖選點座標的後端規劃核心 |
+| ✅ | TDX Yunlin stop index：Kiosk 起點與 OTP GTFS 篩選資料邊界 |
+| ✅ | MapCN route view model：OTP geometry 轉 `[lng, lat]` route options |
+| ✅ | `POST /api/route-plans`：前端座標路線規劃 HTTP API |
 | ⬜ | 跨縣市轉運引導（斗六火車站 / 雲林高鐵站 / 斗六轉運站） |
+| ⬜ | route option 與 ebus 本站即時到站狀態整合評估 |
+
+## 前端（Kiosk UI）
+
+| 狀態 | 項目 |
+|------|------|
+| ✅ | Vue + Tailwind CSS + shadcn-vue + Lucide 前端骨架 |
+| ✅ | MapCN Destination Picker：Kiosk 起點、地圖選點、拖曳、確認目的地 |
+| ✅ | Route planning request / result view：候選路線、legs、MapCN `[lng, lat]` geometry |
+| ✅ | 出發時間控制與無班次提示：現在出發 / 指定時間 |
+| ✅ | Agent 對話 UI 與 route planning 流程入口 |
+| ✅ | Kiosk / mobile layout polish 與主要 loading / empty / error states |
 
 ## POI 與在地知識
 

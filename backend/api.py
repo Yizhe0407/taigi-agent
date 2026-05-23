@@ -1,0 +1,282 @@
+"""HTTP API for frontend route planning flows."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+import uuid
+from datetime import datetime
+
+from dotenv import load_dotenv
+
+# Keep env loading before Kiosk planner imports so API and CLI share .env config.
+load_dotenv()
+
+from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from openai import OpenAI  # noqa: E402
+from pydantic import BaseModel, ConfigDict, Field, field_validator  # noqa: E402
+
+from agent.prompt import build_system_prompt  # noqa: E402
+from agent.session import AgentSession, summarize_error  # noqa: E402
+from agent.telemetry import configure_telemetry  # noqa: E402
+from agent.tools import TOOL_HANDLERS, TOOL_SCHEMAS  # noqa: E402
+from tools.kiosk_bus import prefetch_route_arrival_context  # noqa: E402
+from tools.kiosk_route_planner import (  # noqa: E402
+    InvalidRouteDestination,
+    RoutePlanningUnavailable,
+    RoutePlanNotFound,
+    plan_route_to_coordinate,
+    route_plan_to_view_model,
+)
+
+
+def _cors_origins() -> list[str]:
+    configured = os.getenv("API_CORS_ORIGINS", "")
+    return [origin.strip() for origin in configured.split(",") if origin.strip()]
+
+
+app = FastAPI(title="Taigi Bus Agent API")
+cors_origins = _cors_origins()
+if cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
+
+LngLat = tuple[float, float]
+
+# ---------------------------------------------------------------------------
+# Chat session management
+# ---------------------------------------------------------------------------
+
+_SESSION_TTL_SECONDS = 1800  # 30 min idle expiry
+
+_chat_sessions: dict[str, AgentSession] = {}
+_session_last_used: dict[str, float] = {}
+
+
+def _make_agent_session() -> AgentSession:
+    base_url = os.getenv("LLM_BASE_URL")
+    model = os.getenv("LLM_MODEL")
+    api_key = os.getenv("LLM_API_KEY", "ollama")
+
+    if not base_url or not model:
+        raise RuntimeError("LLM_BASE_URL / LLM_MODEL not configured")
+
+    return AgentSession(
+        client=OpenAI(base_url=base_url, api_key=api_key),
+        model=model,
+        system_prompt=build_system_prompt(),
+        tool_schemas=TOOL_SCHEMAS,
+        tool_handlers=TOOL_HANDLERS,
+        input_enricher=prefetch_route_arrival_context,
+        telemetry=configure_telemetry(),
+    )
+
+
+def _purge_expired_sessions() -> None:
+    now = time.time()
+    expired = [
+        sid
+        for sid, last in _session_last_used.items()
+        if now - last > _SESSION_TTL_SECONDS
+    ]
+    for sid in expired:
+        _chat_sessions.pop(sid, None)
+        _session_last_used.pop(sid, None)
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models — Route planning
+# ---------------------------------------------------------------------------
+
+
+class DestinationRequest(BaseModel):
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
+
+
+class RoutePlanRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    destination: DestinationRequest
+    departure_time: datetime | None = Field(default=None, alias="departureTime")
+
+    @field_validator("departure_time")
+    @classmethod
+    def require_departure_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("departureTime must include a timezone")
+        return value
+
+
+class PlaceResponse(BaseModel):
+    name: str
+    lat: float
+    lng: float
+
+
+class RouteNameResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    short_name: str | None = Field(alias="shortName")
+    long_name: str | None = Field(alias="longName")
+
+
+class LegResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    mode: str
+    from_name: str = Field(alias="fromName")
+    to_name: str = Field(alias="toName")
+    start: datetime
+    end: datetime
+    duration: float
+    distance: float
+    coordinates: list[LngLat]
+    route: RouteNameResponse | None
+
+
+class RouteOptionResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    coordinates: list[LngLat]
+    duration: int
+    distance: float
+    transfer_count: int = Field(alias="transferCount")
+    legs: list[LegResponse]
+
+
+class RoutePlanResponse(BaseModel):
+    origin: PlaceResponse
+    destination: PlaceResponse
+    routes: list[RouteOptionResponse]
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models — Chat
+# ---------------------------------------------------------------------------
+
+
+class ChatSessionResponse(BaseModel):
+    # Intentionally camelCase to match the JSON key the frontend expects.
+    sessionId: str  # noqa: N815
+
+
+class ChatMessageRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+
+
+class ChatMessageResponse(BaseModel):
+    reply: str
+
+
+# ---------------------------------------------------------------------------
+# Kiosk info endpoint
+# ---------------------------------------------------------------------------
+
+
+class KioskResponse(BaseModel):
+    name: str
+    lat: float
+    lng: float
+
+
+@app.get("/api/kiosk", response_model=KioskResponse)
+def get_kiosk() -> object:
+    """Return the kiosk stop name and its actual OTP origin coordinates."""
+    from tools.kiosk_route_planner import _kiosk_place  # noqa: PLC0415
+
+    place = _kiosk_place()
+    if place is None:
+        stop = os.getenv("KIOSK_STOP", "雲林科技大學")
+        raise HTTPException(
+            status_code=503, detail=f"找不到站牌「{stop}」的座標資料"
+        )
+    return KioskResponse(
+        name=place.name,
+        lat=place.coordinate.latitude,
+        lng=place.coordinate.longitude,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Route planning endpoint
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/route-plans", response_model=RoutePlanResponse)
+def create_route_plan(request: RoutePlanRequest) -> object:
+    """Plan from the configured Kiosk origin to a frontend-selected destination."""
+    try:
+        plan = plan_route_to_coordinate(
+            request.destination.lat,
+            request.destination.lng,
+            request.departure_time,
+        )
+    except InvalidRouteDestination as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RoutePlanNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except RoutePlanningUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    return route_plan_to_view_model(plan)
+
+
+# ---------------------------------------------------------------------------
+# Chat endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/chat/sessions", response_model=ChatSessionResponse)
+def create_chat_session() -> object:
+    """Create a new agent chat session. Returns a session_id for subsequent messages."""
+    _purge_expired_sessions()
+
+    try:
+        session = _make_agent_session()
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+    session_id = str(uuid.uuid4())
+    _chat_sessions[session_id] = session
+    _session_last_used[session_id] = time.time()
+    return ChatSessionResponse(sessionId=session_id)
+
+
+@app.post(
+    "/api/chat/sessions/{session_id}/messages",
+    response_model=ChatMessageResponse,
+)
+async def send_chat_message(session_id: str, body: ChatMessageRequest) -> object:
+    """Send a message to an existing session. Runs agent in a thread (blocking I/O)."""
+    session = _chat_sessions.get(session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=404, detail="對話階段不存在或已過期，請重新開始"
+        )
+
+    _session_last_used[session_id] = time.time()
+
+    try:
+        reply = await asyncio.to_thread(session.respond, body.message)
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"助理暫時無法回應：{summarize_error(error)}",
+        ) from error
+
+    return {"reply": reply}
+
+
+@app.delete("/api/chat/sessions/{session_id}", status_code=204)
+def delete_chat_session(session_id: str) -> None:
+    """Explicitly end a chat session and free its memory."""
+    _chat_sessions.pop(session_id, None)
+    _session_last_used.pop(session_id, None)
