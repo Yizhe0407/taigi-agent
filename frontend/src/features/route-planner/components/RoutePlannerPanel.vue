@@ -10,12 +10,12 @@ import {
   Navigation,
   RotateCcw,
   TriangleAlert,
-} from "@lucide/vue"
+} from "@lucide/vue";
 
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { DateTimePicker } from "@/components/ui/date-time-picker"
-import { Separator } from "@/components/ui/separator"
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { DateTimePicker } from "@/components/ui/date-time-picker";
+import { Separator } from "@/components/ui/separator";
 
 import type {
   LngLat,
@@ -23,66 +23,65 @@ import type {
   RouteLeg,
   RouteOption,
   RoutePlan,
-} from "../types"
+} from "../types";
 
 defineProps<{
-  kiosk: PlaceCoordinate
-  destination: LngLat | null
-  isDestinationConfirmed: boolean
-  isPlanningRoute: boolean
-  routePlan: RoutePlan | null
-  routePlanError: string
-  routePlanErrorKind: "no-service" | "generic"
-  selectedRoute: RouteOption | null
-  departureMode: "now" | "scheduled"
-  scheduledDateTime: string
-}>()
+  kiosk: PlaceCoordinate;
+  destination: LngLat | null;
+  isDestinationConfirmed: boolean;
+  isPlanningRoute: boolean;
+  routePlan: RoutePlan | null;
+  routePlanError: string;
+  routePlanErrorKind: "no-service" | "generic";
+  selectedRoute: RouteOption | null;
+  departureMode: "now" | "scheduled";
+  scheduledDateTime: string;
+}>();
 
 defineEmits<{
-  confirm: []
-  reset: []
-  "select-route": [routeId: string]
-  "update:departureMode": [mode: "now" | "scheduled"]
-  "update:scheduledDateTime": [value: string]
-}>()
+  confirm: [];
+  reset: [];
+  "select-route": [routeId: string];
+  "update:departureMode": [mode: "now" | "scheduled"];
+  "update:scheduledDateTime": [value: string];
+}>();
 
 const coordinateLabel = (coordinates: LngLat) =>
-  `${coordinates[1].toFixed(6)}, ${coordinates[0].toFixed(6)}`
+  `${coordinates[1].toFixed(6)}, ${coordinates[0].toFixed(6)}`;
 
 const durationLabel = (durationSeconds: number) => {
-  const total = Math.max(1, Math.round(durationSeconds / 60))
-  if (total < 60) return `${total} 分鐘`
-  const h = Math.floor(total / 60)
-  const m = total % 60
-  return m === 0 ? `${h} 小時` : `${h} 小時 ${m} 分`
-}
+  const total = Math.max(1, Math.round(durationSeconds / 60));
+  if (total < 60) return `${total} 分鐘`;
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return m === 0 ? `${h} 小時` : `${h} 小時 ${m} 分`;
+};
 
 const distanceLabel = (distanceMeters: number) =>
   distanceMeters >= 1000
     ? `${(distanceMeters / 1000).toFixed(1)} km`
-    : `${Math.round(distanceMeters)} m`
+    : `${Math.round(distanceMeters)} m`;
 
 const transferLabel = (route: RouteOption) =>
-  route.transferCount === 0 ? "不用轉乘" : `轉乘 ${route.transferCount} 次`
+  route.transferCount === 0 ? "不用轉乘" : `轉乘 ${route.transferCount} 次`;
 
 const busRouteLabel = (leg: RouteLeg) =>
-  leg.route?.shortName || leg.route?.longName || "公車"
+  leg.route?.shortName || leg.route?.longName || "公車";
 
 const busRouteSummary = (route: RouteOption) => {
   const labels = route.legs
     .filter((leg) => leg.mode === "BUS")
     .map(busRouteLabel)
-    .filter((label, index, all) => all.indexOf(label) === index)
-  return labels.length ? labels.join(" + ") : "步行接駁"
-}
+    .filter((label, index, all) => all.indexOf(label) === index);
+  return labels.length ? labels.join(" + ") : "步行接駁";
+};
 
 const scheduleLabel = (value: string) =>
   new Intl.DateTimeFormat("zh-TW", {
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
-  }).format(new Date(value))
-
+  }).format(new Date(value));
 </script>
 
 <template>
@@ -91,19 +90,7 @@ const scheduleLabel = (value: string) =>
   >
     <div class="space-y-5 px-5 py-5 sm:px-6 lg:px-7 lg:py-7">
       <!-- Header -->
-      <div class="flex items-start justify-between gap-4">
-        <div class="space-y-2">
-          <Badge variant="secondary" class="gap-1.5">
-            <Navigation class="size-3.5" />
-            Kiosk 出發
-          </Badge>
-          <h1 class="text-xl font-semibold text-foreground">路線規劃</h1>
-        </div>
-        <Badge v-if="isDestinationConfirmed" class="gap-1.5 bg-emerald-600">
-          <CircleCheck class="size-3.5" />
-          已確認
-        </Badge>
-      </div>
+      <h1 class="text-xl font-semibold text-foreground">路線規劃</h1>
 
       <!-- Origin / destination -->
       <div class="space-y-3">
@@ -213,7 +200,9 @@ const scheduleLabel = (value: string) =>
         v-if="routePlanError && routePlanErrorKind === 'no-service'"
         class="space-y-2 rounded-lg border border-amber-500/30 bg-amber-50/60 px-4 py-3 dark:bg-amber-950/20"
       >
-        <div class="flex items-center gap-2 text-sm font-semibold text-amber-700 dark:text-amber-400">
+        <div
+          class="flex items-center gap-2 text-sm font-semibold text-amber-700 dark:text-amber-400"
+        >
           <CalendarClock class="size-4 shrink-0" />
           此時段無班次
         </div>
@@ -256,7 +245,9 @@ const scheduleLabel = (value: string) =>
         <section class="space-y-3">
           <div class="flex items-center justify-between gap-3">
             <h2 class="text-sm font-semibold text-foreground">候選路線</h2>
-            <Badge variant="outline">{{ routePlan.routes.length }} 個方案</Badge>
+            <Badge variant="outline"
+              >{{ routePlan.routes.length }} 個方案</Badge
+            >
           </div>
 
           <div class="grid gap-2">
@@ -328,7 +319,8 @@ const scheduleLabel = (value: string) =>
                     搭 {{ busRouteLabel(leg) }}
                   </span>
                   <span v-else>步行</span>
-                  · {{ scheduleLabel(leg.start) }} - {{ scheduleLabel(leg.end) }}
+                  · {{ scheduleLabel(leg.start) }} -
+                  {{ scheduleLabel(leg.end) }}
                 </p>
                 <p class="break-words text-sm font-medium text-foreground">
                   {{ leg.fromName }} → {{ leg.toName }}
