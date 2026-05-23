@@ -21,7 +21,7 @@
 | ✅ | 錯誤處理強化（LLM retry、context overflow retry、JSON parse 保護、tool call 上限） |
 | ✅ | Harness tests：context exchange 完整性、tool error、tool round limit |
 | ✅ | Context compact：transcript + 摘要 / 長 tool result 壓縮 |
-| ✅ | 可觀測性：LLM latency、tool latency、tool error、retry、tool routing trace |
+| ✅ | 可觀測性：LLM latency、tool latency、tool error、retry、tool routing trace（`docs/observability.md`） |
 
 ## 公車工具（雲林 ebus）
 
@@ -93,6 +93,7 @@
 | ✅ | `POST /api/asr` proxy：FastAPI 收 multipart audio，轉送 Qwen3-ASR endpoint。避免前端直連暴露 IP、加入 logging 與錯誤標準化 |
 | ✅ | Env 設定：`ASR_BASE_URL`、`ASR_MODEL`、`ASR_API_KEY`（沿用 LLM_* 命名慣例） |
 | ✅ | 錯誤映射：endpoint timeout / 5xx → 503 「語音服務暫時無法回應」；空白 transcription → 400 「未聽清楚，請再說一次」 |
+| ✅ | 可觀測性：`FastAPIInstrumentor` auto-span、`HTTPXClientInstrumentor` 上游 HTTP trace、`pipeline.asr.audio_bytes` histogram |
 
 ### 前端錄音
 
@@ -152,8 +153,11 @@
 
 | 狀態 | 項目 |
 |------|------|
-| ⬜ | TTS 接入（文字輸出 → 語音輸出，Piper 台語模型）|
-| ⬜ | TTS text normalization（公車代號 / 英文 / 數字）|
+| ✅ | TTS 接入（文字輸出 → 語音輸出）：`POST /api/tts` proxy，HanloFlow → Taibun → Piper TTS pipeline |
+| ✅ | TTS text normalization：prompt 規範數字讀法（路線號逐位、時刻按時間結構、分鐘量詞），附分類範例 |
+| ✅ | 前端分段播放：`splitIntoChunks` 切句 → 平行 fetch → Web Audio API 順序 schedule，降低首段延遲 |
+| ✅ | 瀏覽器 autoplay policy：`AudioContext.resume()` 在 user gesture 內 await，解決 Chrome 靜音問題 |
+| ✅ | 可觀測性：`tts.text_process` child span、`pipeline.stage.duration{stage=tts.text_process}` histogram、上游 HTTP 由 `HTTPXClientInstrumentor` 自動 trace |
 
 ## 量化評估（論文用）
 
