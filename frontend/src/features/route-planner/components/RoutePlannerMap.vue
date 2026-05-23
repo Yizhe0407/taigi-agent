@@ -98,7 +98,7 @@ type StyleId = (typeof MAP_STYLES)[number]["id"]
 
 const activeStyleId = ref<StyleId>("positron")
 const showStylePicker = ref(false)
-const visibleMoovoStationCount = ref(0)
+const showMoovoStations = ref(true)
 
 const activeStyle = () =>
   MAP_STYLES.find((s) => s.id === activeStyleId.value)?.url ??
@@ -170,8 +170,8 @@ function selectStyle(id: StyleId) {
       </MapMarker>
 
       <MoovoStationMarkers
+        v-if="showMoovoStations"
         :stations="moovoStations"
-        @visible-count-change="visibleMoovoStationCount = $event"
       />
 
       <MapMarker
@@ -194,8 +194,24 @@ function selectStyle(id: StyleId) {
       class="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/15 to-transparent"
     />
 
-    <div
-      class="absolute left-3 top-3 z-10 flex items-center gap-2 rounded-md border border-border bg-background/90 px-3 py-2 text-xs font-medium text-foreground shadow-sm backdrop-blur"
+    <button
+      type="button"
+      class="absolute left-3 top-3 z-10 flex items-center gap-2 rounded-md border border-border bg-background/90 px-3 py-2 text-xs font-medium shadow-sm backdrop-blur transition"
+      :class="
+        isLoadingMoovoStations || moovoStationsError
+          ? 'cursor-default text-foreground'
+          : showMoovoStations
+            ? 'text-foreground hover:bg-accent'
+            : 'text-muted-foreground hover:bg-accent'
+      "
+      :title="
+        isLoadingMoovoStations ? 'MOOVO 載入中'
+        : moovoStationsError ? moovoStationsError
+        : showMoovoStations ? '隱藏 MOOVO 站點'
+        : '顯示 MOOVO 站點'
+      "
+      :disabled="isLoadingMoovoStations"
+      @click="!isLoadingMoovoStations && !moovoStationsError && (showMoovoStations = !showMoovoStations)"
     >
       <LoaderCircle
         v-if="isLoadingMoovoStations"
@@ -205,22 +221,20 @@ function selectStyle(id: StyleId) {
         v-else-if="moovoStationsError"
         class="size-3.5 text-destructive"
       />
-      <Bike v-else class="size-3.5 text-emerald-700" />
-      <span v-if="isLoadingMoovoStations">MOOVO 載入中</span>
+      <Bike
+        v-else
+        class="size-3.5 transition"
+        :class="showMoovoStations ? 'text-emerald-600' : 'text-muted-foreground'"
+      />
+      <span v-if="isLoadingMoovoStations" class="text-muted-foreground">MOOVO 載入中</span>
       <span v-else-if="moovoStationsError">{{ moovoStationsError }}</span>
-      <span v-else>
-        MOOVO {{ visibleMoovoStationCount }} / {{ moovoStations.length }} 站
-      </span>
-      <button
+      <span v-else>MOOVO</span>
+      <RefreshCw
         v-if="moovoStationsError"
-        type="button"
-        class="ml-1 rounded p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        title="重新載入 MOOVO 站點"
-        @click="$emit('refresh-moovo-stations')"
-      >
-        <RefreshCw class="size-3.5" />
-      </button>
-    </div>
+        class="size-3.5 text-muted-foreground transition hover:text-foreground"
+        @click.stop="$emit('refresh-moovo-stations')"
+      />
+    </button>
 
     <!-- Style picker toggle -->
     <div class="absolute bottom-8 left-3 z-10 flex flex-col items-start gap-1">

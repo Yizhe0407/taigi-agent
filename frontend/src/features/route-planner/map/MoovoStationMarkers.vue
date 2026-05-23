@@ -10,10 +10,6 @@ const props = defineProps<{
   stations: MoovoStation[]
 }>()
 
-const emit = defineEmits<{
-  "visible-count-change": [count: number]
-}>()
-
 const { map } = useMap()
 const zoom = ref(13)
 
@@ -127,12 +123,6 @@ const visibleStations = computed(() =>
   rankedStations.value
     .filter(({ rank }) => rank <= visibleStationLimit.value)
     .map(({ station }) => station),
-)
-
-watch(
-  () => visibleStations.value.length,
-  (count) => emit("visible-count-change", count),
-  { immediate: true },
 )
 </script>
 
