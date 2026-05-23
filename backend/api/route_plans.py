@@ -8,7 +8,6 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from config import Settings
-
 from tools.kiosk_route_planner import (
     InvalidRouteDestination,
     RoutePlanningUnavailable,

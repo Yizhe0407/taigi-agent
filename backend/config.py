@@ -54,7 +54,7 @@ class Settings:
     cors_origins: list[str]
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         """Read and validate settings from environment variables.
 
         Raises RuntimeError if any *required* variables are absent.
