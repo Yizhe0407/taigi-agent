@@ -74,8 +74,17 @@ agent/session.py
 | `pipeline.stage.duration` | Histogram | s | `pipeline.stage`, `pipeline.outcome` | 各處理階段耗時；目前只有 `tts.text_process` 會記錄 |
 | `pipeline.asr.audio_bytes` | Histogram | By | — | 每次上傳音訊的 bytes 分布，用於容量規劃 |
 
-> 所有 `*duration*` histogram 均套用 OTel 官方 HTTP semconv 建議的 bucket boundaries：
+> **Duration histograms** (`*duration*`)：套用 OTel HTTP semconv 建議的 bucket boundaries：
 > `[0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]` 秒
+>
+> Wildcard 刻意覆蓋 auto-instrumented 的 `http.server.request.duration`（FastAPI）與
+> `http.client.request.duration`（HTTPX），同一套 semconv buckets 均適用。
+>
+> **Byte histograms** (`*bytes*`)：套用 KB→25MB 的 bucket boundaries：
+> `[1KB, 4KB, 16KB, 64KB, 256KB, 1MB, 4MB, 10MB, 25MB]`
+>
+> 原因：OTel 預設 bucket 頂端為 10 000（適合計數），對 MB 等級的音訊上傳幾乎沒有解析度，
+> P99 會全落在最後一個 overflow bucket，喪失分布資訊。
 
 ---
 
