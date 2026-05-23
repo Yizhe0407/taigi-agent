@@ -28,8 +28,17 @@ _DURATION_BOUNDARIES = [
     0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10
 ]
 
+# Byte-range boundaries for audio size histograms (1 KB → 25 MB).
+# Default OTel buckets top out at 10 000, which is useless for MB-scale audio.
+_BYTES_BOUNDARIES = [
+    1_024, 4_096, 16_384, 65_536, 262_144,
+    1_048_576, 4_194_304, 10_485_760, 26_214_400,
+]
+
 # Singleton — set once by configure_telemetry(), read by get_telemetry().
 _telemetry: "AgentTelemetry | None" = None
+# Cached noop instance for paths where configure_telemetry() hasn't run yet.
+_noop: "AgentTelemetry | None" = None
 
 
 def _clean_attributes(attributes: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -62,18 +71,25 @@ def configure_telemetry(service_name: str = "taigi-bus-agent") -> "AgentTelemetr
         tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
         trace.set_tracer_provider(tracer_provider)
 
-        # Apply explicit bucket boundaries to all duration histograms so that
-        # dashboards get sensible pre-aggregated buckets per OTel semconv.
+        # Apply explicit bucket boundaries to all duration histograms.
+        # Wildcard intentionally covers auto-instrumented metrics too:
+        # http.server.request.duration (FastAPI) and http.client.request.duration
+        # (HTTPX) use the same semconv-recommended boundaries as our custom ones.
         duration_view = View(
             instrument_name="*duration*",
             aggregation=ExplicitBucketHistogramAggregation(boundaries=_DURATION_BOUNDARIES),
+        )
+        # Default OTel buckets top out at 10 000 — useless for MB-scale audio.
+        bytes_view = View(
+            instrument_name="*bytes*",
+            aggregation=ExplicitBucketHistogramAggregation(boundaries=_BYTES_BOUNDARIES),
         )
         metric_reader = PeriodicExportingMetricReader(OTLPMetricExporter())
         metrics.set_meter_provider(
             MeterProvider(
                 resource=resource,
                 metric_readers=[metric_reader],
-                views=[duration_view],
+                views=[duration_view, bytes_view],
             )
         )
 
@@ -85,14 +101,15 @@ def get_telemetry() -> "AgentTelemetry":
     """Return the singleton AgentTelemetry instance.
 
     If configure_telemetry() has not yet been called (e.g. during unit tests
-    or isolated router imports), returns a noop-safe instance backed by the
-    OTel global NoOp providers.
+    or isolated router imports), returns a cached noop-safe instance backed by
+    the OTel global NoOp providers. Spans / metrics are silently dropped.
     """
+    global _noop
     if _telemetry is not None:
         return _telemetry
-    # Caller hasn't run configure_telemetry() yet — return a transient noop
-    # instance. Metrics / spans are silently dropped until the SDK is wired up.
-    return AgentTelemetry()
+    if _noop is None:
+        _noop = AgentTelemetry()
+    return _noop
 
 
 class AgentTelemetry:

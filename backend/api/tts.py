@@ -66,18 +66,19 @@ async def synthesize(body: TTSRequest) -> Response:
     # ── Step 1 + 2: Mandarin → 漢羅 → Tailo ──────────────────────────────────
     # Timed manually: pure Python, no HTTP — HTTPXClientInstrumentor won't cover it.
     # The span appears as a child of the FastAPI request span.
+    tel = get_telemetry()
     t0 = time.perf_counter()
     try:
-        with get_telemetry().start_span(
-            "tts.text_process",
-            {"tts.input_chars": len(body.text)},
-        ):
+        with tel.start_span("tts.text_process", {"tts.input_chars": len(body.text)}):
             result = text_process(body.text)
-        get_telemetry().record_pipeline_stage(
-            time.perf_counter() - t0, stage="tts.text_process", outcome="ok"
+        # Distinguish "ran but produced nothing" from true success so dashboards
+        # can surface empty-output events separately from exceptions.
+        outcome = "ok" if result.tailo else "empty_output"
+        tel.record_pipeline_stage(
+            time.perf_counter() - t0, stage="tts.text_process", outcome=outcome
         )
     except Exception as err:
-        get_telemetry().record_pipeline_stage(
+        tel.record_pipeline_stage(
             time.perf_counter() - t0, stage="tts.text_process", outcome="error"
         )
         raise HTTPException(
