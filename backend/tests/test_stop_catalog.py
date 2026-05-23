@@ -3,7 +3,7 @@ import json
 from tools import stop_catalog
 
 
-def test_load_stop_catalog_matches_exact_names_and_suggestions(tmp_path, monkeypatch):
+def test_load_stop_catalog_matches_exact_names(tmp_path, monkeypatch):
     path = tmp_path / "stops.json"
     path.write_text(
         json.dumps(
@@ -39,4 +39,3 @@ def test_load_stop_catalog_matches_exact_names_and_suggestions(tmp_path, monkeyp
     catalog = stop_catalog.load_stop_catalog()
 
     assert [stop.stop_id for stop in catalog.exact("虎尾")] == ["THB249193"]
-    assert catalog.suggest("虎") == ("虎尾", "虎尾圓環")

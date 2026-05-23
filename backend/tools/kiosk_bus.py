@@ -48,16 +48,6 @@ def _kiosk_go_back_filter() -> int | None:
     return None
 
 
-def get_next_arrivals(
-    route: str, stop_name: str, go_back_filter: int | None = None
-) -> str:
-    """查詢某路線在某站的下一班到站時間
-
-    go_back_filter: 1=去程, 2=回程, None=兩個方向都顯示
-    """
-    return yunlin_ebus.get_arrivals(route, _resolve(stop_name), go_back=go_back_filter)
-
-
 def get_routes_at_stop(stop_name: str) -> str:
     """查詢指定站牌停靠路線，並套用 Kiosk 常用站名縮寫。"""
     return yunlin_ebus.get_routes_at_stop(_resolve(stop_name))
@@ -81,12 +71,13 @@ def get_arrivals_here(route: str) -> str:
     stop_name 從 KIOSK_STOP 取，方向從 KIOSK_DIRECTION 取。
 
     KIOSK_DIRECTION 設定：
-    - 「去程」→ go_back_filter=1
-    - 「回程」→ go_back_filter=2
+    - 「去程」→ go_back=1
+    - 「回程」→ go_back=2
     - 不設定 → 顯示兩個方向
     """
-    stop = _kiosk_stop()
-    return get_next_arrivals(route, stop, go_back_filter=_kiosk_go_back_filter())
+    return yunlin_ebus.get_arrivals(
+        route, _kiosk_stop(), go_back=_kiosk_go_back_filter()
+    )
 
 
 def prefetch_route_arrival_context(user_input: str) -> str:

@@ -34,16 +34,6 @@ class StopCatalog:
     def exact(self, name: str) -> list[StopRecord]:
         return [stop for stop in self.stops if stop.name == name]
 
-    def suggest(self, query: str, *, limit: int = 5) -> tuple[str, ...]:
-        names: list[str] = []
-        for stop in self.stops:
-            if query not in stop.name or stop.name in names:
-                continue
-            names.append(stop.name)
-            if len(names) == limit:
-                break
-        return tuple(names)
-
 
 def _catalog_path() -> Path:
     configured = os.getenv("YUNLIN_STOP_INDEX_PATH")

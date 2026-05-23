@@ -150,43 +150,6 @@ def _destination_place(latitude: float, longitude: float) -> Place | None:
     )
 
 
-def _minutes(start: datetime, end: datetime) -> int:
-    seconds = max(0, int((end - start).total_seconds()))
-    return (seconds + 59) // 60
-
-
-def _format_time(value: datetime) -> str:
-    return value.astimezone(_TAIPEI).strftime("%H:%M")
-
-
-def _format_leg(
-    index: int,
-    leg: otp.Leg,
-    *,
-    origin: Place,
-    destination: Place,
-) -> str | None:
-    from_name, to_name = _display_leg_names(
-        leg,
-        origin=origin,
-        destination=destination,
-    )
-    if leg.is_bus:
-        route = leg.route_short_name or leg.route_long_name or "未知路線"
-        return (
-            f"{index}. 搭 {route}：{from_name} -> {to_name}"
-            f"（預定 {_format_time(leg.start)} -> {_format_time(leg.end)}）"
-        )
-    if from_name == to_name:
-        return None
-    minutes = _minutes(leg.start, leg.end)
-    if leg.from_name == "Origin":
-        return f"{index}. 步行到 {to_name}（約 {minutes} 分鐘）"
-    if leg.to_name == "Destination":
-        return f"{index}. 從 {from_name} 步行到 {to_name}（約 {minutes} 分鐘）"
-    return f"{index}. 步行：{from_name} -> {to_name}（約 {minutes} 分鐘）"
-
-
 def _display_leg_names(
     leg: otp.Leg,
     *,
@@ -196,33 +159,6 @@ def _display_leg_names(
     from_name = origin.name if leg.from_name == "Origin" else leg.from_name
     to_name = destination.name if leg.to_name == "Destination" else leg.to_name
     return from_name, to_name
-
-
-def _format_itinerary(
-    index: int,
-    itinerary: otp.Itinerary,
-    *,
-    origin: Place,
-    destination: Place,
-) -> list[str]:
-    transfer_label = (
-        "不用轉乘"
-        if itinerary.transfer_count == 0
-        else f"轉乘 {itinerary.transfer_count} 次"
-    )
-    lines = [
-        f"方案 {index}：約 {itinerary.duration_minutes} 分鐘，{transfer_label}"
-    ]
-    for leg in itinerary.legs:
-        line = _format_leg(
-            len(lines),
-            leg,
-            origin=origin,
-            destination=destination,
-        )
-        if line is not None:
-            lines.append(line)
-    return lines
 
 
 def plan_route_to_coordinate(
@@ -272,21 +208,6 @@ def plan_route_to_coordinate(
             for index, itinerary in enumerate(bus_itineraries, start=1)
         ),
     )
-
-
-def format_route_plan(plan: RoutePlan) -> str:
-    """Format a structured route plan for CLI inspection or short summaries."""
-    lines = [f"從「{plan.origin.name}」到「{plan.destination.name}」的公車規劃："]
-    for index, route in enumerate(plan.routes, start=1):
-        lines.extend(
-            _format_itinerary(
-                index,
-                route.itinerary,
-                origin=plan.origin,
-                destination=plan.destination,
-            )
-        )
-    return "\n".join(lines)
 
 
 def _coordinates_view_model(

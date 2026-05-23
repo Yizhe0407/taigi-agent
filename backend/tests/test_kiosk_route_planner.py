@@ -88,11 +88,6 @@ def test_plan_route_to_coordinate_formats_bus_itineraries(monkeypatch):
         departure_time=_time("08:00"),
     )
 
-    assert kiosk_route_planner.format_route_plan(plan) == (
-        "從「雲林科技大學」到「地圖選點」的公車規劃：\n"
-        "方案 1：約 11 分鐘，不用轉乘\n"
-        "1. 搭 201：雲林科技大學 -> 斗六火車站（預定 08:35 -> 08:45）"
-    )
     route = kiosk_route_planner.route_plan_to_view_model(plan)["routes"][0]
     assert route["id"] == "option-1"
     assert route["coordinates"] == [
