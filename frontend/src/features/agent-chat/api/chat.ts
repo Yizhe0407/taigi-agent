@@ -1,26 +1,10 @@
-const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "")
-const apiBaseUrl = configuredApiBase ?? ""
+import { apiBaseUrl, ApiError, parseErrorBody } from "@/lib/api"
 
-export class ChatApiError extends Error {
-  readonly status: number | null
-
+export class ChatApiError extends ApiError {
   constructor(message: string, status: number | null = null) {
-    super(message)
+    super(message, status)
     this.name = "ChatApiError"
-    this.status = status
   }
-}
-
-type ApiFailure = { detail?: string }
-
-async function errorMessage(response: Response): Promise<string> {
-  try {
-    const body = (await response.json()) as ApiFailure
-    if (body.detail) return body.detail
-  } catch {
-    // fall through to status-based message
-  }
-  return `API 回應 ${response.status}`
 }
 
 /** Create a new agent chat session. Returns the opaque session ID. */
@@ -36,7 +20,7 @@ export async function createChatSession(): Promise<string> {
   }
 
   if (!response.ok) {
-    throw new ChatApiError(await errorMessage(response), response.status)
+    throw new ChatApiError(await parseErrorBody(response), response.status)
   }
 
   const body = (await response.json()) as { sessionId: string }
@@ -66,7 +50,7 @@ export async function sendChatMessage(
   }
 
   if (!response.ok) {
-    throw new ChatApiError(await errorMessage(response), response.status)
+    throw new ChatApiError(await parseErrorBody(response), response.status)
   }
 
   const body = (await response.json()) as { reply: string }
@@ -90,8 +74,7 @@ export async function transcribeAudio(audio: Blob): Promise<string> {
   }
 
   if (!response.ok) {
-    const msg = await errorMessage(response)
-    throw new ChatApiError(msg, response.status)
+    throw new ChatApiError(await parseErrorBody(response), response.status)
   }
 
   const body = (await response.json()) as { text: string }

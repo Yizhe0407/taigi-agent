@@ -1,7 +1,6 @@
-import type { LngLat, PlaceCoordinate } from "../types"
+import { apiBaseUrl } from "@/lib/api"
 
-const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "")
-const apiBaseUrl = configuredApiBase ?? ""
+import type { LngLat, PlaceCoordinate } from "../types"
 
 type KioskResponse = { name: string; lat: number; lng: number }
 

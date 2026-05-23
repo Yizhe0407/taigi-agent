@@ -1,32 +1,12 @@
+import { apiBaseUrl, ApiError, parseErrorBody } from "@/lib/api"
+
 import type { LngLat, RoutePlan } from "../types"
 
-type RoutePlanFailure = {
-  detail?: string
-}
-
-const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "")
-const apiBaseUrl = configuredApiBase ?? ""
-
-export class RoutePlanApiError extends Error {
-  readonly status: number | null
-
+export class RoutePlanApiError extends ApiError {
   constructor(message: string, status: number | null = null) {
-    super(message)
+    super(message, status)
     this.name = "RoutePlanApiError"
-    this.status = status
   }
-}
-
-const routePlanUrl = () => `${apiBaseUrl}/api/route-plans`
-
-const responseMessage = async (response: Response) => {
-  try {
-    const body = (await response.json()) as RoutePlanFailure
-    if (body.detail) return body.detail
-  } catch {
-    // Prefer the HTTP status fallback when an upstream error is not JSON.
-  }
-  return `路線規劃 API 回應 ${response.status}`
 }
 
 export async function createRoutePlan(
@@ -36,7 +16,7 @@ export async function createRoutePlan(
 ): Promise<RoutePlan> {
   let response: Response
   try {
-    response = await fetch(routePlanUrl(), {
+    response = await fetch(`${apiBaseUrl}/api/route-plans`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -58,7 +38,7 @@ export async function createRoutePlan(
   }
 
   if (!response.ok) {
-    throw new RoutePlanApiError(await responseMessage(response), response.status)
+    throw new RoutePlanApiError(await parseErrorBody(response), response.status)
   }
 
   return (await response.json()) as RoutePlan

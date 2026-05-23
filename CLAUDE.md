@@ -26,7 +26,13 @@ uv run ruff check .          # Lint
 ```
 backend/
   main.py          # 入口：load_dotenv() → agent.loop.run()
-  api.py           # 前端地圖選點路線規劃 HTTP API：Kiosk 固定起點 → MapCN route view model
+  config.py        # Settings（all env vars）+ make_agent_session 工廠；API 層與 CLI 共用
+  api/
+    __init__.py    # FastAPI app 建立 + CORS + include_router（uvicorn api:app）
+    chat.py        # /api/chat/* + in-process session store（_chat_sessions）
+    route_plans.py # /api/route-plans + /api/kiosk
+    moovo.py       # /api/moovo/*
+    asr.py         # /api/asr（Qwen3-ASR proxy）
   agent/
     loop.py        # CLI I/O：讀 input、印回答，呼叫 AgentSession
     session.py     # Harness 核心：messages + LLM call + tool-call loop + recovery
@@ -63,7 +69,7 @@ frontend/
 
 - **ebus 後端介面不是本專題控制的公開契約**：目前雲林站牌資料覆蓋足夠，provider 存取集中在 `backend/tools/yunlin_ebus.py`。若 endpoint 或 payload 改版，先修這層，不把格式假設散到 agent loop。
 - **Compact 後的完整內容暫無 retrieval tool**：`AgentSession` 會把 transcript 與長 tool result 保存到 `.agent_state/`，active context 只保留摘要、路徑與預覽。若後續讓 agent 主動回讀壓縮資料，需要明確的 retrieval tool 與資料保留策略。
-- **Chat session 存活在 api.py process 記憶體**：`_chat_sessions` dict 不跨 worker、不跨重啟存活；session TTL 30 分鐘靠 `_purge_expired_sessions()` 懶清，適合單機 kiosk，若要 scale out 需改用外部 store。
+- **Chat session 存活在 api/chat.py process 記憶體**：`_chat_sessions` dict 不跨 worker、不跨重啟存活；session TTL 30 分鐘靠 `_purge_expired_sessions()` 懶清，適合單機 kiosk，若要 scale out 需改用外部 store。
 
 ## 已知 Gotcha
 

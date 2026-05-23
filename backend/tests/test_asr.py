@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api
+import api.asr
 
 
 @pytest.fixture()
@@ -84,7 +85,7 @@ def test_asr_returns_text_from_upstream(client: TestClient, monkeypatch):
     async def fake_post(url, headers, filename, audio_bytes, content_type, model):
         return _ok_response("201 幾分到")
 
-    monkeypatch.setattr(api, "_asr_post_audio", fake_post)
+    monkeypatch.setattr(api.asr, "_asr_post_audio", fake_post)
 
     response = client.post(
         "/api/asr",
@@ -102,7 +103,7 @@ def test_asr_returns_422_for_empty_transcription(client: TestClient, monkeypatch
     async def fake_post(url, headers, filename, audio_bytes, content_type, model):
         return httpx.Response(200, json={"text": "   "})
 
-    monkeypatch.setattr(api, "_asr_post_audio", fake_post)
+    monkeypatch.setattr(api.asr, "_asr_post_audio", fake_post)
 
     response = client.post(
         "/api/asr",
@@ -120,7 +121,7 @@ def test_asr_returns_502_for_upstream_error(client: TestClient, monkeypatch):
     async def fake_post(url, headers, filename, audio_bytes, content_type, model):
         return httpx.Response(500, text="Internal Server Error")
 
-    monkeypatch.setattr(api, "_asr_post_audio", fake_post)
+    monkeypatch.setattr(api.asr, "_asr_post_audio", fake_post)
 
     response = client.post(
         "/api/asr",
@@ -137,7 +138,7 @@ def test_asr_returns_504_on_timeout(client: TestClient, monkeypatch):
     async def fake_post(url, headers, filename, audio_bytes, content_type, model):
         raise httpx.TimeoutException("timed out")
 
-    monkeypatch.setattr(api, "_asr_post_audio", fake_post)
+    monkeypatch.setattr(api.asr, "_asr_post_audio", fake_post)
 
     response = client.post(
         "/api/asr",
@@ -155,7 +156,7 @@ def test_asr_returns_503_on_connection_error(client: TestClient, monkeypatch):
     async def fake_post(url, headers, filename, audio_bytes, content_type, model):
         raise httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr(api, "_asr_post_audio", fake_post)
+    monkeypatch.setattr(api.asr, "_asr_post_audio", fake_post)
 
     response = client.post(
         "/api/asr",
@@ -184,7 +185,7 @@ def test_asr_sends_authorization_header_when_key_is_set(
         captured["headers"] = headers
         return _ok_response()
 
-    monkeypatch.setattr(api, "_asr_post_audio", fake_post)
+    monkeypatch.setattr(api.asr, "_asr_post_audio", fake_post)
     client.post(
         "/api/asr",
         files={"file": ("audio.webm", _webm_stub(), "audio/webm")},
@@ -206,7 +207,7 @@ def test_asr_omits_authorization_header_when_key_is_empty(
         captured["headers"] = headers
         return _ok_response()
 
-    monkeypatch.setattr(api, "_asr_post_audio", fake_post)
+    monkeypatch.setattr(api.asr, "_asr_post_audio", fake_post)
     client.post(
         "/api/asr",
         files={"file": ("audio.webm", _webm_stub(), "audio/webm")},

@@ -1,36 +1,16 @@
+import { apiBaseUrl, ApiError, parseErrorBody } from "@/lib/api"
+
 import type { MoovoStation } from "../types"
 
 type MoovoStationsResponse = {
   stations: MoovoStation[]
 }
 
-type MoovoFailure = {
-  detail?: string
-}
-
-const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "")
-const apiBaseUrl = configuredApiBase ?? ""
-
-export class MoovoApiError extends Error {
-  readonly status: number | null
-
+export class MoovoApiError extends ApiError {
   constructor(message: string, status: number | null = null) {
-    super(message)
+    super(message, status)
     this.name = "MoovoApiError"
-    this.status = status
   }
-}
-
-const moovoStationsUrl = () => `${apiBaseUrl}/api/moovo/stations`
-
-const responseMessage = async (response: Response) => {
-  try {
-    const body = (await response.json()) as MoovoFailure
-    if (body.detail) return body.detail
-  } catch {
-    // Use the HTTP status fallback when the upstream error is not JSON.
-  }
-  return `MOOVO API 回應 ${response.status}`
 }
 
 export async function fetchMoovoStations(
@@ -38,7 +18,7 @@ export async function fetchMoovoStations(
 ): Promise<MoovoStation[]> {
   let response: Response
   try {
-    response = await fetch(moovoStationsUrl(), { signal })
+    response = await fetch(`${apiBaseUrl}/api/moovo/stations`, { signal })
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw error
@@ -47,7 +27,7 @@ export async function fetchMoovoStations(
   }
 
   if (!response.ok) {
-    throw new MoovoApiError(await responseMessage(response), response.status)
+    throw new MoovoApiError(await parseErrorBody(response), response.status)
   }
 
   const payload = (await response.json()) as MoovoStationsResponse
