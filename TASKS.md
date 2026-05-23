@@ -90,35 +90,35 @@
 
 | 狀態 | 項目 |
 |------|------|
-| ⬜ | `POST /api/asr` proxy：FastAPI 收 multipart audio，轉送 Qwen3-ASR endpoint。避免前端直連暴露 IP、加入 logging 與錯誤標準化 |
-| ⬜ | Env 設定：`ASR_BASE_URL`、`ASR_MODEL`、`ASR_API_KEY`（沿用 LLM_* 命名慣例） |
-| ⬜ | 錯誤映射：endpoint timeout / 5xx → 503 「語音服務暫時無法回應」；空白 transcription → 400 「未聽清楚，請再說一次」 |
+| ✅ | `POST /api/asr` proxy：FastAPI 收 multipart audio，轉送 Qwen3-ASR endpoint。避免前端直連暴露 IP、加入 logging 與錯誤標準化 |
+| ✅ | Env 設定：`ASR_BASE_URL`、`ASR_MODEL`、`ASR_API_KEY`（沿用 LLM_* 命名慣例） |
+| ✅ | 錯誤映射：endpoint timeout / 5xx → 503 「語音服務暫時無法回應」；空白 transcription → 400 「未聽清楚，請再說一次」 |
 
 ### 前端錄音
 
 | 狀態 | 項目 |
 |------|------|
-| ⬜ | 麥克風擷取：`getUserMedia({ audio: { echoCancellation, noiseSuppression, autoGainControl } })`，瀏覽器內建 AEC 處理喇叭回授 |
-| ⬜ | `MediaRecorder` 編碼 webm/opus 後 POST；若 ASR endpoint 只吃 wav，加 AudioWorklet 將 PCM 轉 wav |
-| ⬜ | VAD 端點偵測：`@ricky0123/vad-web`（Silero VAD JS port），偵測停頓自動切段（threshold + min/max duration） |
-| ⬜ | 互動模式：MVP 採「點一下開始錄音、再點一下結束」+ VAD auto-stop 後備。不做 push-to-talk（老人按不久）、不做 always-on（誤觸） |
-| ⬜ | 視覺回饋：錄音中波形或脈動指示、上傳中 loading、轉文字後填入 textarea 由使用者確認再送（避免 ASR 錯字直接餵 LLM） |
+| ✅ | 麥克風擷取：`getUserMedia({ audio: { echoCancellation, noiseSuppression, autoGainControl } })`，瀏覽器內建 AEC 處理喇叭回授 |
+| ✅ | `MediaRecorder` 編碼 webm/opus 後 POST；ASR endpoint 只吃 wav，加 `OfflineAudioContext` 降採樣至 16 kHz + 手寫 WAV header（非 AudioWorklet）|
+| ✅ | VAD 端點偵測：energy-based silence detection（`AnalyserNode` RMS），偵到停頓 1.5s 自動停錄（未引入 Silero VAD，kiosk 環境足夠）|
+| ✅ | 互動模式：點一下開始錄音、再點一下結束 + VAD auto-stop 後備 |
+| ✅ | 視覺回饋：錄音中 pulse ring + 5 根音量 bar（`AnalyserNode` 驅動）、processing spinner、轉文字後填入 textarea 由使用者確認再送 |
 | ⬜ | Mic permission 拒絕的引導頁：說明用途、提供關閉語音改用打字的入口 |
 
 ### AgentChatView 接入
 
 | 狀態 | 項目 |
 |------|------|
-| ⬜ | textarea 旁加錄音按鈕（與 Send 並列），錄音結束的文字落到 textarea，按 Send 才實際送出 |
-| ⬜ | 錄音中其他 UI（Send、輸入框）禁用 |
-| ⬜ | Session 過期偵測：錄音上傳前確認 sessionId 仍有效，過期自動 re-create |
+| ✅ | textarea 旁加錄音按鈕（與 Send 並列），錄音結束的文字落到 textarea，按 Send 才實際送出 |
+| ✅ | 錄音中其他 UI（Send、輸入框）禁用 |
+| ✅ | Session 過期偵測：錄音上傳前確認 sessionId 仍有效，過期自動 re-create |
 
 ### 模型側調校
 
 | 狀態 | 項目 |
 |------|------|
 | ⬜ | 地名 hotword injection：把雲林站名 + 路線號（從 `stop_catalog` 與 `routes.txt`）做成 hotword bias 字典，降低 OOV |
-| ⬜ | 數字 / 字母路線（7126、Y01、E-line）對應 ASR 文字格式：確認模型輸出與 `_ROUTE_RE` 相容，必要時前端 / proxy 層做後處理 |
+| ⬜ | 數字 / 字母路線（7126、Y01、E-line）對應 ASR 文字格式：**先用 test set 確認模型實際輸出格式**，若真的輸出中文數字再加後處理（LLM 本身可處理，prefetch 為優化非必要）|
 
 ### 量化評估（論文用）
 

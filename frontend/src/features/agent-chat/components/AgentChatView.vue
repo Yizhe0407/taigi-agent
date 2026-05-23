@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { LoaderCircle, Send, TriangleAlert } from "@lucide/vue"
+import { LoaderCircle, Mic, MicOff, Send, TriangleAlert } from "@lucide/vue"
 import { nextTick, onMounted, onUnmounted, ref } from "vue"
 
 import { Button } from "@/components/ui/button"
@@ -9,7 +9,10 @@ import {
   createChatSession,
   deleteChatSession,
   sendChatMessage,
+  transcribeAudio,
 } from "../api/chat"
+import { blobToWav } from "../composables/encodeWav"
+import { useAudioRecorder } from "../composables/useAudioRecorder"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,12 +35,55 @@ const sessionError = ref("")
 const messages = ref<ChatMessage[]>([])
 const userInput = ref("")
 const isSending = ref(false)
-const sendError = ref("")
 
 const scrollAnchor = ref<HTMLElement | null>(null)
 const inputRef = ref<HTMLTextAreaElement | null>(null)
 
 let abortController: AbortController | null = null
+
+// ---------------------------------------------------------------------------
+// Audio recorder (callback API — auto-resets to idle after onAudioReady)
+// ---------------------------------------------------------------------------
+
+const {
+  state: recorderState,
+  error: recorderError,
+  volume: recorderVolume,
+  startRecording,
+  stopRecording,
+  reset: resetRecorder,
+} = useAudioRecorder({
+  async onAudioReady(blob) {
+    // Re-create session if it expired while the user was idle / recording.
+    // Done here so the session is guaranteed fresh when the user hits Send.
+    if (!sessionId.value) await initSession()
+
+    try {
+      const wav = await blobToWav(blob)
+      userInput.value = await transcribeAudio(wav)
+      await nextTick()
+      inputRef.value?.focus()
+    } catch (e) {
+      const msg = e instanceof ChatApiError ? e.message : "語音辨識失敗"
+      messages.value.push({ id: makeId(), role: "error", content: msg })
+      await scrollToBottom()
+    }
+    // composable auto-transitions to idle after this resolves/rejects
+  },
+})
+
+function toggleRecording() {
+  if (recorderState.value === "recording") stopRecording()
+  else if (recorderState.value === "idle") startRecording()
+}
+
+// Height (px) for each of the 5 volume bars, scaled by current RMS energy.
+// Shape profile peaks in the middle: [0.5, 0.75, 1.0, 0.75, 0.5].
+// Min height 3px so bars are always visible when recording.
+const BAR_PROFILES = [0.5, 0.75, 1.0, 0.75, 0.5]
+function barHeight(profile: number): string {
+  return `${Math.max(3, recorderVolume.value * profile * 26)}px`
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -80,7 +126,6 @@ async function send() {
     if (!sessionId.value) return
   }
 
-  sendError.value = ""
   userInput.value = ""
   isSending.value = true
 
@@ -89,20 +134,13 @@ async function send() {
 
   abortController = new AbortController()
   try {
-    const reply = await sendChatMessage(
-      sessionId.value,
-      text,
-      abortController.signal,
-    )
+    const reply = await sendChatMessage(sessionId.value, text, abortController.signal)
     messages.value.push({ id: makeId(), role: "assistant", content: reply })
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") return
 
-    const isExpired =
-      error instanceof ChatApiError && error.status === 404
-    if (isExpired) {
-      // Session expired — clear and try to re-create next turn
-      sessionId.value = null
+    if (error instanceof ChatApiError && error.status === 404) {
+      sessionId.value = null // session expired — re-create next turn
     }
 
     const msg =
@@ -118,7 +156,6 @@ async function send() {
 }
 
 function onKeydown(event: KeyboardEvent) {
-  // Enter sends; Shift+Enter inserts newline
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault()
     send()
@@ -133,9 +170,8 @@ onMounted(initSession)
 
 onUnmounted(() => {
   abortController?.abort()
-  if (sessionId.value) {
-    deleteChatSession(sessionId.value)
-  }
+  resetRecorder()
+  if (sessionId.value) deleteChatSession(sessionId.value)
 })
 </script>
 
@@ -159,7 +195,6 @@ onUnmounted(() => {
 
     <!-- Message list -->
     <div class="flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
-      <!-- Welcome hint -->
       <div
         v-if="messages.length === 0 && !sessionError"
         class="flex h-full flex-col items-center justify-center gap-3 text-center"
@@ -170,29 +205,20 @@ onUnmounted(() => {
       </div>
 
       <template v-for="msg in messages" :key="msg.id">
-        <!-- User bubble -->
         <div v-if="msg.role === 'user'" class="flex justify-end">
-          <div
-            class="max-w-[80%] rounded-2xl rounded-tr-sm bg-primary px-4 py-3 text-sm leading-relaxed text-primary-foreground"
-          >
+          <div class="max-w-[80%] rounded-2xl rounded-tr-sm bg-primary px-4 py-3 text-sm leading-relaxed text-primary-foreground">
             {{ msg.content }}
           </div>
         </div>
 
-        <!-- Assistant bubble -->
         <div v-else-if="msg.role === 'assistant'" class="flex justify-start">
-          <div
-            class="max-w-[80%] rounded-2xl rounded-tl-sm border border-border bg-muted/50 px-4 py-3 text-sm leading-relaxed text-foreground"
-          >
+          <div class="max-w-[80%] rounded-2xl rounded-tl-sm border border-border bg-muted/50 px-4 py-3 text-sm leading-relaxed text-foreground">
             {{ msg.content }}
           </div>
         </div>
 
-        <!-- Error bubble -->
         <div v-else class="flex justify-start">
-          <div
-            class="flex max-w-[80%] items-start gap-2 rounded-2xl rounded-tl-sm border border-destructive/25 bg-destructive/8 px-4 py-3 text-sm text-destructive"
-          >
+          <div class="flex max-w-[80%] items-start gap-2 rounded-2xl rounded-tl-sm border border-destructive/25 bg-destructive/8 px-4 py-3 text-sm text-destructive">
             <TriangleAlert class="mt-0.5 size-4 shrink-0" />
             <span>{{ msg.content }}</span>
           </div>
@@ -201,42 +227,101 @@ onUnmounted(() => {
 
       <!-- Typing indicator -->
       <div v-if="isSending" class="flex justify-start">
-        <div
-          class="flex items-center gap-2 rounded-2xl rounded-tl-sm border border-border bg-muted/50 px-4 py-3"
-        >
+        <div class="flex items-center gap-2 rounded-2xl rounded-tl-sm border border-border bg-muted/50 px-4 py-3">
           <LoaderCircle class="size-4 animate-spin text-muted-foreground" />
           <span class="text-sm text-muted-foreground">助理回應中</span>
         </div>
       </div>
 
-      <!-- Scroll anchor -->
       <div ref="scrollAnchor" />
     </div>
 
     <!-- Input bar -->
     <div class="shrink-0 border-t border-border bg-background px-4 py-3 sm:px-6">
-      <div class="flex items-end gap-3">
-        <textarea
-          ref="inputRef"
-          v-model="userInput"
-          rows="1"
-          placeholder="輸入問題…"
-          class="min-h-[2.75rem] flex-1 resize-none rounded-xl border border-border bg-muted/40 px-4 py-3 text-sm leading-snug text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-          :disabled="isSending || !!sessionError"
-          style="field-sizing: content; max-height: 8rem"
-          @keydown="onKeydown"
-        />
+      <!-- Mic permission / recorder error -->
+      <div
+        v-if="recorderError"
+        class="mb-2 flex items-center gap-2 rounded-lg border border-destructive/25 bg-destructive/8 px-3 py-2 text-xs text-destructive"
+      >
+        <TriangleAlert class="size-3.5 shrink-0" />
+        <span>{{ recorderError }}</span>
+      </div>
+
+      <div class="flex items-end gap-2">
+        <!-- Mic button — pulse ring appears while recording -->
+        <div class="relative shrink-0">
+          <span
+            v-if="recorderState === 'recording'"
+            class="pointer-events-none absolute inset-0 animate-ping rounded-xl bg-destructive/25"
+          />
+          <Button
+            variant="ghost"
+            class="relative size-11 rounded-xl transition-colors"
+            :class="{
+              'bg-destructive/10 text-destructive hover:bg-destructive/20': recorderState === 'recording',
+              'text-muted-foreground': recorderState === 'idle',
+            }"
+            :disabled="isSending || !!sessionError || recorderState === 'processing'"
+            :aria-label="recorderState === 'recording' ? '停止錄音' : '開始錄音'"
+            @click="toggleRecording"
+          >
+            <LoaderCircle v-if="recorderState === 'processing'" class="size-4 animate-spin" />
+            <MicOff v-else-if="recorderState === 'recording'" class="size-4" />
+            <Mic v-else class="size-4" />
+          </Button>
+        </div>
+
+        <!-- Textarea slot: volume bars while recording, normal textarea otherwise -->
+        <div class="flex-1">
+          <!-- Volume bars (recording) -->
+          <div
+            v-if="recorderState === 'recording'"
+            class="flex h-[2.75rem] items-end justify-center gap-1.5 rounded-xl border border-destructive/30 bg-destructive/5 pb-2.5"
+          >
+            <div
+              v-for="(profile, i) in BAR_PROFILES"
+              :key="i"
+              class="w-1.5 rounded-full bg-destructive/70 transition-[height] duration-75"
+              :style="{ height: barHeight(profile) }"
+            />
+          </div>
+
+          <!-- Processing state -->
+          <div
+            v-else-if="recorderState === 'processing'"
+            class="flex h-[2.75rem] items-center gap-2 rounded-xl border border-border bg-muted/40 px-4"
+          >
+            <LoaderCircle class="size-3.5 animate-spin text-muted-foreground" />
+            <span class="text-sm text-muted-foreground">辨識中…</span>
+          </div>
+
+          <!-- Normal textarea (idle) -->
+          <textarea
+            v-else
+            ref="inputRef"
+            v-model="userInput"
+            rows="1"
+            placeholder="輸入問題，或點麥克風說話…"
+            class="min-h-[2.75rem] w-full resize-none rounded-xl border border-border bg-muted/40 px-4 py-3 text-sm leading-snug text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="isSending || !!sessionError"
+            style="field-sizing: content; max-height: 8rem"
+            @keydown="onKeydown"
+          />
+        </div>
+
+        <!-- Send button -->
         <Button
           class="size-11 shrink-0 rounded-xl"
-          :disabled="!userInput.trim() || isSending || !!sessionError"
+          :disabled="!userInput.trim() || isSending || !!sessionError || recorderState !== 'idle'"
           @click="send"
         >
           <Send class="size-4" />
           <span class="sr-only">送出</span>
         </Button>
       </div>
+
       <p class="mt-2 text-center text-xs text-muted-foreground">
-        Enter 送出・Shift+Enter 換行
+        Enter 送出・Shift+Enter 換行・麥克風說台語
       </p>
     </div>
   </div>

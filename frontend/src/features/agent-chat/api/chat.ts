@@ -73,6 +73,31 @@ export async function sendChatMessage(
   return body.reply
 }
 
+/** POST audio blob to backend ASR proxy. Returns transcription text. */
+export async function transcribeAudio(audio: Blob): Promise<string> {
+  const ext = audio.type.includes("wav") ? "wav" : audio.type.includes("ogg") ? "ogg" : "webm"
+  const form = new FormData()
+  form.append("file", audio, `audio.${ext}`)
+
+  let response: Response
+  try {
+    response = await fetch(`${apiBaseUrl}/api/asr`, {
+      method: "POST",
+      body: form,
+    })
+  } catch {
+    throw new ChatApiError("無法連線到 ASR 服務")
+  }
+
+  if (!response.ok) {
+    const msg = await errorMessage(response)
+    throw new ChatApiError(msg, response.status)
+  }
+
+  const body = (await response.json()) as { text: string }
+  return body.text
+}
+
 /** Explicitly end a session (best-effort, ignore failures). */
 export async function deleteChatSession(sessionId: string): Promise<void> {
   try {
