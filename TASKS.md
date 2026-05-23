@@ -58,6 +58,27 @@
 | ✅ | Agent 對話 UI 與 route planning 流程入口 |
 | ✅ | Kiosk / mobile layout polish 與主要 loading / empty / error states |
 
+## 帶走路線（QR share）
+
+> 解資訊持續性問題：Kiosk 是 query 介面，產出可帶走的 digital artifact。
+> 路線結果上車 / 轉乘 / 走路時還能查。主要對應分眾的觀光客與陪同子女。
+
+| 狀態 | 項目 |
+|------|------|
+| ⬜ | Route view model 設計 share serialization：純前端 base64 encode 進 URL hash，無需後端 storage，斷網仍可 render |
+| ⬜ | Kiosk QR 顯示 overlay：路線結果頁加「帶走路線」按鈕，產生 QR（≥ 10 cm，加對準框與「掃描即可帶走」說明） |
+| ⬜ | 手機端 `/share?plan=...` route：重用 `RoutePlannerPanel` + 地圖 render（read-only mode，無確認 / 重選按鈕） |
+| ⬜ | Read-only RoutePlannerPanel 模式：抽出 prop 控制按鈕顯隱，避免 share 頁誤觸 Kiosk-only 流程 |
+| ⬜ | Service worker offline cache：share 頁離線可用（鄉間 4G 斷續、車上隧道情境）。論文加分項，非 MVP |
+| ⬜ | URL 長度量測：典型多 leg 路線 base64 後字元數，確認 QR error correction L 等級仍可掃，必要時切回後端 short link |
+| ⬜ | 隱私揭露：share 連結含座標與行程，按鈕旁加「此連結可被分享者看到你的路線」一行說明 |
+| ⬜ | 量化指標（論文用）：受試者掃 QR 後在轉乘站行程完成率 vs 控制組（記憶） |
+
+風險與決策點：
+- **URL hash vs 後端 short link**：先 hash（無狀態、永久、純前端），實測 QR 掃描率不夠再退 short link
+- **手機與 Kiosk 共用 Vue app vs 獨立 mobile build**：先共用、加 share-mode flag；若 bundle 太大再切
+- **長輩單獨使用情境**：本流程預設不服務獨自長輩，分流由「使用者分眾」段落涵蓋
+
 ## POI 與在地知識
 
 | 狀態 | 項目 |
