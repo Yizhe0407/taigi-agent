@@ -1,21 +1,37 @@
 <script setup lang="ts">
-import { BusFront, Layers, MapPin } from "@lucide/vue"
+import {
+  Bike,
+  BusFront,
+  Layers,
+  LoaderCircle,
+  MapPin,
+  RefreshCw,
+  TriangleAlert,
+} from "@lucide/vue"
 import { computed, ref } from "vue"
 
 import { Map, MapMarker, MapRoute, MarkerContent } from "@/components/ui/map"
 
+import { isInYunlinCounty } from "../geo/yunlin-service-area"
 import MapClickPicker from "../map/MapClickPicker.vue"
+import MoovoStationMarkers from "../map/MoovoStationMarkers.vue"
 import RouteViewportFit from "../map/RouteViewportFit.vue"
-import type { LngLat, PlaceCoordinate, RouteOption } from "../types"
+import YunlinServiceAreaLayer from "../map/YunlinServiceAreaLayer.vue"
+import type { LngLat, MoovoStation, PlaceCoordinate, RouteOption } from "../types"
 
 const props = defineProps<{
   kiosk: PlaceCoordinate
   destination: LngLat | null
   route: RouteOption | null
+  moovoStations: MoovoStation[]
+  isLoadingMoovoStations: boolean
+  moovoStationsError: string
 }>()
 
 const emit = defineEmits<{
   "select-destination": [coordinates: LngLat]
+  "reject-destination": [coordinates: LngLat]
+  "refresh-moovo-stations": []
 }>()
 
 // Use a computed so the map recenter if kiosk coordinates load after mount.
@@ -23,7 +39,12 @@ const emit = defineEmits<{
 const viewportCenter = computed(() => props.kiosk.coordinates)
 
 const updateDestination = (coordinates: { lng: number; lat: number }) => {
-  emit("select-destination", [coordinates.lng, coordinates.lat])
+  const nextDestination: LngLat = [coordinates.lng, coordinates.lat]
+  if (!isInYunlinCounty(nextDestination)) {
+    emit("reject-destination", nextDestination)
+    return
+  }
+  emit("select-destination", nextDestination)
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +98,7 @@ type StyleId = (typeof MAP_STYLES)[number]["id"]
 
 const activeStyleId = ref<StyleId>("positron")
 const showStylePicker = ref(false)
+const visibleMoovoStationCount = ref(0)
 
 const activeStyle = () =>
   MAP_STYLES.find((s) => s.id === activeStyleId.value)?.url ??
@@ -97,7 +119,11 @@ function selectStyle(id: StyleId) {
       :style-override="activeStyle()"
       class="h-full min-h-[22rem]"
     >
-      <MapClickPicker @select="$emit('select-destination', $event)" />
+      <MapClickPicker
+        @select="$emit('select-destination', $event)"
+        @reject="$emit('reject-destination', $event)"
+      />
+      <YunlinServiceAreaLayer />
       <!-- Render each leg: BUS = solid blue, WALK = dashed gray -->
       <template v-if="route">
         <template
@@ -143,6 +169,11 @@ function selectStyle(id: StyleId) {
         </MarkerContent>
       </MapMarker>
 
+      <MoovoStationMarkers
+        :stations="moovoStations"
+        @visible-count-change="visibleMoovoStationCount = $event"
+      />
+
       <MapMarker
         v-if="destination"
         draggable
@@ -162,6 +193,34 @@ function selectStyle(id: StyleId) {
     <div
       class="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/15 to-transparent"
     />
+
+    <div
+      class="absolute left-3 top-3 z-10 flex items-center gap-2 rounded-md border border-border bg-background/90 px-3 py-2 text-xs font-medium text-foreground shadow-sm backdrop-blur"
+    >
+      <LoaderCircle
+        v-if="isLoadingMoovoStations"
+        class="size-3.5 animate-spin text-muted-foreground"
+      />
+      <TriangleAlert
+        v-else-if="moovoStationsError"
+        class="size-3.5 text-destructive"
+      />
+      <Bike v-else class="size-3.5 text-emerald-700" />
+      <span v-if="isLoadingMoovoStations">MOOVO 載入中</span>
+      <span v-else-if="moovoStationsError">{{ moovoStationsError }}</span>
+      <span v-else>
+        MOOVO {{ visibleMoovoStationCount }} / {{ moovoStations.length }} 站
+      </span>
+      <button
+        v-if="moovoStationsError"
+        type="button"
+        class="ml-1 rounded p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        title="重新載入 MOOVO 站點"
+        @click="$emit('refresh-moovo-stations')"
+      >
+        <RefreshCw class="size-3.5" />
+      </button>
+    </div>
 
     <!-- Style picker toggle -->
     <div class="absolute bottom-8 left-3 z-10 flex flex-col items-start gap-1">

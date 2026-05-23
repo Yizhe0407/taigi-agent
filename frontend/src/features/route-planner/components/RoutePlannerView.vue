@@ -2,8 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 
 import { fetchKiosk } from "../api/kiosk"
+import { fetchMoovoStations } from "../api/moovo"
 import { createRoutePlan, RoutePlanApiError } from "../api/route-plans"
-import type { LngLat, PlaceCoordinate, RoutePlan } from "../types"
+import { isInYunlinCounty } from "../geo/yunlin-service-area"
+import type { LngLat, MoovoStation, PlaceCoordinate, RoutePlan } from "../types"
 import RoutePlannerMap from "./RoutePlannerMap.vue"
 import RoutePlannerPanel from "./RoutePlannerPanel.vue"
 
@@ -28,12 +30,16 @@ const routePlan = ref<RoutePlan | null>(null)
 const routePlanError = ref("")
 const routePlanErrorKind = ref<"no-service" | "generic">("generic")
 const selectedRouteId = ref<string | null>(null)
+const moovoStations = ref<MoovoStation[]>([])
+const isLoadingMoovoStations = ref(false)
+const moovoStationsError = ref("")
 
 // Departure time
 const departureMode = ref<"now" | "scheduled">("now")
 const scheduledDateTime = ref("") // YYYY-MM-DDTHH:mm from <input type="datetime-local">
 
 let routeRequest: AbortController | null = null
+let moovoRequest: AbortController | null = null
 
 const selectedRoute = computed(() => {
   if (!routePlan.value) return null
@@ -50,6 +56,28 @@ const cancelRouteRequest = () => {
   isPlanningRoute.value = false
 }
 
+const loadMoovoStations = async () => {
+  moovoRequest?.abort()
+  const currentRequest = new AbortController()
+  moovoRequest = currentRequest
+  isLoadingMoovoStations.value = true
+  moovoStationsError.value = ""
+
+  try {
+    const stations = await fetchMoovoStations(currentRequest.signal)
+    if (moovoRequest !== currentRequest) return
+    moovoStations.value = stations
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") return
+    moovoStationsError.value = "MOOVO 站點暫時無法載入"
+  } finally {
+    if (moovoRequest === currentRequest) {
+      isLoadingMoovoStations.value = false
+      moovoRequest = null
+    }
+  }
+}
+
 const clearRoutePlan = () => {
   cancelRouteRequest()
   routePlan.value = null
@@ -58,7 +86,17 @@ const clearRoutePlan = () => {
   selectedRouteId.value = null
 }
 
+const rejectOutOfServiceArea = () => {
+  clearRoutePlan()
+  routePlanError.value = "目前僅支援雲林縣內目的地，請在未遮罩的區域選點"
+  routePlanErrorKind.value = "generic"
+}
+
 const selectDestination = (coordinates: LngLat) => {
+  if (!isInYunlinCounty(coordinates)) {
+    rejectOutOfServiceArea()
+    return
+  }
   clearRoutePlan()
   destination.value = coordinates
   isDestinationConfirmed.value = false
@@ -129,7 +167,12 @@ const resetDestination = () => {
   scheduledDateTime.value = ""
 }
 
-onBeforeUnmount(cancelRouteRequest)
+onMounted(loadMoovoStations)
+
+onBeforeUnmount(() => {
+  cancelRouteRequest()
+  moovoRequest?.abort()
+})
 </script>
 
 <template>
@@ -140,7 +183,12 @@ onBeforeUnmount(cancelRouteRequest)
       :kiosk="kiosk"
       :destination="destination"
       :route="selectedRoute"
+      :moovo-stations="moovoStations"
+      :is-loading-moovo-stations="isLoadingMoovoStations"
+      :moovo-stations-error="moovoStationsError"
       @select-destination="selectDestination"
+      @reject-destination="rejectOutOfServiceArea"
+      @refresh-moovo-stations="loadMoovoStations"
     />
     <RoutePlannerPanel
       :kiosk="kiosk"

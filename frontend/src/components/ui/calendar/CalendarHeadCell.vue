@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import type { CalendarHeadCellProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
-import { reactiveOmit } from "@vueuse/core"
+import { reactiveOmit } from "@/lib/vue-helpers"
 import { CalendarHeadCell, useForwardProps } from "reka-ui"
 import { cn } from "@/lib/utils"
 

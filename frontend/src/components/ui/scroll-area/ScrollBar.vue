@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ScrollAreaScrollbarProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
-import { reactiveOmit } from "@vueuse/core"
+import { reactiveOmit } from "@/lib/vue-helpers"
 import { ScrollAreaScrollbar, ScrollAreaThumb } from "reka-ui"
 import { cn } from "@/lib/utils"
 

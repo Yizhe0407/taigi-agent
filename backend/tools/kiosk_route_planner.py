@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from tools import otp
 from tools.stop_catalog import StopCatalogError, StopRecord, load_stop_catalog
+from tools.yunlin_boundary import is_in_yunlin_county
 
 _TAIPEI = ZoneInfo("Asia/Taipei")
 
@@ -242,6 +243,11 @@ def plan_route_to_coordinate(
     destination_place = _destination_place(latitude, longitude)
     if destination_place is None:
         raise InvalidRouteDestination("目的地座標格式有誤")
+    if not is_in_yunlin_county(
+        destination_place.coordinate.latitude,
+        destination_place.coordinate.longitude,
+    ):
+        raise InvalidRouteDestination("目前僅支援雲林縣內目的地")
 
     try:
         itineraries = otp.plan_bus_connections(

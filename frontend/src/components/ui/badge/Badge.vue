@@ -2,7 +2,7 @@
 import type { PrimitiveProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import type { BadgeVariants } from "."
-import { reactiveOmit } from "@vueuse/core"
+import { reactiveOmit } from "@/lib/vue-helpers"
 import { Primitive } from "reka-ui"
 import { cn } from "@/lib/utils"
 import { badgeVariants } from "."

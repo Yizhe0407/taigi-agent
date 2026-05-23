@@ -121,6 +121,24 @@ def test_plan_route_to_coordinate_rejects_invalid_destination(monkeypatch):
         kiosk_route_planner.plan_route_to_coordinate(91, 120)
 
 
+def test_plan_route_to_coordinate_rejects_out_of_yunlin_destination(monkeypatch):
+    _use_catalog(
+        monkeypatch,
+        _stop("YUN-NYUST", "雲林科技大學", 23.69602, 120.533793),
+    )
+    monkeypatch.setattr(
+        otp,
+        "plan_bus_connections",
+        lambda *args: pytest.fail("OTP should not be called for out-of-area points"),
+    )
+
+    with pytest.raises(
+        kiosk_route_planner.RoutePlanningError,
+        match="目前僅支援雲林縣內目的地",
+    ):
+        kiosk_route_planner.plan_route_to_coordinate(23.480075, 120.449111)
+
+
 def test_resolve_place_uses_exact_kiosk_stop_name(monkeypatch):
     _use_catalog(
         monkeypatch,

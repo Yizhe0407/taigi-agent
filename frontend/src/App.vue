@@ -1,13 +1,21 @@
 <script setup lang="ts">
 import { BusFront, Map, MessageSquare } from "@lucide/vue"
-import { ref } from "vue"
-
-import AgentChatView from "@/features/agent-chat/components/AgentChatView.vue"
-import RoutePlannerView from "@/features/route-planner/components/RoutePlannerView.vue"
+import { computed, defineAsyncComponent, ref } from "vue"
 
 type Tab = "chat" | "route"
 
 const activeTab = ref<Tab>("chat")
+
+const tabViews = {
+  chat: defineAsyncComponent(
+    () => import("@/features/agent-chat/components/AgentChatView.vue"),
+  ),
+  route: defineAsyncComponent(
+    () => import("@/features/route-planner/components/RoutePlannerView.vue"),
+  ),
+} satisfies Record<Tab, ReturnType<typeof defineAsyncComponent>>
+
+const activeView = computed(() => tabViews[activeTab.value])
 </script>
 
 <template>
@@ -62,10 +70,11 @@ const activeTab = ref<Tab>("chat")
       </nav>
     </header>
 
-    <!-- Content area — both views stay mounted (v-show) to preserve state -->
+    <!-- Keep visited views mounted while allowing route planner code to split. -->
     <main class="min-h-0 flex-1">
-      <AgentChatView v-show="activeTab === 'chat'" class="h-full" />
-      <RoutePlannerView v-show="activeTab === 'route'" class="h-full" />
+      <KeepAlive>
+        <component :is="activeView" class="h-full" />
+      </KeepAlive>
     </main>
   </div>
 </template>

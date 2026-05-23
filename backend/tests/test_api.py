@@ -5,12 +5,14 @@ from fastapi.testclient import TestClient
 import api
 from tools import otp
 from tools.kiosk_route_planner import (
+    InvalidRouteDestination,
     Place,
     RouteOption,
     RoutePlan,
     RoutePlanningUnavailable,
     RoutePlanNotFound,
 )
+from tools.moovo import MoovoApiError, MoovoStation, NearbyMoovoStation
 
 
 def _time(value: str) -> datetime:
@@ -47,6 +49,21 @@ def _route_plan() -> RoutePlan:
                 ),
             ),
         ),
+    )
+
+
+def _moovo_station() -> MoovoStation:
+    return MoovoStation(
+        station_uid="YUN100",
+        station_id="100",
+        name="雲林科技大學",
+        latitude=23.696147,
+        longitude=120.534823,
+        bike_capacity=18,
+        available_rent_bikes=6,
+        available_return_bikes=4,
+        service_status=1,
+        update_time=datetime.fromisoformat("2026-05-22T08:30:00+08:00"),
     )
 
 
@@ -128,5 +145,70 @@ def test_create_route_plan_maps_route_errors(monkeypatch):
         json={"destination": {"lat": 23.7178, "lng": 120.5384}},
     )
 
+    def invalid_destination(*args):
+        raise InvalidRouteDestination("目前僅支援雲林縣內目的地")
+
+    monkeypatch.setattr(api, "plan_route_to_coordinate", invalid_destination)
+    invalid_response = client.post(
+        "/api/route-plans",
+        json={"destination": {"lat": 23.480075, "lng": 120.449111}},
+    )
+
     assert not_found.status_code == 404
     assert unavailable_response.status_code == 503
+    assert invalid_response.status_code == 400
+
+
+def test_list_moovo_stations_returns_tdx_availability(monkeypatch):
+    monkeypatch.setattr(api, "load_moovo_stations", lambda: (_moovo_station(),))
+
+    response = TestClient(api.app).get("/api/moovo/stations")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "stations": [
+            {
+                "stationUid": "YUN100",
+                "stationId": "100",
+                "name": "雲林科技大學",
+                "lat": 23.696147,
+                "lng": 120.534823,
+                "bikeCapacity": 18,
+                "availableRentBikes": 6,
+                "availableReturnBikes": 4,
+                "serviceStatus": 1,
+                "updateTime": "2026-05-22T08:30:00+08:00",
+            }
+        ]
+    }
+
+
+def test_list_nearby_moovo_stations_passes_query(monkeypatch):
+    calls = []
+
+    def fake_nearby(latitude, longitude, *, radius_meters, limit):
+        calls.append((latitude, longitude, radius_meters, limit))
+        return (NearbyMoovoStation(_moovo_station(), 17.5),)
+
+    monkeypatch.setattr(api, "nearby_moovo_stations", fake_nearby)
+
+    response = TestClient(api.app).get(
+        "/api/moovo/stations/nearby?lat=23.696147&lng=120.534823"
+        "&radius=800&limit=3"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["stations"][0]["distanceMeters"] == 17.5
+    assert calls == [(23.696147, 120.534823, 800, 3)]
+
+
+def test_moovo_endpoints_map_provider_errors(monkeypatch):
+    def unavailable():
+        raise MoovoApiError("TDX Bike request failed")
+
+    monkeypatch.setattr(api, "load_moovo_stations", unavailable)
+
+    response = TestClient(api.app).get("/api/moovo/stations")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "TDX Bike request failed"

@@ -42,3 +42,16 @@ export type RoutePlan = {
   destination: RoutePlace
   routes: RouteOption[]
 }
+
+export type MoovoStation = {
+  stationUid: string
+  stationId: string | null
+  name: string
+  lat: number
+  lng: number
+  bikeCapacity: number
+  availableRentBikes: number
+  availableReturnBikes: number
+  serviceStatus: number
+  updateTime: string | null
+}
