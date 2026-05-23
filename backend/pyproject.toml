@@ -12,9 +12,14 @@ dependencies = [
     "polyline>=2.0.4",
     "python-dotenv>=1.2.2",
     "requests>=2.34.2",
+    "taibun>=1.1.7",
+    "taigi-converter",
     "tiktoken>=0.13.0",
     "uvicorn>=0.47.0",
 ]
+
+[tool.uv.sources]
+taigi-converter = { git = "https://github.com/Yizhe0407/HanloFlow.git", branch = "feat/optimization-dictionary" }
 
 [dependency-groups]
 dev = [

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { LoaderCircle, Mic, MicOff, Send, TriangleAlert } from "@lucide/vue"
+import { LoaderCircle, Mic, MicOff, Send, TriangleAlert, Volume2 } from "@lucide/vue"
 import { nextTick, onMounted, onUnmounted, ref } from "vue"
 
 import { Button } from "@/components/ui/button"
@@ -9,6 +9,7 @@ import {
   createChatSession,
   deleteChatSession,
   sendChatMessage,
+  synthesizeSpeech,
   transcribeAudio,
 } from "../api/chat"
 import { blobToWav } from "../composables/encodeWav"
@@ -35,11 +36,18 @@ const sessionError = ref("")
 const messages = ref<ChatMessage[]>([])
 const userInput = ref("")
 const isSending = ref(false)
+const isLoadingTts = ref(false)
+const isSpeaking = ref(false)
 
 const scrollAnchor = ref<HTMLElement | null>(null)
 const inputRef = ref<HTMLTextAreaElement | null>(null)
 
 let abortController: AbortController | null = null
+let audioCtx: AudioContext | null = null
+let ttsAbortController: AbortController | null = null
+// All AudioBufferSourceNodes currently scheduled (may be playing or pending start).
+// Stored so stopCurrentAudio() can cancel the entire queue.
+let scheduledSources: AudioBufferSourceNode[] = []
 
 // ---------------------------------------------------------------------------
 // Audio recorder (callback API — auto-resets to idle after onAudioReady)
@@ -73,6 +81,9 @@ const {
 })
 
 function toggleRecording() {
+  // Kick off AudioContext unlock without awaiting — recording itself doesn't
+  // need audio output, but we want the context ready for the TTS reply.
+  void ensureAudioContext()
   if (recorderState.value === "recording") stopRecording()
   else if (recorderState.value === "idle") startRecording()
 }
@@ -99,6 +110,161 @@ async function scrollToBottom() {
 }
 
 // ---------------------------------------------------------------------------
+// TTS playback  (chunked pipeline)
+// ---------------------------------------------------------------------------
+//
+// Strategy (from Deepgram + Chrome docs best practices):
+//  1. Split reply into sentence-level chunks at Chinese/English boundaries.
+//  2. Fire ALL TTS requests in parallel (blobPromises[]).
+//  3. Await them in order → decode → schedule with AudioContext timestamps,
+//     so chunks play seamlessly back-to-back with no gaps.
+//  4. First chunk starts playing as soon as its audio is ready; later chunks
+//     are fetched while the earlier ones play → low perceived latency.
+//  5. Cancellation: AbortController aborts in-flight fetches; scheduledSources
+//     array lets stopCurrentAudio() stop every queued AudioBufferSourceNode.
+
+/** Sentence-level splitting for Chinese + English text. */
+function splitIntoChunks(text: string): string[] {
+  if (!text.trim()) return []
+
+  // Primary: split at sentence-ending punctuation, keeping it with the chunk
+  let parts = text
+    .split(/(?<=[。！？!?…]+)/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+
+  // Fallback: long text with no sentence punctuation → split at clause marks
+  if (parts.length === 1 && text.length > 50) {
+    parts = text
+      .split(/(?<=[，,、；;]+)/)
+      .map(s => s.trim())
+      .filter(s => s.length > 0)
+  }
+
+  // Merge trailing fragments that are too short to synthesise naturally (< 4 chars)
+  const merged: string[] = []
+  for (const part of parts) {
+    if (merged.length > 0 && merged[merged.length - 1].length < 4) {
+      merged[merged.length - 1] += part
+    } else {
+      merged.push(part)
+    }
+  }
+
+  return merged.length > 0 ? merged : [text]
+}
+
+async function ensureAudioContext(): Promise<void> {
+  if (!audioCtx || audioCtx.state === "closed") {
+    audioCtx = new AudioContext()
+  }
+  if (audioCtx.state === "suspended") {
+    // Awaiting resume() is safe here — it's a microtask, not I/O,
+    // so we stay inside the browser user-gesture activation window.
+    await audioCtx.resume()
+  }
+}
+
+function stopCurrentAudio() {
+  ttsAbortController?.abort()
+  ttsAbortController = null
+  for (const s of scheduledSources) {
+    s.onended = null
+    try { s.stop() } catch { /* already stopped or not yet started */ }
+  }
+  scheduledSources = []
+  isSpeaking.value = false
+  isLoadingTts.value = false
+}
+
+async function speakReply(text: string) {
+  const ctx = audioCtx
+  if (!ctx || ctx.state !== "running") {
+    console.warn("[TTS] AudioContext not running — skipping playback")
+    return
+  }
+
+  stopCurrentAudio()
+
+  const chunks = splitIntoChunks(text)
+  if (chunks.length === 0) return
+
+  const ctrl = new AbortController()
+  ttsAbortController = ctrl
+  isLoadingTts.value = true
+
+  // Fire all TTS requests in parallel; resolve in order below
+  const blobPromises = chunks.map(chunk =>
+    synthesizeSpeech(chunk, ctrl.signal).catch((e: unknown) => {
+      if (!ctrl.signal.aborted) console.error("[TTS] fetch failed:", e)
+      return null
+    }),
+  )
+
+  let scheduledEndTime = ctx.currentTime
+  let completedSources = 0
+  let totalScheduled = 0   // set after loop
+  let allScheduled = false
+
+  function onSourceEnded() {
+    completedSources++
+    if (allScheduled && completedSources >= totalScheduled) {
+      isSpeaking.value = false
+    }
+  }
+
+  for (let i = 0; i < blobPromises.length; i++) {
+    if (ctrl.signal.aborted) break
+
+    const blob = await blobPromises[i]
+    if (!blob || ctrl.signal.aborted) continue
+
+    let audioBuffer: AudioBuffer
+    try {
+      const arrayBuffer = await blob.arrayBuffer()
+      audioBuffer = await ctx.decodeAudioData(arrayBuffer)
+    } catch (e) {
+      console.error("[TTS] decodeAudioData failed:", e)
+      continue
+    }
+
+    if (ctrl.signal.aborted) break
+
+    const source = ctx.createBufferSource()
+    source.buffer = audioBuffer
+    source.connect(ctx.destination)
+    source.onended = onSourceEnded
+    scheduledSources.push(source)
+
+    // Schedule to start right after the previous chunk ends (or immediately)
+    const startTime = Math.max(scheduledEndTime, ctx.currentTime)
+    source.start(startTime)
+    scheduledEndTime = startTime + audioBuffer.duration
+
+    if (i === 0) {
+      // First audio is ready → switch from loading to speaking
+      isLoadingTts.value = false
+      isSpeaking.value = true
+    }
+  }
+
+  totalScheduled = scheduledSources.length
+  allScheduled = true
+
+  if (totalScheduled === 0) {
+    // All chunks failed or were aborted
+    isLoadingTts.value = false
+    isSpeaking.value = false
+    return
+  }
+
+  // Handle edge case: short clips that already ended during the loop
+  if (completedSources >= totalScheduled) {
+    isSpeaking.value = false
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Session lifecycle
 // ---------------------------------------------------------------------------
 
@@ -120,6 +286,11 @@ async function send() {
   const text = userInput.value.trim()
   if (!text || isSending.value) return
 
+  // FIRST: unlock / resume AudioContext while still inside user gesture.
+  // This must happen before any network I/O (initSession, sendChatMessage).
+  // Crossing a network-fetch await boundary ends the gesture window in Chrome.
+  await ensureAudioContext()
+
   // If session expired, re-create before sending
   if (!sessionId.value) {
     await initSession()
@@ -128,6 +299,7 @@ async function send() {
 
   userInput.value = ""
   isSending.value = true
+  stopCurrentAudio() // interrupt any ongoing playback before new request
 
   messages.value.push({ id: makeId(), role: "user", content: text })
   await scrollToBottom()
@@ -136,6 +308,7 @@ async function send() {
   try {
     const reply = await sendChatMessage(sessionId.value, text, abortController.signal)
     messages.value.push({ id: makeId(), role: "assistant", content: reply })
+    speakReply(reply) // fire-and-forget; errors are swallowed inside speakReply
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") return
 
@@ -171,6 +344,9 @@ onMounted(initSession)
 onUnmounted(() => {
   abortController?.abort()
   resetRecorder()
+  stopCurrentAudio()
+  void audioCtx?.close()
+  audioCtx = null
   if (sessionId.value) deleteChatSession(sessionId.value)
 })
 </script>
@@ -320,9 +496,21 @@ onUnmounted(() => {
         </Button>
       </div>
 
-      <p class="mt-2 text-center text-xs text-muted-foreground">
-        Enter 送出・Shift+Enter 換行・麥克風說台語
-      </p>
+      <div class="mt-2 flex items-center justify-center gap-2">
+        <p class="text-center text-xs text-muted-foreground">
+          Enter 送出・Shift+Enter 換行・麥克風說台語
+        </p>
+        <span
+          v-if="isLoadingTts || isSpeaking"
+          class="flex items-center gap-1 text-xs text-muted-foreground"
+        >
+          <Volume2
+            class="size-3"
+            :class="isSpeaking ? 'animate-pulse text-primary' : 'text-muted-foreground'"
+          />
+          <span>{{ isLoadingTts ? "合成中…" : "播放中" }}</span>
+        </span>
+      </div>
     </div>
   </div>
 </template>

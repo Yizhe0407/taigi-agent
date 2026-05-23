@@ -44,6 +44,12 @@ class Settings:
     asr_model: str | None
     asr_api_key: str
 
+    # ── TTS (optional — service is disabled when tts_base_url is None) ────────
+    tts_base_url: str | None          # e.g. https://tts.example.com
+    tts_model: str                    # model name forwarded to /v1/audio/speech
+    tts_voice: str                    # voice name forwarded to /v1/audio/speech
+    tts_api_key: str                  # empty string = no Authorization header
+
     # ── HTTP API ───────────────────────────────────────────────────────────────
     cors_origins: list[str]
 
@@ -77,6 +83,10 @@ class Settings:
             asr_base_url=os.getenv("ASR_BASE_URL") or None,
             asr_model=os.getenv("ASR_MODEL") or None,
             asr_api_key=os.getenv("ASR_API_KEY", ""),
+            tts_base_url=os.getenv("TTS_BASE_URL") or None,
+            tts_model=os.getenv("TTS_MODEL", "tts-1"),
+            tts_voice=os.getenv("TTS_VOICE", "taigi"),
+            tts_api_key=os.getenv("TTS_API_KEY", ""),
             cors_origins=[o.strip() for o in cors_raw.split(",") if o.strip()],
         )
 

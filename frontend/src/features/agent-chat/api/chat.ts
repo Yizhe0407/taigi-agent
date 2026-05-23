@@ -81,6 +81,28 @@ export async function transcribeAudio(audio: Blob): Promise<string> {
   return body.text
 }
 
+/** POST text to /api/tts; returns audio Blob (audio/wav or audio/mpeg). */
+export async function synthesizeSpeech(text: string, signal?: AbortSignal): Promise<Blob> {
+  let response: Response
+  try {
+    response = await fetch(`${apiBaseUrl}/api/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+      signal,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error
+    throw new ChatApiError("無法連線到 TTS 服務")
+  }
+
+  if (!response.ok) {
+    throw new ChatApiError(await parseErrorBody(response), response.status)
+  }
+
+  return response.blob()
+}
+
 /** Explicitly end a session (best-effort, ignore failures). */
 export async function deleteChatSession(sessionId: string): Promise<void> {
   try {

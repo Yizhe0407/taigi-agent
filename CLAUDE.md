@@ -33,6 +33,7 @@ backend/
     route_plans.py # /api/route-plans + /api/kiosk
     moovo.py       # /api/moovo/*
     asr.py         # /api/asr（Qwen3-ASR proxy）
+    tts.py         # /api/tts（HanloFlow → Taibun → Piper TTS proxy）
   agent/
     loop.py        # CLI I/O：讀 input、印回答，呼叫 AgentSession
     session.py     # Harness 核心：messages + LLM call + tool-call loop + recovery
@@ -40,6 +41,8 @@ backend/
     prompt.py      # build_system_prompt()，system prompt 組裝
     tools.py       # TOOL_SCHEMAS + TOOL_HANDLERS
     context.py     # token budget、ContextStore、transcript / 長 tool result compact
+  pipeline/
+    text_processor.py  # Mandarin → HanloFlow(漢羅) → Taibun(Tailo)；module-level 單例
   tools/
     kiosk_bus.py   # Kiosk facade：單一路線 / 本站概況 / 站序工具
     kiosk_route_planner.py  # Kiosk 固定出發、前端地圖選點目的地的 OTP planner
