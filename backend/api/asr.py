@@ -6,6 +6,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
+from agent.telemetry import get_telemetry
 from config import Settings
 
 router = APIRouter()
@@ -70,6 +71,8 @@ async def transcribe_audio(request: Request, file: UploadFile) -> object:
         raise HTTPException(status_code=413, detail="音訊檔案過大（上限 25 MB）")
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="音訊檔案是空的")
+
+    get_telemetry().record_asr_audio_bytes(len(audio_bytes))
 
     filename = file.filename or "audio.webm"
     content_type = file.content_type or "audio/webm"

@@ -11,6 +11,7 @@ X-Hanlo-Text / X-Tailo-Text header 帶 URL-encoded 轉換結果，供前端 debu
 
 from __future__ import annotations
 
+import time
 import urllib.parse
 
 import httpx
@@ -18,6 +19,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from agent.telemetry import get_telemetry
 from config import Settings
 from pipeline.text_processor import process as text_process
 
@@ -62,9 +64,22 @@ async def synthesize(body: TTSRequest) -> Response:
     base_url, model, voice, api_key = _tts_config()
 
     # ── Step 1 + 2: Mandarin → 漢羅 → Tailo ──────────────────────────────────
+    # Timed manually: pure Python, no HTTP — HTTPXClientInstrumentor won't cover it.
+    # The span appears as a child of the FastAPI request span.
+    t0 = time.perf_counter()
     try:
-        result = text_process(body.text)
+        with get_telemetry().start_span(
+            "tts.text_process",
+            {"tts.input_chars": len(body.text)},
+        ):
+            result = text_process(body.text)
+        get_telemetry().record_pipeline_stage(
+            time.perf_counter() - t0, stage="tts.text_process", outcome="ok"
+        )
     except Exception as err:
+        get_telemetry().record_pipeline_stage(
+            time.perf_counter() - t0, stage="tts.text_process", outcome="error"
+        )
         raise HTTPException(
             status_code=500, detail=f"文字轉換失敗：{err}"
         ) from err

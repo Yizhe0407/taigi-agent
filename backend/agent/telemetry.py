@@ -8,18 +8,28 @@ from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExp
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Status, StatusCode
 
-_INSTRUMENTATION_NAME = "taigi_bus_agent.agent"
+_AGENT_INSTRUMENTATION_NAME = "taigi_bus_agent.agent"
+_PIPELINE_INSTRUMENTATION_NAME = "taigi_bus_agent.pipeline"
 _OTLP_ENDPOINT_ENV_VARS = (
     "OTEL_EXPORTER_OTLP_ENDPOINT",
     "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
     "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
 )
-_configured = False
+
+# Recommended bucket boundaries from OTel HTTP semantic conventions spec.
+# https://opentelemetry.io/docs/specs/semconv/http/http-metrics/
+_DURATION_BOUNDARIES = [
+    0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10
+]
+
+# Singleton — set once by configure_telemetry(), read by get_telemetry().
+_telemetry: "AgentTelemetry | None" = None
 
 
 def _clean_attributes(attributes: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -33,55 +43,103 @@ def _has_otlp_endpoint() -> bool:
 
 
 def configure_telemetry(service_name: str = "taigi-bus-agent") -> "AgentTelemetry":
-    """Enable OTLP/HTTP exporters when the deployment provides an endpoint."""
-    global _configured
+    """Enable OTLP/HTTP exporters when the deployment provides an endpoint.
 
-    if _configured or not _has_otlp_endpoint():
-        return AgentTelemetry()
+    Idempotent — subsequent calls return the same singleton instance.
+    Safe to call from both api/__init__.py (startup) and make_agent_session().
+    """
+    global _telemetry
 
-    resource = Resource.create(
-        {"service.name": os.getenv("OTEL_SERVICE_NAME", service_name)}
-    )
+    if _telemetry is not None:
+        return _telemetry
 
-    tracer_provider = TracerProvider(resource=resource)
-    tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
-    trace.set_tracer_provider(tracer_provider)
+    if _has_otlp_endpoint():
+        resource = Resource.create(
+            {"service.name": os.getenv("OTEL_SERVICE_NAME", service_name)}
+        )
 
-    metric_reader = PeriodicExportingMetricReader(OTLPMetricExporter())
-    metrics.set_meter_provider(
-        MeterProvider(resource=resource, metric_readers=[metric_reader])
-    )
+        tracer_provider = TracerProvider(resource=resource)
+        tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+        trace.set_tracer_provider(tracer_provider)
 
-    _configured = True
+        # Apply explicit bucket boundaries to all duration histograms so that
+        # dashboards get sensible pre-aggregated buckets per OTel semconv.
+        duration_view = View(
+            instrument_name="*duration*",
+            aggregation=ExplicitBucketHistogramAggregation(boundaries=_DURATION_BOUNDARIES),
+        )
+        metric_reader = PeriodicExportingMetricReader(OTLPMetricExporter())
+        metrics.set_meter_provider(
+            MeterProvider(
+                resource=resource,
+                metric_readers=[metric_reader],
+                views=[duration_view],
+            )
+        )
+
+    _telemetry = AgentTelemetry()
+    return _telemetry
+
+
+def get_telemetry() -> "AgentTelemetry":
+    """Return the singleton AgentTelemetry instance.
+
+    If configure_telemetry() has not yet been called (e.g. during unit tests
+    or isolated router imports), returns a noop-safe instance backed by the
+    OTel global NoOp providers.
+    """
+    if _telemetry is not None:
+        return _telemetry
+    # Caller hasn't run configure_telemetry() yet — return a transient noop
+    # instance. Metrics / spans are silently dropped until the SDK is wired up.
     return AgentTelemetry()
 
 
 class AgentTelemetry:
-    """OpenTelemetry spans and metrics emitted by the agent harness."""
+    """OpenTelemetry spans and metrics emitted by the agent harness and pipeline."""
 
     def __init__(self) -> None:
-        self._tracer = trace.get_tracer(_INSTRUMENTATION_NAME)
-        meter = metrics.get_meter(_INSTRUMENTATION_NAME)
-        self._llm_duration = meter.create_histogram(
+        # ── Agent instrumentation (LLM + tool calls) ─────────────────────────
+        agent_meter = metrics.get_meter(_AGENT_INSTRUMENTATION_NAME)
+        self._tracer = trace.get_tracer(_AGENT_INSTRUMENTATION_NAME)
+        self._llm_duration = agent_meter.create_histogram(
             "agent.llm.duration",
             unit="s",
             description="Duration of one LLM request attempt.",
         )
-        self._llm_retries = meter.create_counter(
+        self._llm_retries = agent_meter.create_counter(
             "agent.llm.retry",
             unit="{retry}",
             description="LLM retry attempts emitted by the harness.",
         )
-        self._tool_duration = meter.create_histogram(
+        self._tool_duration = agent_meter.create_histogram(
             "agent.tool.duration",
             unit="s",
             description="Duration of one dispatched tool call.",
         )
-        self._tool_errors = meter.create_counter(
+        self._tool_errors = agent_meter.create_counter(
             "agent.tool.error",
             unit="{error}",
             description="Tool dispatch and handler failures.",
         )
+
+        # ── Pipeline instrumentation (ASR / TTS stages) ───────────────────────
+        pipeline_meter = metrics.get_meter(_PIPELINE_INSTRUMENTATION_NAME)
+        self._pipeline_stage_duration = pipeline_meter.create_histogram(
+            "pipeline.stage.duration",
+            unit="s",
+            description=(
+                "Duration of a pipeline processing stage. "
+                "Attributes: pipeline.stage (e.g. tts.text_process), pipeline.outcome."
+            ),
+        )
+        self._asr_audio_bytes = pipeline_meter.create_histogram(
+            "pipeline.asr.audio_bytes",
+            unit="By",
+            description="Size of audio uploaded to the ASR proxy endpoint.",
+        )
+
+    # ── Span helpers ──────────────────────────────────────────────────────────
 
     @contextmanager
     def start_span(
@@ -104,6 +162,8 @@ class AgentTelemetry:
         if exception is not None:
             span.record_exception(exception)
         span.set_status(Status(StatusCode.ERROR, description or error_type))
+
+    # ── Agent metrics ─────────────────────────────────────────────────────────
 
     def record_llm_duration(
         self, duration_s: float, *, model: str, operation: str, outcome: str
@@ -156,3 +216,27 @@ class AgentTelemetry:
                 "error.type": error_type,
             },
         )
+
+    # ── Pipeline metrics ──────────────────────────────────────────────────────
+
+    def record_pipeline_stage(
+        self, duration_s: float, *, stage: str, outcome: str
+    ) -> None:
+        """Record latency for a named pipeline processing stage.
+
+        Args:
+            duration_s: Wall-clock seconds measured with time.perf_counter().
+            stage:      Dot-separated stage identifier, e.g. ``"tts.text_process"``.
+            outcome:    ``"ok"`` or ``"error"``.
+        """
+        self._pipeline_stage_duration.record(
+            duration_s,
+            {
+                "pipeline.stage": stage,
+                "pipeline.outcome": outcome,
+            },
+        )
+
+    def record_asr_audio_bytes(self, n_bytes: int) -> None:
+        """Record size of an audio upload to the ASR proxy."""
+        self._asr_audio_bytes.record(n_bytes)

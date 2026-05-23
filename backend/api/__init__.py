@@ -11,6 +11,10 @@ load_dotenv()
 
 from fastapi import FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor  # noqa: E402
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor  # noqa: E402
+
+from agent.telemetry import configure_telemetry  # noqa: E402
 
 from .asr import router as asr_router  # noqa: E402
 from .chat import router as chat_router  # noqa: E402
@@ -40,3 +44,12 @@ app.include_router(route_plans_router)
 app.include_router(moovo_router)
 app.include_router(asr_router)
 app.include_router(tts_router)
+
+# ── Observability ─────────────────────────────────────────────────────────────
+# configure_telemetry() is idempotent; safe to call here and in make_agent_session().
+# FastAPIInstrumentor: auto-spans every route with http.server.request.duration.
+# HTTPXClientInstrumentor: auto-traces all httpx.AsyncClient calls (ASR / TTS
+#   upstreams) with server.address, http.request.method, http.response.status_code.
+configure_telemetry()
+FastAPIInstrumentor.instrument_app(app)
+HTTPXClientInstrumentor().instrument()
