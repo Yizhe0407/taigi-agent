@@ -30,6 +30,7 @@ backend/
   api/
     __init__.py    # FastAPI app 建立 + CORS + include_router（uvicorn api:app）
     chat.py        # /api/chat/* + in-process session store（_chat_sessions）
+    departures.py  # /api/departures/here + /api/departures/routes/{route}/detail
     route_plans.py # /api/route-plans + /api/kiosk
     moovo.py       # /api/moovo/*
     asr.py         # /api/asr（Qwen3-ASR proxy）
@@ -55,8 +56,25 @@ backend/
     data/          # 本機 OTP build input / graph；git 只保留資料夾
   tests/
 frontend/
-  src/features/route-planner/  # Vue + MapCN destination picker 與後續 route result flow
-  src/features/agent-chat/     # Agent 對話 UI：chat session API client + AgentChatView
+  public/avatar.png            # 虛擬站務員小芸半身像（PIP + Hero 按鈕用）
+  src/App.vue                  # Kiosk shell：view 狀態（home/planning）+ PipAgentOverlay
+  src/features/departures/
+    kiosk-data.ts              # 靜態展示資料：ROUTE_COLORS
+    api/departures.ts          # 離站決策與路線站序 API client
+    composables/useDepartureSnapshot.ts  # 本站離站決策輪詢、abort 與錯誤狀態
+    composables/useDepartureRouteDetail.ts  # 路線站序詳情 fetch / abort / error
+    utils/departure-status.ts  # route / hero 顯示狀態與等待時間文字
+    components/
+      DepartureDashboardView.vue   # V4 kiosk 主頁：Hero 大字卡 + 路線列表
+      RouteDetailPanel.vue         # 路線詳情：從後端載入真實站點時間軸
+      PipAgentOverlay.vue          # PIP 子母畫面虛擬站務員（接 /api/chat）
+  src/features/route-planner/  # Vue + MapCN destination picker 與路線規劃
+    composables/useRoutePlanner.ts        # 路線規劃頁狀態、API request 與 abort
+    composables/useScheduledTimeWheel.ts  # 指定時間 bottom sheet wheel 狀態
+    utils/route-display.ts                # route option / leg 顯示文字與顏色
+    components/RoutePlannerView.vue  # 全頁路線規劃，emit 'back' → App.vue
+  src/features/agent-chat/     # chat API client（PipAgentOverlay 引用 chat.ts）
+    composables/usePipChat.ts  # PIP 對話 session / send / scroll 狀態
   src/components/ui/           # shadcn-vue 與 MapCN Vue copy-paste UI components
 ```
 

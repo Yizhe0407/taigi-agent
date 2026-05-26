@@ -33,6 +33,12 @@ def _fetch_eta_at_stop(stop_name: str) -> list[dict]:
     return resp.json()
 
 
+def _fetch_route_estimate(route_id: int) -> list[dict]:
+    resp = requests.get(f"{_BASE}/route/{route_id}/estimate", timeout=10)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def _load_route_info(stop_name: str) -> dict[str, dict]:
     """拿指定站牌的停靠路線，建立 route name -> route id cache。
 
@@ -129,9 +135,7 @@ def get_arrivals(route: str, stop_name: str, go_back: int | None = None) -> str:
         return f"在「{stop_name}」找不到停靠路線 {route}"
 
     try:
-        resp = requests.get(f"{_BASE}/route/{route_id}/estimate", timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
+        data = _fetch_route_estimate(route_id)
     except Exception as e:
         return f"雲林公車查詢失敗：{e}"
 
@@ -218,9 +222,7 @@ def get_route_stops(route: str, stop_name: str) -> str:
         return f"在「{stop_name}」找不到停靠路線 {route}"
 
     try:
-        resp = requests.get(f"{_BASE}/route/{route_id}/estimate", timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
+        data = _fetch_route_estimate(route_id)
     except Exception as e:
         return f"雲林公車查詢失敗：{e}"
 

@@ -8,7 +8,7 @@ Usage
 -----
     from config import Settings, make_agent_session
 
-    settings = Settings.from_env()          # raises RuntimeError if required vars missing
+    settings = Settings.from_env()          # validates required env vars
     session  = make_agent_session(settings)  # shared factory for HTTP API + CLI
 """
 

@@ -93,16 +93,21 @@ cp .env.example .env
 uv run python main.py
 ```
 
-路線規劃需要本機 OTP graph、雲林 stop index 與 service。GTFS / stop index
-更新、graph build 與 Docker 啟動步驟見 `backend/otp/README.md`；預設 OTP
-service 位置是 `http://localhost:8081`。
-
-前端地圖路線規劃走獨立 HTTP API：
+Kiosk 前端走獨立 HTTP API：
 
 ```bash
 cd backend
 uv run uvicorn api:app --reload --port 8000
 ```
+
+離站決策首頁使用：
+
+- `GET /api/departures/here`：本站路線、方向、到站 / 未發車 / 末班決策
+- `GET /api/departures/routes/{route}/detail`：本站停靠路線的真實站序詳情
+
+路線規劃需要本機 OTP graph、雲林 stop index 與 service。GTFS / stop index
+更新、graph build 與 Docker 啟動步驟見 `backend/otp/README.md`；預設 OTP
+service 位置是 `http://localhost:8081`。
 
 `POST /api/route-plans` 只收前端已確認的目的地座標與可選出發時間：
 
@@ -117,7 +122,8 @@ uv run uvicorn api:app --reload --port 8000
 候選路徑。若前端 dev server 不走 Vite `/api` proxy，而是跨 origin 直接打
 API，再用 `API_CORS_ORIGINS` 明確開放前端來源。
 
-Vue Kiosk 前端放在 `frontend/`。目前第一個畫面已是 MapCN Vue 地圖選點流程：
+Vue Kiosk 前端放在 `frontend/`。目前第一個畫面是本站離站決策 dashboard；
+點「規劃路線」後進入 MapCN Vue 地圖選點流程：
 
 ```bash
 cd frontend
@@ -125,10 +131,38 @@ pnpm install
 pnpm dev
 ```
 
-畫面固定顯示雲林科技大學 Kiosk 起點，可點地圖或拖曳圖釘確認目的地；
-確認後會呼叫 route planning API，在地圖畫出目前選取的候選路線，面板顯示
-轉乘、時間與 legs。Vite dev server 預設把 `/api` 轉送到本機 `8000` port；
-需要不同 API 目標時再設定 `frontend/.env` 的 `VITE_API_PROXY_TARGET`。
+首頁顯示固定 Kiosk 站牌的可搭、未發車與末班狀態；點路線可查看後端
+`/api/departures/routes/{route}/detail` 回傳的真實站序。路線規劃頁固定顯示
+雲林科技大學 Kiosk 起點，可點地圖或拖曳圖釘確認目的地；確認後會呼叫
+route planning API，在地圖畫出目前選取的候選路線，面板顯示轉乘、時間與
+legs。Vite dev server 預設把 `/api` 轉送到本機 `8000` port；需要不同 API
+目標時再設定 `frontend/.env` 的 `VITE_API_PROXY_TARGET`。
+
+### 路線色策略
+
+首頁 Hero 大卡、右側路線列表、路線詳情與路線規劃共用同一套路線色流程：
+
+- 底層在 `frontend/src/features/departures/kiosk-data.ts`
+- 畫面層入口在 `frontend/src/features/departures/composables/useRouteColors.ts`
+
+目前演算法是：
+
+1. 先把 `routeCode` 正規化並做 deterministic hash
+2. 對每條路線產生固定候選色順序
+3. 針對同一畫面實際出現的 route set 做 greedy `max-min` assignment
+4. 優先拉開同屏路線間的感知距離，必要時才重用顏色
+
+目前候選色池是 24 色，刻意維持和 kiosk 主題一致：明亮、乾淨、少量活潑，
+但不使用過暗、過灰或過螢光的色。
+
+這套策略目前判定為**可正式使用**，但邊界要講清楚：
+
+- 適用情境：Kiosk 首頁、路線詳情、路線規劃這種同屏約 6 到 12 條路線的 UI
+- 設計目標：提升同屏辨識度，不是替全雲林所有路線建立永久唯一色
+- 已知限制：若一次拿上百條 route code 一起測，因為色池有限，重複仍然必然發生
+
+也就是說，這不是「全資料集 collision-free」演算法，而是「符合目前產品畫面密度、
+視覺主題與可讀性需求」的實務版本。
 
 ## 可觀測性
 

@@ -18,6 +18,7 @@ from agent.telemetry import configure_telemetry  # noqa: E402
 
 from .asr import router as asr_router  # noqa: E402
 from .chat import router as chat_router  # noqa: E402
+from .departures import router as departures_router  # noqa: E402
 from .moovo import router as moovo_router  # noqa: E402
 from .route_plans import router as route_plans_router  # noqa: E402
 from .tts import router as tts_router  # noqa: E402
@@ -40,6 +41,7 @@ if cors_origins:
     )
 
 app.include_router(chat_router)
+app.include_router(departures_router)
 app.include_router(route_plans_router)
 app.include_router(moovo_router)
 app.include_router(asr_router)

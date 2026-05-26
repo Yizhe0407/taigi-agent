@@ -29,7 +29,11 @@ watch(
       visualizePitch: false,
     })
     mapInstance.addControl(control, props.position)
-    onCleanup(() => mapInstance.removeControl(control))
+    onCleanup(() => {
+      if (mapInstance.hasControl(control)) {
+        mapInstance.removeControl(control)
+      }
+    })
   },
   { immediate: true },
 )

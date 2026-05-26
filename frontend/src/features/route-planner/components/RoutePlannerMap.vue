@@ -2,7 +2,6 @@
 import {
   Bike,
   BusFront,
-  Layers,
   LoaderCircle,
   MapPin,
   RefreshCw,
@@ -19,6 +18,7 @@ import MoovoStationMarkers from "../map/MoovoStationMarkers.vue"
 import RouteViewportFit from "../map/RouteViewportFit.vue"
 import YunlinServiceAreaLayer from "../map/YunlinServiceAreaLayer.vue"
 import type { LngLat, MoovoStation, PlaceCoordinate, RouteOption } from "../types"
+import { legDisplayCoordinates } from "../utils/route-display"
 
 const props = defineProps<{
   kiosk: PlaceCoordinate
@@ -49,56 +49,25 @@ const updateDestination = (coordinates: { lng: number; lat: number }) => {
 }
 
 // ---------------------------------------------------------------------------
-// Per-leg coordinate resolution
-// ---------------------------------------------------------------------------
-
-/**
- * Return display coordinates for a leg.
- * WALK legs from OTP sometimes have empty geometry (0 m walk at the kiosk stop).
- * Fall back to a straight connector between adjacent leg endpoints so the
- * dashed walk segment still renders.
- */
-function legCoords(route: RouteOption, index: number): LngLat[] {
-  const leg = route.legs[index]
-  if (leg.coordinates.length > 1) return leg.coordinates
-  if (leg.mode !== "WALK") return leg.coordinates
-
-  const prev = index > 0 ? route.legs[index - 1] : null
-  const next = index < route.legs.length - 1 ? route.legs[index + 1] : null
-  const start = prev?.coordinates.at(-1)
-  const end = next?.coordinates[0]
-  if (start && end && (start[0] !== end[0] || start[1] !== end[1])) {
-    return [start, end]
-  }
-  return leg.coordinates
-}
-
-// ---------------------------------------------------------------------------
 // Map style picker
 // ---------------------------------------------------------------------------
 
 const MAP_STYLES = [
-  {
-    id: "positron",
-    label: "明亮",
-    url: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
-  },
   {
     id: "voyager",
     label: "彩色",
     url: "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json",
   },
   {
-    id: "dark-matter",
-    label: "暗色",
-    url: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+    id: "positron",
+    label: "明亮",
+    url: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
   },
 ] as const
 
 type StyleId = (typeof MAP_STYLES)[number]["id"]
 
-const activeStyleId = ref<StyleId>("positron")
-const showStylePicker = ref(false)
+const activeStyleId = ref<StyleId>("voyager")
 const showMoovoStations = ref(true)
 
 const activeStyle = () =>
@@ -107,12 +76,11 @@ const activeStyle = () =>
 
 function selectStyle(id: StyleId) {
   activeStyleId.value = id
-  showStylePicker.value = false
 }
 </script>
 
 <template>
-  <div class="relative min-h-[22rem] overflow-hidden bg-muted">
+  <div class="relative min-h-[22rem] overflow-hidden bg-kiosk-dim">
     <Map
       :center="viewportCenter"
       :zoom="13"
@@ -133,10 +101,10 @@ function selectStyle(id: StyleId) {
           :key="`${route.id}-leg-${index}`"
         >
           <MapRoute
-            v-if="legCoords(route, index).length > 1"
+            v-if="legDisplayCoordinates(route, index).length > 1"
             :id="`${route.id}-leg-${index}`"
-            :coordinates="legCoords(route, index)"
-            :color="leg.mode === 'WALK' ? '#f97316' : '#2563eb'"
+            :coordinates="legDisplayCoordinates(route, index)"
+            :color="leg.mode === 'WALK' ? '#D86A1F' : '#1F5BBF'"
             :width="leg.mode === 'WALK' ? 3 : 5"
             :opacity="leg.mode === 'WALK' ? 0.8 : 0.85"
             :dash-array="leg.mode === 'WALK' ? [3, 4] : undefined"
@@ -158,12 +126,12 @@ function selectStyle(id: StyleId) {
         <MarkerContent>
           <div class="relative grid place-items-center">
             <div
-              class="grid size-10 place-items-center rounded-full border-2 border-white bg-teal-600 text-white shadow-xl shadow-teal-950/30"
+              class="grid size-10 place-items-center rounded-full border-2 border-white bg-kiosk-ink text-white shadow-xl shadow-kiosk-ink/30"
             >
               <BusFront class="size-5" />
             </div>
             <span
-              class="absolute top-11 min-w-max rounded bg-background/95 px-2 py-1 text-xs font-medium text-foreground shadow-sm ring-1 ring-border"
+              class="absolute top-11 min-w-max rounded bg-white/95 px-2 py-1 text-xs font-medium text-kiosk-ink shadow-sm ring-1 ring-kiosk-line"
             >
               {{ kiosk.name }}
             </span>
@@ -184,8 +152,8 @@ function selectStyle(id: StyleId) {
         @drag="updateDestination"
       >
         <MarkerContent>
-          <div class="-translate-y-3 text-rose-600 drop-shadow-lg">
-            <MapPin class="size-9 fill-rose-600 stroke-white" />
+          <div class="-translate-y-3 text-kiosk-accent drop-shadow-lg">
+            <MapPin class="size-9 fill-kiosk-accent stroke-white" />
           </div>
         </MarkerContent>
       </MapMarker>
@@ -198,13 +166,15 @@ function selectStyle(id: StyleId) {
 
     <button
       type="button"
-      class="absolute left-3 top-3 z-10 flex items-center gap-2 rounded-md border border-border bg-background/90 px-3 py-2 text-xs font-medium shadow-sm backdrop-blur transition"
+      class="absolute left-3 top-3 z-10 flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold shadow-sm backdrop-blur transition-all duration-200 font-[inherit]"
       :class="
-        isLoadingMoovoStations || moovoStationsError
-          ? 'cursor-default text-foreground'
-          : showMoovoStations
-            ? 'text-foreground hover:bg-accent'
-            : 'text-muted-foreground hover:bg-accent'
+        isLoadingMoovoStations
+          ? 'cursor-default border-kiosk-line bg-white/90 text-kiosk-faded'
+          : moovoStationsError
+            ? 'cursor-default border-kiosk-err/30 bg-kiosk-err-soft text-kiosk-err'
+            : showMoovoStations
+              ? 'border-kiosk-ok bg-kiosk-ok text-white hover:brightness-110'
+              : 'border-kiosk-line bg-white/90 text-kiosk-faded hover:border-kiosk-line2 hover:text-kiosk-muted'
       "
       :title="
         isLoadingMoovoStations ? 'MOOVO 載入中'
@@ -217,68 +187,42 @@ function selectStyle(id: StyleId) {
     >
       <LoaderCircle
         v-if="isLoadingMoovoStations"
-        class="size-3.5 animate-spin text-muted-foreground"
+        class="size-3.5 animate-spin"
       />
       <TriangleAlert
         v-else-if="moovoStationsError"
-        class="size-3.5 text-destructive"
+        class="size-3.5"
       />
       <Bike
         v-else
-        class="size-3.5 transition"
-        :class="showMoovoStations ? 'text-emerald-600' : 'text-muted-foreground'"
+        class="size-3.5 transition-transform duration-200"
+        :class="showMoovoStations ? 'scale-110' : ''"
       />
-      <span v-if="isLoadingMoovoStations" class="text-muted-foreground">MOOVO 載入中</span>
+      <span v-if="isLoadingMoovoStations">MOOVO 載入中</span>
       <span v-else-if="moovoStationsError">{{ moovoStationsError }}</span>
       <span v-else>MOOVO</span>
       <RefreshCw
         v-if="moovoStationsError"
-        class="size-3.5 text-muted-foreground transition hover:text-foreground"
+        class="size-3.5 transition hover:opacity-70"
         @click.stop="$emit('refresh-moovo-stations')"
       />
     </button>
 
-    <!-- Style picker toggle -->
-    <div class="absolute bottom-8 left-3 z-10 flex flex-col items-start gap-1">
-      <!-- Style buttons (shown when open) -->
-      <transition
-        enter-active-class="transition-all duration-150"
-        enter-from-class="opacity-0 translate-y-1"
-        enter-to-class="opacity-100 translate-y-0"
-        leave-active-class="transition-all duration-100"
-        leave-from-class="opacity-100 translate-y-0"
-        leave-to-class="opacity-0 translate-y-1"
-      >
-        <div
-          v-if="showStylePicker"
-          class="mb-1 flex flex-col gap-1"
-        >
-          <button
-            v-for="style in MAP_STYLES"
-            :key="style.id"
-            type="button"
-            class="flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium shadow-sm backdrop-blur transition"
-            :class="
-              activeStyleId === style.id
-                ? 'border-primary bg-primary text-primary-foreground'
-                : 'border-border bg-background/90 text-foreground hover:bg-accent'
-            "
-            @click="selectStyle(style.id)"
-          >
-            {{ style.label }}
-          </button>
-        </div>
-      </transition>
-
-      <!-- Toggle button -->
+    <!-- Style picker -->
+    <div class="absolute bottom-8 left-3 z-10 inline-flex items-center gap-0.5 rounded-full border border-kiosk-line bg-white/85 p-0.5 shadow-sm backdrop-blur">
       <button
+        v-for="style in MAP_STYLES"
+        :key="style.id"
         type="button"
-        class="grid size-8 place-items-center rounded-md border border-border bg-background/90 text-foreground shadow-sm backdrop-blur transition hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        :class="showStylePicker && 'bg-accent'"
-        :title="showStylePicker ? '關閉圖層選擇' : '切換地圖樣式'"
-        @click="showStylePicker = !showStylePicker"
+        class="rounded-full px-3 py-1 text-xs font-bold transition-all duration-150 font-[inherit]"
+        :class="
+          activeStyleId === style.id
+            ? 'bg-kiosk-ink text-white'
+            : 'text-kiosk-faded hover:text-kiosk-muted'
+        "
+        @click="selectStyle(style.id)"
       >
-        <Layers class="size-4" />
+        {{ style.label }}
       </button>
     </div>
   </div>
