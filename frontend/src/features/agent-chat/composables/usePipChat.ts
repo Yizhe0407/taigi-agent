@@ -14,12 +14,7 @@ import {
   deleteChatSession,
   sendChatMessage,
 } from "../api/chat"
-
-export type PipChatMessage = {
-  id: string
-  role: "user" | "assistant"
-  text: string
-}
+import type { PipChatMessage } from "../types"
 
 let messageCounter = 0
 

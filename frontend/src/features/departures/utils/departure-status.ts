@@ -32,3 +32,15 @@ export function heroStatusState(
 export function heroStatusText(route: DepartureRouteStatus | null): string {
   return route?.decisionText ?? "無可搭班次"
 }
+
+/** Tailwind chip + dot classes per departure state. Single source of truth so hero and route list stay in sync. */
+export function statusChipClasses(state: DepartureDisplayState): {
+  chip: string
+  dot: string
+} {
+  if (state === "boarding")
+    return { chip: "bg-kiosk-ok-soft text-kiosk-ok", dot: "bg-kiosk-ok" }
+  if (state === "pending")
+    return { chip: "bg-kiosk-info-soft text-kiosk-info", dot: "bg-kiosk-info" }
+  return { chip: "bg-kiosk-dim text-kiosk-faded", dot: "bg-kiosk-faded" }
+}

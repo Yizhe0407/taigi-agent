@@ -185,14 +185,6 @@
 | ✅ | 視覺回饋：錄音中 pulse ring + 5 根音量 bar（`AnalyserNode` 驅動）、processing spinner、轉文字後填入 textarea 由使用者確認再送 |
 | ⬜ | Mic permission 拒絕的引導頁：說明用途、提供關閉語音改用打字的入口 |
 
-### AgentChatView 接入
-
-| 狀態 | 項目 |
-|------|------|
-| ✅ | textarea 旁加錄音按鈕（與 Send 並列），錄音結束的文字落到 textarea，按 Send 才實際送出 |
-| ✅ | 錄音中其他 UI（Send、輸入框）禁用 |
-| ✅ | Session 過期偵測：錄音上傳前確認 sessionId 仍有效，過期自動 re-create |
-
 ### 模型側調校
 
 | 狀態 | 項目 |
