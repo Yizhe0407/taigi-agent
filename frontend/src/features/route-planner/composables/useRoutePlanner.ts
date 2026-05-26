@@ -1,4 +1,5 @@
-import { computed, onBeforeUnmount, onMounted, ref } from "vue"
+import { useMutation, useQuery } from "@tanstack/vue-query"
+import { computed, ref } from "vue"
 
 import { formatTaipeiHourMinute, parseTaipeiDateTimeInput } from "@/lib/time"
 import { useNow } from "@/lib/useNow"
@@ -7,7 +8,7 @@ import { fetchKiosk } from "../api/kiosk"
 import { fetchMoovoStations } from "../api/moovo"
 import { createRoutePlan, RoutePlanApiError } from "../api/route-plans"
 import { isInYunlinCounty } from "../geo/yunlin-service-area"
-import type { LngLat, MoovoStation, PlaceCoordinate, RoutePlan } from "../types"
+import type { LngLat, PlaceCoordinate, RoutePlan } from "../types"
 import type { DepartureMode } from "./useScheduledTimeWheel"
 
 const FALLBACK_KIOSK: PlaceCoordinate = {
@@ -16,22 +17,47 @@ const FALLBACK_KIOSK: PlaceCoordinate = {
 }
 
 export function useRoutePlanner() {
-  const kiosk = ref<PlaceCoordinate>({ ...FALLBACK_KIOSK })
+  // —— remote queries ——
+  const kioskQuery = useQuery({
+    queryKey: ["route-planner", "kiosk"],
+    queryFn: () => fetchKiosk(),
+    initialData: { ...FALLBACK_KIOSK },
+    retry: 1,
+  })
+  const moovoQuery = useQuery({
+    queryKey: ["route-planner", "moovo-stations"],
+    queryFn: ({ signal }) => fetchMoovoStations(signal),
+    retry: false,
+  })
+  const kiosk = computed(() => kioskQuery.data.value ?? FALLBACK_KIOSK)
+  const moovoStations = computed(() => moovoQuery.data.value ?? [])
+  const isLoadingMoovoStations = computed(() => moovoQuery.isLoading.value)
+  const moovoStationsError = computed(() =>
+    moovoQuery.error.value ? "MOOVO 站點暫時無法載入" : "",
+  )
+
+  // —— local form / selection state ——
   const destination = ref<LngLat | null>(null)
   const isDestinationConfirmed = ref(false)
-  const isPlanningRoute = ref(false)
   const routePlan = ref<RoutePlan | null>(null)
   const routePlanError = ref("")
   const routePlanErrorKind = ref<"no-service" | "generic">("generic")
   const selectedRouteId = ref<string | null>(null)
-  const moovoStations = ref<MoovoStation[]>([])
-  const isLoadingMoovoStations = ref(false)
-  const moovoStationsError = ref("")
   const departureMode = ref<DepartureMode>("now")
   const scheduledDateTime = ref("")
 
-  let routeRequest: AbortController | null = null
-  let moovoRequest: AbortController | null = null
+  // Manual AbortController for the route-plan mutation: useMutation has no built-in
+  // signal, but we need to cancel in-flight requests when the user re-confirms.
+  let routePlanAbort: AbortController | null = null
+
+  const planMutation = useMutation({
+    mutationFn: (vars: {
+      destination: LngLat
+      departureDate?: Date
+      signal: AbortSignal
+    }) => createRoutePlan(vars.destination, vars.departureDate, vars.signal),
+  })
+  const isPlanningRoute = computed(() => planMutation.isPending.value)
 
   const { now } = useNow(10_000)
   const nowLabel = computed(() => formatTaipeiHourMinute(now.value))
@@ -39,46 +65,15 @@ export function useRoutePlanner() {
   const selectedRoute = computed(() => {
     if (!routePlan.value) return null
     return (
-      routePlan.value.routes.find((route) => route.id === selectedRouteId.value) ??
+      routePlan.value.routes.find((r) => r.id === selectedRouteId.value) ??
       routePlan.value.routes[0] ??
       null
     )
   })
 
   function cancelRouteRequest() {
-    routeRequest?.abort()
-    routeRequest = null
-    isPlanningRoute.value = false
-  }
-
-  async function loadKiosk() {
-    try {
-      kiosk.value = await fetchKiosk()
-    } catch {
-      kiosk.value = { ...FALLBACK_KIOSK }
-    }
-  }
-
-  async function loadMoovoStations() {
-    moovoRequest?.abort()
-    const currentRequest = new AbortController()
-    moovoRequest = currentRequest
-    isLoadingMoovoStations.value = true
-    moovoStationsError.value = ""
-
-    try {
-      const stations = await fetchMoovoStations(currentRequest.signal)
-      if (moovoRequest !== currentRequest) return
-      moovoStations.value = stations
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") return
-      moovoStationsError.value = "MOOVO 站點暫時無法載入"
-    } finally {
-      if (moovoRequest === currentRequest) {
-        isLoadingMoovoStations.value = false
-        moovoRequest = null
-      }
-    }
+    routePlanAbort?.abort()
+    routePlanAbort = null
   }
 
   function clearRoutePlan() {
@@ -100,7 +95,6 @@ export function useRoutePlanner() {
       rejectOutOfServiceArea()
       return
     }
-
     clearRoutePlan()
     destination.value = coordinates
     isDestinationConfirmed.value = false
@@ -119,20 +113,20 @@ export function useRoutePlanner() {
 
     clearRoutePlan()
     isDestinationConfirmed.value = true
-    isPlanningRoute.value = true
-    const currentRequest = new AbortController()
-    routeRequest = currentRequest
+
+    const controller = new AbortController()
+    routePlanAbort = controller
 
     try {
-      const nextPlan = await createRoutePlan(
-        currentDestination,
+      const plan = await planMutation.mutateAsync({
+        destination: currentDestination,
         departureDate,
-        currentRequest.signal,
-      )
-      if (routeRequest !== currentRequest) return
+        signal: controller.signal,
+      })
+      if (routePlanAbort !== controller) return
 
-      routePlan.value = nextPlan
-      selectedRouteId.value = nextPlan.routes[0]?.id ?? null
+      routePlan.value = plan
+      selectedRouteId.value = plan.routes[0]?.id ?? null
       if (!selectedRouteId.value) {
         routePlanError.value = "路線規劃完成，但沒有可顯示的候選路線"
         routePlanErrorKind.value = "generic"
@@ -150,10 +144,7 @@ export function useRoutePlanner() {
       }
       isDestinationConfirmed.value = false
     } finally {
-      if (routeRequest === currentRequest) {
-        isPlanningRoute.value = false
-        routeRequest = null
-      }
+      if (routePlanAbort === controller) routePlanAbort = null
     }
   }
 
@@ -168,16 +159,6 @@ export function useRoutePlanner() {
   function selectRoute(routeId: string) {
     selectedRouteId.value = routeId
   }
-
-  onMounted(() => {
-    void loadKiosk()
-    void loadMoovoStations()
-  })
-
-  onBeforeUnmount(() => {
-    cancelRouteRequest()
-    moovoRequest?.abort()
-  })
 
   return {
     kiosk,
@@ -194,7 +175,7 @@ export function useRoutePlanner() {
     departureMode,
     scheduledDateTime,
     nowLabel,
-    loadMoovoStations,
+    loadMoovoStations: () => void moovoQuery.refetch(),
     selectDestination,
     rejectOutOfServiceArea,
     confirmDestination,
