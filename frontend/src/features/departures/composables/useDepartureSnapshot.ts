@@ -22,10 +22,16 @@ export function useDepartureSnapshot(refreshMs = 30_000) {
       ? err.message
       : UI_FALLBACK_MESSAGES.departuresUnavailable
   })
+
+  /** Background refetch failed but cached data still available. */
+  const hasBackgroundError = computed(
+    () => !!errorMessage.value && !!snapshot.value,
+  )
+
   const routes = computed(() => snapshot.value?.routes ?? [])
   const nextBest = computed(
     () => routes.value.find((route) => route.section === "available") ?? null,
   )
 
-  return { snapshot, isLoading, errorMessage, routes, nextBest }
+  return { snapshot, isLoading, errorMessage, hasBackgroundError, routes, nextBest }
 }

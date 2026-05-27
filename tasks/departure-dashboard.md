@@ -24,8 +24,8 @@ In progress。主要資料模型、API 與首頁 UI 已完成；剩下 stale/off
 
 ## 待辦
 
-- [ ] 資料更新時間與 stale 判斷：最後更新、逾時、查詢失敗
-- [ ] 低干擾 loading / stale / offline / error 狀態
+- [x] 資料更新時間與 stale 判斷：最後更新、逾時、查詢失敗
+- [x] 低干擾 loading / stale / offline / error 狀態
 - [ ] 單一路線 detail API 與播報摘要共用資料
 - [ ] 評估是否需要 `get_nearby_stops`，目前需 GPS 座標，非 MVP
 

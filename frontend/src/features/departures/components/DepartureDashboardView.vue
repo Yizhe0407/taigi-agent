@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { LoaderCircle } from "@lucide/vue"
+import { LoaderCircle, WifiOff } from "@lucide/vue"
 import { computed, ref } from "vue"
 
 import { formatTaipeiHourMinute } from "@/lib/time"
@@ -13,13 +13,19 @@ import RouteDetailPanel from "./RouteDetailPanel.vue"
 import RouteList from "./RouteList.vue"
 
 const selectedRoute = ref<DepartureRouteStatus | null>(null)
-const { snapshot, isLoading, errorMessage, routes, nextBest } =
+const { snapshot, isLoading, errorMessage, hasBackgroundError, routes, nextBest } =
   useDepartureSnapshot()
 const { now } = useNow()
 const nowText = computed(() => formatTaipeiHourMinute(now.value))
 const { assignments: routeColorAssignments } = useRouteColors(
   computed(() => routes.value.map((route) => route.route)),
 )
+
+const lastUpdatedText = computed(() => {
+  const t = snapshot.value?.updatedAt
+  if (!t) return null
+  return formatTaipeiHourMinute(new Date(t))
+})
 </script>
 
 <template>
@@ -36,6 +42,16 @@ const { assignments: routeColorAssignments } = useRouteColors(
       </div>
     </div>
 
+    <!-- Background error banner — refetch failed but cached data still shown -->
+    <div
+      v-if="hasBackgroundError"
+      class="shrink-0 flex items-center gap-2.5 px-5 py-3 rounded-2xl text-base font-semibold bg-amber-50 text-amber-800 border border-amber-200"
+    >
+      <WifiOff class="size-5 shrink-0" :stroke-width="2.2" />
+      <span>目前無法更新資料，顯示最後紀錄<span v-if="lastUpdatedText">（{{ lastUpdatedText }}）</span></span>
+    </div>
+
+    <!-- First load: full-screen spinner -->
     <div v-if="isLoading && !snapshot" class="flex-1 flex items-center justify-center">
       <div class="flex items-center gap-3 text-lg font-semibold text-kiosk-muted">
         <LoaderCircle class="size-7 animate-spin" color="#6E685D" :stroke-width="2.2" />
@@ -43,8 +59,13 @@ const { assignments: routeColorAssignments } = useRouteColors(
       </div>
     </div>
 
+    <!-- First load: full-screen error (no cached data) -->
     <div v-else-if="errorMessage && !snapshot" class="flex-1 flex items-center justify-center">
-      <div class="text-lg font-semibold text-kiosk-err">{{ errorMessage }}</div>
+      <div class="flex flex-col items-center gap-3 text-center">
+        <WifiOff class="size-10 text-kiosk-err" :stroke-width="2" />
+        <div class="text-lg font-semibold text-kiosk-err">{{ errorMessage }}</div>
+        <div class="text-base text-kiosk-muted">請確認網路連線，系統會自動重試</div>
+      </div>
     </div>
 
     <div v-else class="flex-1 grid grid-cols-[minmax(0,1.1fr)_minmax(340px,1fr)] gap-5 min-h-0 max-[920px]:grid-cols-[minmax(0,1fr)] max-[920px]:auto-rows-auto max-[920px]:overflow-visible">
