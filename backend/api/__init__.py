@@ -13,7 +13,7 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor  # noqa: E
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor  # noqa: E402
 
 from agent.telemetry import configure_telemetry  # noqa: E402
-from config import Settings  # noqa: E402
+from config import parse_cors_origins  # noqa: E402
 
 from .asr import router as asr_router  # noqa: E402
 from .chat import router as chat_router  # noqa: E402
@@ -24,14 +24,7 @@ from .tts import router as tts_router  # noqa: E402
 
 app = FastAPI(title="Taigi Bus Agent API")
 
-# Settings has its own CORS parsing; reuse it so the env contract has a
-# single source. Settings.from_env() may raise if LLM_* are missing — when
-# that happens we still want CORS off rather than blocking the API import.
-try:
-    cors_origins = Settings.from_env().cors_origins
-except RuntimeError:
-    cors_origins = []
-
+cors_origins = parse_cors_origins()
 if cors_origins:
     app.add_middleware(
         CORSMiddleware,

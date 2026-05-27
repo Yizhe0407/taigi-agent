@@ -22,9 +22,24 @@ def test_exact_returns_all_records_with_matching_name(tmp_path, monkeypatch):
     _write_catalog(
         path,
         [
-            {"id": "THB249193", "name": "虎尾", "latitude": 23.709539, "longitude": 120.434305},
-            {"id": "THB248875", "name": "虎尾圓環", "latitude": 23.71019, "longitude": 120.43696},
-            {"id": "THB248876", "name": "虎尾圓環", "latitude": 23.7102, "longitude": 120.4369},
+            {
+                "id": "THB249193",
+                "name": "虎尾",
+                "latitude": 23.709539,
+                "longitude": 120.434305,
+            },
+            {
+                "id": "THB248875",
+                "name": "虎尾圓環",
+                "latitude": 23.71019,
+                "longitude": 120.43696,
+            },
+            {
+                "id": "THB248876",
+                "name": "虎尾圓環",
+                "latitude": 23.7102,
+                "longitude": 120.4369,
+            },
         ],
     )
     _use_catalog(monkeypatch, path)
@@ -38,7 +53,14 @@ def test_exact_returns_empty_when_name_not_present(tmp_path, monkeypatch):
     path = tmp_path / "stops.json"
     _write_catalog(
         path,
-        [{"id": "THB249193", "name": "虎尾", "latitude": 23.709539, "longitude": 120.434305}],
+        [
+            {
+                "id": "THB249193",
+                "name": "虎尾",
+                "latitude": 23.709539,
+                "longitude": 120.434305,
+            }
+        ],
     )
     _use_catalog(monkeypatch, path)
 

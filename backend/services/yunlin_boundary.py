@@ -14,6 +14,7 @@ type MultiPolygonCoordinates = tuple[PolygonCoordinates, ...]
 
 _BOUNDARY_PATH = Path(__file__).resolve().parents[1] / "data/geo/yunlin-county.geojson"
 _EPSILON = 1e-10
+_MAINLAND_MIN_BBOX_AREA_SQ_DEG = 0.01
 
 
 def _lng_lat_pair(value: Any) -> LngLat | None:
@@ -39,6 +40,19 @@ def _parse_polygon(value: Any) -> PolygonCoordinates:
     return tuple(ring for item in value if len(ring := _parse_ring(item)) >= 4)
 
 
+def _ring_bbox_area(ring: LinearRing) -> float:
+    min_lng = min(lng for lng, _ in ring)
+    max_lng = max(lng for lng, _ in ring)
+    min_lat = min(lat for _, lat in ring)
+    max_lat = max(lat for _, lat in ring)
+    return (max_lng - min_lng) * (max_lat - min_lat)
+
+
+def _is_mainland_polygon(polygon: PolygonCoordinates) -> bool:
+    outer_ring = polygon[0]
+    return _ring_bbox_area(outer_ring) >= _MAINLAND_MIN_BBOX_AREA_SQ_DEG
+
+
 @lru_cache(maxsize=1)
 def yunlin_polygons() -> MultiPolygonCoordinates:
     payload = json.loads(_BOUNDARY_PATH.read_text(encoding="utf-8"))
@@ -49,7 +63,7 @@ def yunlin_polygons() -> MultiPolygonCoordinates:
     return tuple(
         polygon
         for item in geometry["coordinates"]
-        if len(polygon := _parse_polygon(item)) > 0
+        if len(polygon := _parse_polygon(item)) > 0 and _is_mainland_polygon(polygon)
     )
 
 

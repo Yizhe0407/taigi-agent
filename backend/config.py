@@ -26,6 +26,12 @@ from agent.tools import TOOL_HANDLERS, TOOL_SCHEMAS
 from tools.kiosk_bus import prefetch_route_arrival_context
 
 
+def parse_cors_origins() -> list[str]:
+    """Parse API_CORS_ORIGINS without requiring LLM settings."""
+    cors_raw = os.getenv("API_CORS_ORIGINS", "")
+    return [origin.strip() for origin in cors_raw.split(",") if origin.strip()]
+
+
 @dataclass(frozen=True)
 class Settings:
     """Parsed and validated environment-variable configuration."""
@@ -72,8 +78,6 @@ class Settings:
                 f"Required env vars not set: {', '.join(missing)}"
             )
 
-        cors_raw = os.getenv("API_CORS_ORIGINS", "")
-
         return cls(
             llm_base_url=llm_base_url,
             llm_model=llm_model,
@@ -87,7 +91,7 @@ class Settings:
             tts_model=os.getenv("TTS_MODEL", "tts-1"),
             tts_voice=os.getenv("TTS_VOICE", "taigi"),
             tts_api_key=os.getenv("TTS_API_KEY", ""),
-            cors_origins=[o.strip() for o in cors_raw.split(",") if o.strip()],
+            cors_origins=parse_cors_origins(),
         )
 
 
@@ -107,7 +111,10 @@ def make_agent_session(
         input_enricher = prefetch_route_arrival_context
 
     return AgentSession(
-        client=AsyncOpenAI(base_url=settings.llm_base_url, api_key=settings.llm_api_key),
+        client=AsyncOpenAI(
+            base_url=settings.llm_base_url,
+            api_key=settings.llm_api_key,
+        ),
         model=settings.llm_model,
         system_prompt=build_system_prompt(),
         tool_schemas=TOOL_SCHEMAS,
