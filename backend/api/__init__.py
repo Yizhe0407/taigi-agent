@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 from dotenv import load_dotenv
 
 # Must precede all domain imports — modules read env vars at import time.
@@ -15,6 +13,7 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor  # noqa: E
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor  # noqa: E402
 
 from agent.telemetry import configure_telemetry  # noqa: E402
+from config import Settings  # noqa: E402
 
 from .asr import router as asr_router  # noqa: E402
 from .chat import router as chat_router  # noqa: E402
@@ -23,14 +22,16 @@ from .moovo import router as moovo_router  # noqa: E402
 from .route_plans import router as route_plans_router  # noqa: E402
 from .tts import router as tts_router  # noqa: E402
 
-
-def _cors_origins() -> list[str]:
-    raw = os.getenv("API_CORS_ORIGINS", "")
-    return [o.strip() for o in raw.split(",") if o.strip()]
-
-
 app = FastAPI(title="Taigi Bus Agent API")
-cors_origins = _cors_origins()
+
+# Settings has its own CORS parsing; reuse it so the env contract has a
+# single source. Settings.from_env() may raise if LLM_* are missing — when
+# that happens we still want CORS off rather than blocking the API import.
+try:
+    cors_origins = Settings.from_env().cors_origins
+except RuntimeError:
+    cors_origins = []
+
 if cors_origins:
     app.add_middleware(
         CORSMiddleware,

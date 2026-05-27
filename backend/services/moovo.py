@@ -1,39 +1,46 @@
-"""MOOVO public bike station provider backed by TDX Bike v2."""
+"""MOOVO bike-station service — parsing + cache + spatial queries.
+
+Errors are re-exported from `providers.moovo` so HTTP routes can catch them
+without reaching across layers; callers should rely on this module for any
+high-level station lookup.
+"""
 
 from __future__ import annotations
 
 import math
 import os
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-import requests
-
-_TOKEN_URL = (
-    "https://tdx.transportdata.tw/auth/realms/TDXConnect/"
-    "protocol/openid-connect/token"
+from providers.moovo import (
+    MoovoApiError,
+    MoovoConfigError,
+    MoovoError,
+    TdxBikeProvider,
 )
-_TDX_BIKE_BASE_URL = "https://tdx.transportdata.tw/api/basic/v2/Bike"
-_YUNLIN_CITY = "YunlinCounty"
+
+__all__ = [
+    "MoovoApiError",
+    "MoovoConfigError",
+    "MoovoError",
+    "MoovoStation",
+    "NearbyMoovoStation",
+    "clear_moovo_cache",
+    "get_provider",
+    "load_moovo_stations",
+    "nearby_moovo_stations",
+    "provider_override",
+    "set_provider",
+]
+
 _DEFAULT_CACHE_TTL_SECONDS = 60
 _DEFAULT_RADIUS_METERS = 1000
 _DEFAULT_LIMIT = 20
 _MAX_RADIUS_METERS = 5000
-_REQUEST_TIMEOUT_SECONDS = 20
-
-
-class MoovoError(RuntimeError):
-    """Raised when MOOVO station data cannot be returned."""
-
-
-class MoovoConfigError(MoovoError):
-    """Raised when TDX credentials are not configured."""
-
-
-class MoovoApiError(MoovoError):
-    """Raised when TDX Bike API returns unusable data."""
 
 
 @dataclass(frozen=True)
@@ -56,8 +63,38 @@ class NearbyMoovoStation:
     distance_meters: float
 
 
+# ── provider plumbing ─────────────────────────────────────────────────────────
+
+_provider: TdxBikeProvider = TdxBikeProvider()
 _stations_cache: tuple[float, tuple[MoovoStation, ...]] | None = None
-_token_cache: tuple[float, str] | None = None
+
+
+def get_provider() -> TdxBikeProvider:
+    return _provider
+
+
+def set_provider(provider: TdxBikeProvider) -> None:
+    """Swap the active provider; clears the station cache so the next read
+    pulls fresh data from the new upstream."""
+    global _provider
+    _provider = provider
+    clear_moovo_cache()
+
+
+@contextmanager
+def provider_override(provider: TdxBikeProvider) -> Iterator[TdxBikeProvider]:
+    previous = _provider
+    set_provider(provider)
+    try:
+        yield provider
+    finally:
+        set_provider(previous)
+
+
+def clear_moovo_cache() -> None:
+    """Clear the in-memory station cache. Intended for tests and refreshes."""
+    global _stations_cache
+    _stations_cache = None
 
 
 def _cache_ttl_seconds() -> int:
@@ -68,93 +105,7 @@ def _cache_ttl_seconds() -> int:
     return max(0, value)
 
 
-def _tdx_credentials() -> tuple[str, str]:
-    client_id = os.getenv("TDX_CLIENT_ID")
-    client_secret = os.getenv("TDX_CLIENT_SECRET")
-    if not client_id or not client_secret:
-        raise MoovoConfigError("TDX_CLIENT_ID / TDX_CLIENT_SECRET not configured")
-    return client_id, client_secret
-
-
-def _get_tdx_token(session: requests.Session) -> str:
-    global _token_cache
-
-    now = time.monotonic()
-    if _token_cache is not None:
-        expires_at, token = _token_cache
-        if now < expires_at:
-            return token
-
-    client_id, client_secret = _tdx_credentials()
-    try:
-        response = session.post(
-            _TOKEN_URL,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": client_id,
-                "client_secret": client_secret,
-            },
-            timeout=_REQUEST_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except requests.RequestException as error:
-        raise MoovoApiError(f"TDX token request failed: {error}") from error
-    except ValueError as error:
-        raise MoovoApiError("TDX token response is not valid JSON") from error
-
-    token = payload.get("access_token")
-    if not isinstance(token, str) or not token:
-        raise MoovoApiError("TDX token response has no access_token")
-
-    expires_in = payload.get("expires_in")
-    ttl = int(expires_in) if isinstance(expires_in, int | float) else 3600
-    _token_cache = (now + max(60, ttl - 60), token)
-    return token
-
-
-def _tdx_get_json(
-    session: requests.Session,
-    token: str,
-    path: str,
-    *,
-    params: dict[str, str] | None = None,
-) -> Any:
-    try:
-        response = session.get(
-            f"{_TDX_BIKE_BASE_URL}/{path}",
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-            params=params,
-            timeout=_REQUEST_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as error:
-        raise MoovoApiError(f"TDX Bike request failed: {error}") from error
-    except ValueError as error:
-        raise MoovoApiError("TDX Bike response is not valid JSON") from error
-
-
-def _fetch_tdx_payloads() -> tuple[list[Any], list[Any]]:
-    with requests.Session() as session:
-        token = _get_tdx_token(session)
-        params = {"$format": "JSON"}
-        stations = _tdx_get_json(
-            session,
-            token,
-            f"Station/City/{_YUNLIN_CITY}",
-            params=params,
-        )
-        availability = _tdx_get_json(
-            session,
-            token,
-            f"Availability/City/{_YUNLIN_CITY}",
-            params=params,
-        )
-
-    if not isinstance(stations, list) or not isinstance(availability, list):
-        raise MoovoApiError("TDX Bike station response is not a list")
-    return stations, availability
+# ── parsing ───────────────────────────────────────────────────────────────────
 
 
 def _zh_name(data: dict[str, Any], field: str) -> str | None:
@@ -261,15 +212,11 @@ def _merge_station_payloads(
     return tuple(stations)
 
 
-def clear_moovo_cache() -> None:
-    """Clear in-memory MOOVO caches. Intended for tests and manual refreshes."""
-    global _stations_cache, _token_cache
-    _stations_cache = None
-    _token_cache = None
+# ── public service API ────────────────────────────────────────────────────────
 
 
 def load_moovo_stations(*, force_refresh: bool = False) -> tuple[MoovoStation, ...]:
-    """Load Yunlin MOOVO stations from TDX Bike v2 with a short TTL cache."""
+    """Load Yunlin MOOVO stations from TDX with a short TTL cache."""
     global _stations_cache
 
     now = time.monotonic()
@@ -279,7 +226,7 @@ def load_moovo_stations(*, force_refresh: bool = False) -> tuple[MoovoStation, .
         if ttl > 0 and now - fetched_at < ttl:
             return stations
 
-    stations_payload, availability_payload = _fetch_tdx_payloads()
+    stations_payload, availability_payload = _provider.fetch_station_payloads()
     stations = _merge_station_payloads(stations_payload, availability_payload)
     if not stations:
         raise MoovoApiError("TDX Bike Yunlin station response is empty")

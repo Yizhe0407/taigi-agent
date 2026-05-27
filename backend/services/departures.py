@@ -1,24 +1,61 @@
 """Departure decisions for the kiosk stop — single classification source.
 
-This module owns the rules that turn a raw ebus ETA row into a user-facing
+This module owns the rules that turn a raw bus ETA row into a user-facing
 decision. Both the HTTP API (structured dataclasses) and the LLM agent
 (string renderers) call into the same `_classify_stop` so their wording
 cannot drift.
 
-Provider I/O lives in `tools.yunlin_ebus`; this module treats it as a pure
-fetch layer.
+Provider I/O is reached through the `BusProvider` Protocol; the active
+instance lives at module scope (`_provider`) and can be swapped via
+`set_provider()` — tests inject a fake, production wires the concrete
+`YunlinEbusProvider`.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
-from tools import yunlin_ebus
+from providers.bus import BusProvider
+from providers.yunlin_ebus import YunlinEbusProvider
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+
+_provider: BusProvider = YunlinEbusProvider()
+
+
+def get_provider() -> BusProvider:
+    return _provider
+
+
+def set_provider(provider: BusProvider) -> None:
+    """Swap the active `BusProvider` (boot-time wiring, multi-region rollouts).
+
+    Prefer `provider_override()` from test / scoped code so the previous
+    instance is restored automatically.
+    """
+    global _provider
+    _provider = provider
+
+
+@contextmanager
+def provider_override(provider: BusProvider) -> Iterator[BusProvider]:
+    """Scope a temporary BusProvider; restore the previous one on exit.
+
+    Use this from tests and short-lived swaps so a thrown exception or an
+    early return cannot leave the module pinned to a fake provider.
+    """
+    previous = _provider
+    set_provider(provider)
+    try:
+        yield provider
+    finally:
+        set_provider(previous)
 
 
 class DepartureSection(StrEnum):
@@ -39,7 +76,7 @@ class DepartureDecision(StrEnum):
 
 
 class DepartureSnapshotUnavailable(RuntimeError):
-    """Raised when the upstream ebus source cannot provide departure data."""
+    """Raised when the upstream source cannot provide departure data."""
 
 
 class RouteDetailNotFound(RuntimeError):
@@ -47,7 +84,7 @@ class RouteDetailNotFound(RuntimeError):
 
 
 class RouteDetailUnavailable(RuntimeError):
-    """Raised when the upstream ebus source cannot provide route details."""
+    """Raised when the upstream source cannot provide route details."""
 
 
 @dataclass(frozen=True)
@@ -154,7 +191,7 @@ def _classify_stop(
     int,
     int,
 ]:
-    """Classify an ebus ETA row into a user-facing departure decision.
+    """Classify a bus ETA row into a user-facing departure decision.
 
     Returns (section, decision, status_text, decision_text, minutes,
              scheduled_time, sort_priority, sort_minutes).
@@ -313,14 +350,15 @@ def build_departure_snapshot(
 ) -> StopDepartureSnapshot:
     """Build a structured departure snapshot for one stop.
 
-    Deterministic product layer: converts raw ebus ETA rows into stable
+    Deterministic product layer: converts raw bus ETA rows into stable
     sections and decisions that the dashboard, TTS, and avatar can share.
     """
     now = datetime.now(TAIPEI_TZ)
+    provider = get_provider()
 
     try:
-        eta_data = yunlin_ebus._fetch_eta_at_stop(stop_name)
-        route_info = yunlin_ebus._load_route_info(stop_name)
+        eta_data = provider.fetch_eta_at_stop(stop_name)
+        route_info = provider.load_route_info(stop_name)
     except Exception as error:
         raise DepartureSnapshotUnavailable(f"雲林公車查詢失敗：{error}") from error
 
@@ -351,7 +389,7 @@ def build_departure_snapshot(
             priority,
             sort_minutes,
         ) = _classify_stop(stop, now)
-        direction = yunlin_ebus._direction_label(route, stop_name, stop_go_back)
+        direction = provider.direction_label(route, stop_name, stop_go_back)
         dedupe_key = (route, stop_go_back, status_text)
         if dedupe_key in seen:
             continue
@@ -391,8 +429,9 @@ def build_route_detail(
     go_back: int | None = None,
 ) -> DepartureRouteDetail:
     """Build structured stop-order details for a route serving one kiosk stop."""
+    provider = get_provider()
     try:
-        route_info = yunlin_ebus._load_route_info(stop_name)
+        route_info = provider.load_route_info(stop_name)
     except Exception as error:
         raise RouteDetailUnavailable(f"雲林公車查詢失敗：{error}") from error
 
@@ -402,10 +441,10 @@ def build_route_detail(
 
     route_id = _as_int(info.get("id"))
     if route_id is None:
-        raise RouteDetailUnavailable(f"路線 {route} 的 ebus route id 格式異常")
+        raise RouteDetailUnavailable(f"路線 {route} 的 route id 格式異常")
 
     try:
-        estimate_data = yunlin_ebus._fetch_route_estimate(route_id)
+        estimate_data = provider.fetch_route_estimate(route_id)
     except Exception as error:
         raise RouteDetailUnavailable(f"雲林公車查詢失敗：{error}") from error
 
@@ -423,7 +462,7 @@ def build_route_detail(
     directions = tuple(
         RouteDirectionDetail(
             go_back=row_go_back,
-            label=yunlin_ebus._direction_label(route, stop_name, row_go_back),
+            label=provider.direction_label(route, stop_name, row_go_back),
             stops=tuple(sorted(stops, key=lambda stop: stop.seq)),
         )
         for row_go_back, stops in sorted(by_direction.items())
@@ -460,8 +499,9 @@ def render_arrivals(
     go_back: int | None = None,
 ) -> str:
     """Render `route` arrivals at `stop_name` as a kiosk-style string."""
+    provider = get_provider()
     try:
-        route_id = yunlin_ebus._get_route_id(route, stop_name)
+        route_id = provider.get_route_id(route, stop_name)
     except Exception as error:
         return f"雲林公車查詢失敗：{error}"
 
@@ -469,7 +509,7 @@ def render_arrivals(
         return f"在「{stop_name}」找不到停靠路線 {route}"
 
     try:
-        data = yunlin_ebus._fetch_route_estimate(route_id)
+        data = provider.fetch_route_estimate(route_id)
     except Exception as error:
         return f"雲林公車查詢失敗：{error}"
 
@@ -485,7 +525,7 @@ def render_arrivals(
     results = []
     for stop in matches:
         stop_go_back = stop.get("GoBack", 1)
-        label = yunlin_ebus._direction_label(route, stop_name, stop_go_back)
+        label = provider.direction_label(route, stop_name, stop_go_back)
         _, _, status_text, _, _, _, _, _ = _classify_stop(stop, now)
         results.append(f"{label}：{status_text}")
 
@@ -497,9 +537,10 @@ def render_stop_arrival_statuses(
     go_back: int | None = None,
 ) -> str:
     """Render every route currently serving `stop_name` grouped by section."""
+    provider = get_provider()
     try:
-        eta_data = yunlin_ebus._fetch_eta_at_stop(stop_name)
-        route_info = yunlin_ebus._load_route_info(stop_name)
+        eta_data = provider.fetch_eta_at_stop(stop_name)
+        route_info = provider.load_route_info(stop_name)
     except Exception as error:
         return f"雲林公車查詢失敗：{error}"
 
@@ -533,7 +574,7 @@ def render_stop_arrival_statuses(
         if group is None:
             continue
 
-        label = yunlin_ebus._direction_label(route, stop_name, stop_go_back)
+        label = provider.direction_label(route, stop_name, stop_go_back)
         line = f"{route} {label}：{status_text}"
         if line in seen:
             continue
@@ -554,8 +595,9 @@ def render_stop_arrival_statuses(
 
 def render_route_stops(route: str, stop_name: str) -> str:
     """Render the full stop sequence (both directions) of `route`."""
+    provider = get_provider()
     try:
-        route_id = yunlin_ebus._get_route_id(route, stop_name)
+        route_id = provider.get_route_id(route, stop_name)
     except Exception as error:
         return f"雲林公車查詢失敗：{error}"
 
@@ -563,7 +605,7 @@ def render_route_stops(route: str, stop_name: str) -> str:
         return f"在「{stop_name}」找不到停靠路線 {route}"
 
     try:
-        data = yunlin_ebus._fetch_route_estimate(route_id)
+        data = provider.fetch_route_estimate(route_id)
     except Exception as error:
         return f"雲林公車查詢失敗：{error}"
 
@@ -579,8 +621,31 @@ def render_route_stops(route: str, stop_name: str) -> str:
 
     results = []
     for go_back, stops in sorted(by_direction.items()):
-        label = yunlin_ebus._direction_label(route, stop_name, go_back)
+        label = provider.direction_label(route, stop_name, go_back)
         ordered = [name for _, name in sorted(stops)]
         results.append(f"{label}：{'→'.join(ordered)}")
 
     return "\n".join(results)
+
+
+def render_routes_at_stop(stop_name: str) -> str:
+    """Render the list of routes serving `stop_name` (no ETA, no classify)."""
+    provider = get_provider()
+    try:
+        data = provider.fetch_routes_at_stop(stop_name)
+    except Exception as error:
+        return f"站名查詢失敗：{error}"
+
+    if not data:
+        return f"找不到「{stop_name}」這個站牌"
+
+    seen: set[str] = set()
+    lines: list[str] = []
+    for r in data:
+        name = r.get("name", "?")
+        if name not in seen:
+            seen.add(name)
+            desc = r.get("ddesc", "")
+            lines.append(f"{name}（{desc}）")
+
+    return f"「{stop_name}」停靠路線：\n" + "\n".join(lines)

@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from tools import stop_catalog
+from services import stop_catalog
 
 
 def _write_catalog(path, stops, *, schema_version=stop_catalog._SCHEMA_VERSION):

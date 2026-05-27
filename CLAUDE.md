@@ -28,13 +28,14 @@ backend/
   main.py          # 入口：load_dotenv() → agent.loop.run()
   config.py        # Settings（all env vars）+ make_agent_session 工廠；API 層與 CLI 共用
   api/
-    __init__.py    # FastAPI app 建立 + CORS + include_router（uvicorn api:app）
-    chat.py        # /api/chat/* + in-process session store（_chat_sessions）
-    departures.py  # /api/departures/here + /api/departures/routes/{route}/detail
-    route_plans.py # /api/route-plans + /api/kiosk
-    moovo.py       # /api/moovo/*
-    asr.py         # /api/asr（Qwen3-ASR proxy）
-    tts.py         # /api/tts（HanloFlow → Taibun → Piper TTS proxy）
+    __init__.py      # FastAPI app + CORS（讀 Settings.cors_origins）+ include_router
+    chat.py          # /api/chat/* — SQLite-backed ChatSessionStore，跨 reload 存活
+    session_store.py # ChatSessionStore：SQLite (.agent_state/sessions.db) + TTL
+    departures.py    # /api/departures/here + /api/departures/routes/{route}/detail
+    route_plans.py   # /api/route-plans + /api/kiosk
+    moovo.py         # /api/moovo/*
+    asr.py           # /api/asr（Qwen3-ASR proxy）
+    tts.py           # /api/tts（HanloFlow → Taibun → Piper TTS proxy）
   agent/
     loop.py          # CLI I/O：讀 input、印回答，呼叫 AgentSession
     session.py       # Harness orchestration：messages + tool-call loop + context recovery
@@ -47,14 +48,19 @@ backend/
     context.py       # token budget、ContextStore、transcript / 長 tool result compact
   pipeline/
     text_processor.py  # Mandarin → HanloFlow(漢羅) → Taibun(Tailo)；module-level 單例
+  providers/
+    bus.py         # BusProvider Protocol：fetch_*, load_route_info, direction_label
+    yunlin_ebus.py # YunlinEbusProvider 實作（requests + per-instance route cache + TTL）
+    otp.py         # OpenTripPlanner GraphQL provider：BUS planConnection 與 itinerary parser
+    moovo.py       # TdxBikeProvider：TDX OAuth + station / availability fetch
   services/
-    departures.py  # 唯一分類來源：_classify_stop、build_*（API 結構化）、render_*（agent str）
-  tools/
-    kiosk_bus.py   # Kiosk facade：站名縮寫、KIOSK_STOP/DIRECTION、prefetch；委派 services
-    kiosk_route_planner.py  # Kiosk 固定出發、前端地圖選點目的地的 OTP planner
-    otp.py         # OTP GTFS GraphQL provider：BUS planConnection 與 itinerary parser
+    departures.py  # 唯一分類來源；module-level _provider + set_provider() / provider_override()
+    route_plans.py # OTP 路線規劃 facade（kiosk 起點 + 雲林邊界 + view model）
+    moovo.py       # 公共自行車站 dataclass + 解析 + cache + 距離查詢
     stop_catalog.py  # 讀取 TDX / GTFS 更新流程產生的雲林 stop index
-    yunlin_ebus.py # 雲林公車 ebus provider（pure I/O：fetch + 路線快取 + 方向標籤）
+    yunlin_boundary.py  # 雲林縣 GeoJSON 多邊形 point-in-polygon
+  tools/
+    kiosk_bus.py   # 唯一剩下的 agent str facade：站名縮寫 + KIOSK_STOP/DIRECTION + prefetch
   scripts/
     update_yunlin_gtfs.py  # TDX GTFS 與 stop metadata 更新流程
   otp/
@@ -85,18 +91,20 @@ frontend/
 
 ## 加新工具的步驟
 
-1. 領域邏輯（分類、決策、結構化 dataclass）寫在 `backend/services/`；provider I/O 寫在 `backend/tools/`
-2. Agent 看到的 str 形式：在 services 提供 `render_*` 函式，或在 `backend/tools/` 的 facade 內呼叫 services
-3. 在 `backend/agent/tools.py` 加 import
-4. 在 `TOOL_SCHEMAS` 加一筆 OpenAI function calling 格式的 schema
-5. 在 `TOOL_HANDLERS` 加 `"函式名": 函式` 的對應
-6. `AgentSession` 不加公車專屬分支；若需輸入預取，從入口注入 `input_enricher`
+1. 外部資料源：在 `backend/providers/` 加 Protocol（同類型已存在就重用）+ 具體實作。
+2. 領域邏輯（分類、決策、結構化 dataclass）寫在 `backend/services/`，靠 Protocol 呼叫 provider。
+3. Agent 看到的 str 形式：在 services 提供 `render_*` 函式，或在 `backend/tools/` 的 facade 內呼叫 services。
+4. 在 `backend/agent/tools.py` 加 import。
+5. 在 `TOOL_SCHEMAS` 加一筆 OpenAI function calling 格式的 schema。
+6. 在 `TOOL_HANDLERS` 加 `"函式名": 函式` 的對應。
+7. `AgentSession` 不加公車專屬分支；若需輸入預取，從入口注入 `input_enricher`。
 
 ## 已知技術債
 
-- **ebus 後端介面不是本專題控制的公開契約**：目前雲林站牌資料覆蓋足夠，provider 存取集中在 `backend/tools/yunlin_ebus.py`。若 endpoint 或 payload 改版，先修這層，不把格式假設散到 agent loop。
+- **ebus 後端介面不是本專題控制的公開契約**：欲換縣市或加 fallback 時，新實作只要滿足 `backend/providers/bus.py` 的 `BusProvider` Protocol，再透過 `services.departures.set_provider()` 換掉預設 `YunlinEbusProvider` 即可。若 ebus payload 改版，修補只發生在 `backend/providers/yunlin_ebus.py`。
 - **Compact 後的完整內容暫無 retrieval tool**：`AgentSession` 會把 transcript 與長 tool result 保存到 `.agent_state/`，active context 只保留摘要、路徑與預覽。若後續讓 agent 主動回讀壓縮資料，需要明確的 retrieval tool 與資料保留策略。
-- **Chat session 存活在 api/chat.py process 記憶體**：`_chat_sessions` dict 不跨 worker、不跨重啟存活；session TTL 30 分鐘靠 `_purge_expired_sessions()` 懶清，適合單機 kiosk，若要 scale out 需改用外部 store。
+- **Chat session 持久化在單檔 SQLite**：`.agent_state/sessions.db` 由 `api/session_store.py` 寫入，跨 `--reload` 與 crash 存活，但仍綁單機檔案。若 scale out 多 worker / 多機，需改用外部 KV / Redis。
+- **Provider sync (`requests`) 與 FastAPI async 並存**：所有 provider 仍是同步呼叫；chat / route plan / departures 在需要時用 `asyncio.to_thread` 包裝。單機 kiosk 收益有限，未做完整 async 遷移。
 
 ## 已知 Gotcha
 

@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from config import Settings
-from tools.kiosk_route_planner import (
+from services.route_plans import (
     InvalidRouteDestination,
     RoutePlanningUnavailable,
     RoutePlanNotFound,
@@ -103,7 +103,7 @@ class KioskResponse(BaseModel):
 @router.get("/api/kiosk", response_model=KioskResponse)
 def get_kiosk() -> object:
     """Return the kiosk stop name and its actual OTP origin coordinates."""
-    from tools.kiosk_route_planner import _kiosk_place  # noqa: PLC0415
+    from services.route_plans import _kiosk_place  # noqa: PLC0415
 
     place = _kiosk_place()
     if place is None:

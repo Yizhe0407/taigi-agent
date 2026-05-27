@@ -3,7 +3,7 @@ from datetime import datetime
 import polyline
 import pytest
 
-from tools import otp
+from providers import otp
 
 
 class Response:

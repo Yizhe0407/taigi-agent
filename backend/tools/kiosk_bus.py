@@ -16,7 +16,6 @@ import os
 import re
 
 from services import departures
-from tools import yunlin_ebus
 
 # 站名縮寫對照：使用者說「雲科大」但 API 站名是「雲林科技大學」
 _ALIASES: dict[str, str] = {
@@ -53,7 +52,7 @@ def _kiosk_go_back_filter() -> int | None:
 
 def get_routes_at_stop(stop_name: str) -> str:
     """查詢指定站牌停靠路線，並套用 Kiosk 常用站名縮寫。"""
-    return yunlin_ebus.get_routes_at_stop(_resolve(stop_name))
+    return departures.render_routes_at_stop(_resolve(stop_name))
 
 
 def get_route_stops(route: str) -> str:

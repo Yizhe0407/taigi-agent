@@ -8,7 +8,7 @@ from typing import NoReturn
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from tools.moovo import (
+from services.moovo import (
     MoovoApiError,
     MoovoConfigError,
     MoovoError,

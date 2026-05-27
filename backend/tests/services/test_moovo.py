@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from tools import moovo
+from providers.moovo import TdxBikeProvider
+from services import moovo
 
 
 def _station_payload(
@@ -22,6 +23,27 @@ def _station_payload(
             "PositionLon": longitude,
         },
     }
+
+
+class FakeTdxBikeProvider(TdxBikeProvider):
+    """Skip TDX HTTP; deliver injected payloads.
+
+    Inherits the parent class so type checks against TdxBikeProvider pass —
+    overriding only the network entry point keeps the contract honest.
+    """
+
+    def __init__(
+        self,
+        stations: list[object],
+        availability: list[object],
+    ) -> None:
+        super().__init__()
+        self._payloads = (stations, availability)
+        self.fetch_count = 0
+
+    def fetch_station_payloads(self):  # type: ignore[override]
+        self.fetch_count += 1
+        return self._payloads
 
 
 def test_merge_station_payloads_combines_tdx_station_and_availability() -> None:
@@ -105,24 +127,16 @@ def test_nearby_moovo_stations_filters_and_sorts(monkeypatch) -> None:
 
 
 def test_load_moovo_stations_uses_cache(monkeypatch) -> None:
-    calls = 0
-
-    def fake_fetch() -> tuple[list[object], list[object]]:
-        nonlocal calls
-        calls += 1
-        return (
-            [_station_payload("YUN100", "雲林科技大學")],
-            [{"StationUID": "YUN100", "AvailableRentBikes": 2}],
-        )
-
-    moovo.clear_moovo_cache()
+    provider = FakeTdxBikeProvider(
+        stations=[_station_payload("YUN100", "雲林科技大學")],
+        availability=[{"StationUID": "YUN100", "AvailableRentBikes": 2}],
+    )
     monkeypatch.setenv("MOOVO_CACHE_TTL_SECONDS", "60")
-    monkeypatch.setattr(moovo, "_fetch_tdx_payloads", fake_fetch)
 
-    first = moovo.load_moovo_stations()
-    second = moovo.load_moovo_stations()
+    with moovo.provider_override(provider):
+        first = moovo.load_moovo_stations()
+        second = moovo.load_moovo_stations()
 
-    assert calls == 1
+    assert provider.fetch_count == 1
     assert first is second
     assert first[0].available_rent_bikes == 2
-    moovo.clear_moovo_cache()

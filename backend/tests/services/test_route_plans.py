@@ -2,8 +2,9 @@ from datetime import datetime
 
 import pytest
 
-from tools import kiosk_route_planner, otp
-from tools.stop_catalog import StopCatalog, StopRecord
+from providers import otp
+from services import route_plans as kiosk_route_planner
+from services.stop_catalog import StopCatalog, StopRecord
 
 
 def _time(value: str) -> datetime:

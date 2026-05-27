@@ -9,7 +9,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from tools.otp import Coordinate
+from providers.otp import Coordinate
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_CATALOG_PATH = _BACKEND_ROOT / "otp/data/yunlin-stop-index.json"
