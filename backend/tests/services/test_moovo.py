@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 
 from providers.moovo import TdxBikeProvider
@@ -41,7 +42,7 @@ class FakeTdxBikeProvider(TdxBikeProvider):
         self._payloads = (stations, availability)
         self.fetch_count = 0
 
-    def fetch_station_payloads(self):  # type: ignore[override]
+    async def fetch_station_payloads(self):  # type: ignore[override]
         self.fetch_count += 1
         return self._payloads
 
@@ -113,12 +114,17 @@ def test_nearby_moovo_stations_filters_and_sorts(monkeypatch) -> None:
             update_time=None,
         ),
     )
-    monkeypatch.setattr(moovo, "load_moovo_stations", lambda: stations)
+    async def fake_load_stations():
+        return stations
 
-    nearby = moovo.nearby_moovo_stations(
-        23.696147,
-        120.534823,
-        radius_meters=100,
+    monkeypatch.setattr(moovo, "load_moovo_stations", fake_load_stations)
+
+    nearby = asyncio.run(
+        moovo.nearby_moovo_stations(
+            23.696147,
+            120.534823,
+            radius_meters=100,
+        )
     )
 
     assert len(nearby) == 1
@@ -134,8 +140,8 @@ def test_load_moovo_stations_uses_cache(monkeypatch) -> None:
     monkeypatch.setenv("MOOVO_CACHE_TTL_SECONDS", "60")
 
     with moovo.provider_override(provider):
-        first = moovo.load_moovo_stations()
-        second = moovo.load_moovo_stations()
+        first = asyncio.run(moovo.load_moovo_stations())
+        second = asyncio.run(moovo.load_moovo_stations())
 
     assert provider.fetch_count == 1
     assert first is second

@@ -119,10 +119,10 @@ def get_kiosk() -> object:
 
 
 @router.post("/api/route-plans", response_model=RoutePlanResponse)
-def create_route_plan(request: RoutePlanRequest) -> object:
+async def create_route_plan(request: RoutePlanRequest) -> object:
     """Plan from the configured Kiosk origin to a frontend-selected destination."""
     try:
-        plan = plan_route_to_coordinate(
+        plan = await plan_route_to_coordinate(
             request.destination.lat,
             request.destination.lng,
             request.departure_time,

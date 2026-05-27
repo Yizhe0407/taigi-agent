@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from agent.telemetry import AgentTelemetry
 
-ToolHandler = Callable[..., str]
+ToolHandler = Callable[..., Awaitable[str]]
 
 
 def function_tool_calls(message: Any) -> list[Any]:
@@ -46,7 +46,7 @@ def tool_error(call_id: str, message: str) -> dict:
     return {"role": "tool", "tool_call_id": call_id, "content": message}
 
 
-def execute_tool_calls(
+async def execute_tool_calls(
     tool_calls: list[Any],
     handlers: Mapping[str, ToolHandler],
     telemetry: AgentTelemetry,
@@ -114,7 +114,7 @@ def execute_tool_calls(
                     continue
 
                 try:
-                    result = handler(**tool_args)
+                    result = await handler(**tool_args)
                 except Exception as e:
                     outcome = "handler_error"
                     telemetry.record_tool_error(

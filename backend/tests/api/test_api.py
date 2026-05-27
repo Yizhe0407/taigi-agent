@@ -167,10 +167,13 @@ def _moovo_station() -> MoovoStation:
 
 
 def test_get_departures_here_returns_structured_snapshot(monkeypatch):
+    async def fake_snapshot():
+        return _departure_snapshot()
+
     monkeypatch.setattr(
         api.departures,
         "get_departure_snapshot_here",
-        lambda: _departure_snapshot(),
+        fake_snapshot,
     )
 
     response = TestClient(api.app).get("/api/departures/here")
@@ -218,7 +221,7 @@ def test_get_departures_here_returns_structured_snapshot(monkeypatch):
 
 
 def test_get_departures_here_maps_provider_errors(monkeypatch):
-    def unavailable():
+    async def unavailable():
         raise DepartureSnapshotUnavailable("雲林公車查詢失敗：timeout")
 
     monkeypatch.setattr(api.departures, "get_departure_snapshot_here", unavailable)
@@ -230,10 +233,13 @@ def test_get_departures_here_maps_provider_errors(monkeypatch):
 
 
 def test_get_departure_route_detail_returns_structured_stops(monkeypatch):
+    async def fake_route_detail(route):
+        return _departure_route_detail()
+
     monkeypatch.setattr(
         api.departures,
         "get_route_detail_here",
-        lambda route: _departure_route_detail(),
+        fake_route_detail,
     )
 
     response = TestClient(api.app).get("/api/departures/routes/201/detail")
@@ -272,7 +278,7 @@ def test_get_departure_route_detail_returns_structured_stops(monkeypatch):
 
 
 def test_get_departure_route_detail_maps_not_found(monkeypatch):
-    def not_found(route):
+    async def not_found(route):
         raise RouteDetailNotFound(f"在本站找不到停靠路線 {route}")
 
     monkeypatch.setattr(api.departures, "get_route_detail_here", not_found)
@@ -286,7 +292,7 @@ def test_get_departure_route_detail_maps_not_found(monkeypatch):
 def test_create_route_plan_returns_frontend_view_model(monkeypatch):
     calls = []
 
-    def fake_plan(latitude, longitude, departure_time):
+    async def fake_plan(latitude, longitude, departure_time):
         calls.append((latitude, longitude, departure_time))
         return _route_plan()
 
@@ -321,8 +327,11 @@ def test_create_route_plan_returns_frontend_view_model(monkeypatch):
 
 
 def test_create_route_plan_validates_destination_and_departure_time(monkeypatch):
+    async def fake_plan(*args):
+        return _route_plan()
+
     monkeypatch.setattr(
-        api.route_plans, "plan_route_to_coordinate", lambda *args: _route_plan()
+        api.route_plans, "plan_route_to_coordinate", fake_plan
     )
     client = TestClient(api.app)
 
@@ -345,7 +354,7 @@ def test_create_route_plan_validates_destination_and_departure_time(monkeypatch)
 def test_create_route_plan_maps_route_errors(monkeypatch):
     client = TestClient(api.app)
 
-    def no_route(*args):
+    async def no_route(*args):
         raise RoutePlanNotFound("找不到公車規劃")
 
     monkeypatch.setattr(api.route_plans, "plan_route_to_coordinate", no_route)
@@ -354,7 +363,7 @@ def test_create_route_plan_maps_route_errors(monkeypatch):
         json={"destination": {"lat": 23.7178, "lng": 120.5384}},
     )
 
-    def unavailable(*args):
+    async def unavailable(*args):
         raise RoutePlanningUnavailable("OTP 路線規劃失敗")
 
     monkeypatch.setattr(api.route_plans, "plan_route_to_coordinate", unavailable)
@@ -363,7 +372,7 @@ def test_create_route_plan_maps_route_errors(monkeypatch):
         json={"destination": {"lat": 23.7178, "lng": 120.5384}},
     )
 
-    def invalid_destination(*args):
+    async def invalid_destination(*args):
         raise InvalidRouteDestination("目前僅支援雲林縣內目的地")
 
     monkeypatch.setattr(
@@ -380,7 +389,10 @@ def test_create_route_plan_maps_route_errors(monkeypatch):
 
 
 def test_list_moovo_stations_returns_tdx_availability(monkeypatch):
-    monkeypatch.setattr(api.moovo, "load_moovo_stations", lambda: (_moovo_station(),))
+    async def fake_load_stations():
+        return (_moovo_station(),)
+
+    monkeypatch.setattr(api.moovo, "load_moovo_stations", fake_load_stations)
 
     response = TestClient(api.app).get("/api/moovo/stations")
 
@@ -406,7 +418,7 @@ def test_list_moovo_stations_returns_tdx_availability(monkeypatch):
 def test_list_nearby_moovo_stations_passes_query(monkeypatch):
     calls = []
 
-    def fake_nearby(latitude, longitude, *, radius_meters, limit):
+    async def fake_nearby(latitude, longitude, *, radius_meters, limit):
         calls.append((latitude, longitude, radius_meters, limit))
         return (NearbyMoovoStation(_moovo_station(), 17.5),)
 
@@ -423,7 +435,7 @@ def test_list_nearby_moovo_stations_passes_query(monkeypatch):
 
 
 def test_moovo_endpoints_map_provider_errors(monkeypatch):
-    def unavailable():
+    async def unavailable():
         raise MoovoApiError("TDX Bike request failed")
 
     monkeypatch.setattr(api.moovo, "load_moovo_stations", unavailable)

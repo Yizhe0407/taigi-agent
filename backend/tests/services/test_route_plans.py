@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 
 import pytest
@@ -77,16 +78,21 @@ def test_plan_route_to_coordinate_formats_bus_itineraries(monkeypatch):
         monkeypatch,
         _stop("YUN-NYUST", "雲林科技大學", 23.69602, 120.533793),
     )
+    async def fake_plan_bus_connections(*args):
+        return [walking_only, itinerary]
+
     monkeypatch.setattr(
         kiosk_route_planner.otp,
         "plan_bus_connections",
-        lambda *args: [walking_only, itinerary],
+        fake_plan_bus_connections,
     )
 
-    plan = kiosk_route_planner.plan_route_to_coordinate(
-        23.71192,
-        120.540291,
-        departure_time=_time("08:00"),
+    plan = asyncio.run(
+        kiosk_route_planner.plan_route_to_coordinate(
+            23.71192,
+            120.540291,
+            departure_time=_time("08:00"),
+        )
     )
 
     route = kiosk_route_planner.route_plan_to_view_model(plan)["routes"][0]
@@ -114,7 +120,7 @@ def test_plan_route_to_coordinate_rejects_invalid_destination(monkeypatch):
         kiosk_route_planner.RoutePlanningError,
         match="目的地座標格式有誤",
     ):
-        kiosk_route_planner.plan_route_to_coordinate(91, 120)
+        asyncio.run(kiosk_route_planner.plan_route_to_coordinate(91, 120))
 
 
 def test_plan_route_to_coordinate_rejects_out_of_yunlin_destination(monkeypatch):
@@ -122,17 +128,18 @@ def test_plan_route_to_coordinate_rejects_out_of_yunlin_destination(monkeypatch)
         monkeypatch,
         _stop("YUN-NYUST", "雲林科技大學", 23.69602, 120.533793),
     )
-    monkeypatch.setattr(
-        otp,
-        "plan_bus_connections",
-        lambda *args: pytest.fail("OTP should not be called for out-of-area points"),
-    )
+    async def fail_plan_bus_connections(*args):
+        pytest.fail("OTP should not be called for out-of-area points")
+
+    monkeypatch.setattr(otp, "plan_bus_connections", fail_plan_bus_connections)
 
     with pytest.raises(
         kiosk_route_planner.RoutePlanningError,
         match="目前僅支援雲林縣內目的地",
     ):
-        kiosk_route_planner.plan_route_to_coordinate(23.480075, 120.449111)
+        asyncio.run(
+            kiosk_route_planner.plan_route_to_coordinate(23.480075, 120.449111)
+        )
 
 
 def test_resolve_place_uses_exact_kiosk_stop_name(monkeypatch):

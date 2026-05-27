@@ -215,8 +215,10 @@ def _merge_station_payloads(
 # ── public service API ────────────────────────────────────────────────────────
 
 
-def load_moovo_stations(*, force_refresh: bool = False) -> tuple[MoovoStation, ...]:
-    """Load Yunlin MOOVO stations from TDX with a short TTL cache."""
+async def load_moovo_stations(
+    *, force_refresh: bool = False
+) -> tuple[MoovoStation, ...]:
+    """Load Yunlin MOOVO stations from TDX without blocking the event loop."""
     global _stations_cache
 
     now = time.monotonic()
@@ -226,7 +228,7 @@ def load_moovo_stations(*, force_refresh: bool = False) -> tuple[MoovoStation, .
         if ttl > 0 and now - fetched_at < ttl:
             return stations
 
-    stations_payload, availability_payload = _provider.fetch_station_payloads()
+    stations_payload, availability_payload = await _provider.fetch_station_payloads()
     stations = _merge_station_payloads(stations_payload, availability_payload)
     if not stations:
         raise MoovoApiError("TDX Bike Yunlin station response is empty")
@@ -264,7 +266,7 @@ def _distance_meters(
     return radius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def nearby_moovo_stations(
+async def nearby_moovo_stations(
     latitude: float,
     longitude: float,
     *,
@@ -277,7 +279,7 @@ def nearby_moovo_stations(
     limit = max(1, min(limit, _DEFAULT_LIMIT))
 
     nearby: list[NearbyMoovoStation] = []
-    for station in load_moovo_stations():
+    for station in await load_moovo_stations():
         distance = _distance_meters(
             latitude,
             longitude,

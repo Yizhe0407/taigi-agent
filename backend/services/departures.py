@@ -13,6 +13,7 @@ instance lives at module scope (`_provider`) and can be swapped via
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -323,6 +324,19 @@ def _sort_key(route: DepartureRouteStatus) -> tuple[int, int, str, int]:
     return (route.sort_priority, route.sort_minutes, route.route, route.go_back)
 
 
+def _direction_label_from_info(
+    route_info: dict[str, dict],
+    route: str,
+    go_back: int,
+) -> str:
+    info = route_info.get(route, {})
+    if go_back == 1:
+        dest = info.get("go_dest", "")
+        return f"往{dest}" if dest else "去程"
+    dest = info.get("back_dest", "")
+    return f"往{dest}" if dest else "回程"
+
+
 def _stop_detail_from_row(stop: dict, kiosk_stop_name: str) -> RouteStopDetail | None:
     seq = _as_int(stop.get("SeqNo"))
     name = str(stop.get("StopName") or "").strip()
@@ -342,23 +356,21 @@ def _stop_detail_from_row(stop: dict, kiosk_stop_name: str) -> RouteStopDetail |
     )
 
 
-def build_departure_snapshot(
+async def build_departure_snapshot(
     stop_name: str,
     go_back: int | None = None,
     *,
     updated_at: datetime | None = None,
 ) -> StopDepartureSnapshot:
-    """Build a structured departure snapshot for one stop.
-
-    Deterministic product layer: converts raw bus ETA rows into stable
-    sections and decisions that the dashboard, TTS, and avatar can share.
-    """
+    """Build a structured departure snapshot without blocking the event loop."""
     now = datetime.now(TAIPEI_TZ)
     provider = get_provider()
 
     try:
-        eta_data = provider.fetch_eta_at_stop(stop_name)
-        route_info = provider.load_route_info(stop_name)
+        eta_data, route_info = await asyncio.gather(
+            provider.fetch_eta_at_stop(stop_name),
+            provider.load_route_info(stop_name),
+        )
     except Exception as error:
         raise DepartureSnapshotUnavailable(f"雲林公車查詢失敗：{error}") from error
 
@@ -389,7 +401,7 @@ def build_departure_snapshot(
             priority,
             sort_minutes,
         ) = _classify_stop(stop, now)
-        direction = provider.direction_label(route, stop_name, stop_go_back)
+        direction = _direction_label_from_info(route_info, route, stop_go_back)
         dedupe_key = (route, stop_go_back, status_text)
         if dedupe_key in seen:
             continue
@@ -423,15 +435,15 @@ def build_departure_snapshot(
     )
 
 
-def build_route_detail(
+async def build_route_detail(
     route: str,
     stop_name: str,
     go_back: int | None = None,
 ) -> DepartureRouteDetail:
-    """Build structured stop-order details for a route serving one kiosk stop."""
+    """Build structured stop-order details without blocking the event loop."""
     provider = get_provider()
     try:
-        route_info = provider.load_route_info(stop_name)
+        route_info = await provider.load_route_info(stop_name)
     except Exception as error:
         raise RouteDetailUnavailable(f"雲林公車查詢失敗：{error}") from error
 
@@ -444,7 +456,7 @@ def build_route_detail(
         raise RouteDetailUnavailable(f"路線 {route} 的 route id 格式異常")
 
     try:
-        estimate_data = provider.fetch_route_estimate(route_id)
+        estimate_data = await provider.fetch_route_estimate(route_id)
     except Exception as error:
         raise RouteDetailUnavailable(f"雲林公車查詢失敗：{error}") from error
 
@@ -462,7 +474,7 @@ def build_route_detail(
     directions = tuple(
         RouteDirectionDetail(
             go_back=row_go_back,
-            label=provider.direction_label(route, stop_name, row_go_back),
+            label=_direction_label_from_info(route_info, route, row_go_back),
             stops=tuple(sorted(stops, key=lambda stop: stop.seq)),
         )
         for row_go_back, stops in sorted(by_direction.items())
@@ -493,7 +505,7 @@ _SECTION_GROUP_LABEL: dict[DepartureSection, str] = {
 }
 
 
-def render_arrivals(
+async def render_arrivals(
     route: str,
     stop_name: str,
     go_back: int | None = None,
@@ -501,15 +513,17 @@ def render_arrivals(
     """Render `route` arrivals at `stop_name` as a kiosk-style string."""
     provider = get_provider()
     try:
-        route_id = provider.get_route_id(route, stop_name)
+        route_info = await provider.load_route_info(stop_name)
     except Exception as error:
         return f"雲林公車查詢失敗：{error}"
 
+    info = route_info.get(route)
+    route_id = _as_int(info.get("id")) if info is not None else None
     if route_id is None:
         return f"在「{stop_name}」找不到停靠路線 {route}"
 
     try:
-        data = provider.fetch_route_estimate(route_id)
+        data = await provider.fetch_route_estimate(route_id)
     except Exception as error:
         return f"雲林公車查詢失敗：{error}"
 
@@ -525,22 +539,24 @@ def render_arrivals(
     results = []
     for stop in matches:
         stop_go_back = stop.get("GoBack", 1)
-        label = provider.direction_label(route, stop_name, stop_go_back)
+        label = _direction_label_from_info(route_info, route, stop_go_back)
         _, _, status_text, _, _, _, _, _ = _classify_stop(stop, now)
         results.append(f"{label}：{status_text}")
 
     return "\n".join(results)
 
 
-def render_stop_arrival_statuses(
+async def render_stop_arrival_statuses(
     stop_name: str,
     go_back: int | None = None,
 ) -> str:
     """Render every route currently serving `stop_name` grouped by section."""
     provider = get_provider()
     try:
-        eta_data = provider.fetch_eta_at_stop(stop_name)
-        route_info = provider.load_route_info(stop_name)
+        eta_data, route_info = await asyncio.gather(
+            provider.fetch_eta_at_stop(stop_name),
+            provider.load_route_info(stop_name),
+        )
     except Exception as error:
         return f"雲林公車查詢失敗：{error}"
 
@@ -574,7 +590,7 @@ def render_stop_arrival_statuses(
         if group is None:
             continue
 
-        label = provider.direction_label(route, stop_name, stop_go_back)
+        label = _direction_label_from_info(route_info, route, stop_go_back)
         line = f"{route} {label}：{status_text}"
         if line in seen:
             continue
@@ -593,19 +609,21 @@ def render_stop_arrival_statuses(
     return "\n".join(results)
 
 
-def render_route_stops(route: str, stop_name: str) -> str:
+async def render_route_stops(route: str, stop_name: str) -> str:
     """Render the full stop sequence (both directions) of `route`."""
     provider = get_provider()
     try:
-        route_id = provider.get_route_id(route, stop_name)
+        route_info = await provider.load_route_info(stop_name)
     except Exception as error:
         return f"雲林公車查詢失敗：{error}"
 
+    info = route_info.get(route)
+    route_id = _as_int(info.get("id")) if info is not None else None
     if route_id is None:
         return f"在「{stop_name}」找不到停靠路線 {route}"
 
     try:
-        data = provider.fetch_route_estimate(route_id)
+        data = await provider.fetch_route_estimate(route_id)
     except Exception as error:
         return f"雲林公車查詢失敗：{error}"
 
@@ -621,18 +639,18 @@ def render_route_stops(route: str, stop_name: str) -> str:
 
     results = []
     for go_back, stops in sorted(by_direction.items()):
-        label = provider.direction_label(route, stop_name, go_back)
+        label = _direction_label_from_info(route_info, route, go_back)
         ordered = [name for _, name in sorted(stops)]
         results.append(f"{label}：{'→'.join(ordered)}")
 
     return "\n".join(results)
 
 
-def render_routes_at_stop(stop_name: str) -> str:
+async def render_routes_at_stop(stop_name: str) -> str:
     """Render the list of routes serving `stop_name` (no ETA, no classify)."""
     provider = get_provider()
     try:
-        data = provider.fetch_routes_at_stop(stop_name)
+        data = await provider.fetch_routes_at_stop(stop_name)
     except Exception as error:
         return f"站名查詢失敗：{error}"
 

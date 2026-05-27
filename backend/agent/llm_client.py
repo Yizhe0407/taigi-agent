@@ -8,6 +8,7 @@ of bubbling a 4xx to the caller.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -36,7 +37,7 @@ def _looks_like_context_error(error: Exception) -> bool:
     return any(marker in text for marker in _CONTEXT_ERROR_MARKERS)
 
 
-def call_llm(
+async def call_llm(
     client: Any,
     model: str,
     messages: list[dict],
@@ -59,7 +60,7 @@ def call_llm(
             },
         ) as span:
             try:
-                response = client.chat.completions.create(
+                response = await client.chat.completions.create(
                     model=model,
                     messages=messages,
                     tools=tools,
@@ -106,6 +107,6 @@ def call_llm(
                 f"[retry] LLM 呼叫失敗（{summarize_error(retry_error)}），"
                 f"{wait}s 後重試..."
             )
-            time.sleep(wait)
+            await asyncio.sleep(wait)
 
     raise RuntimeError("LLM retry loop ended unexpectedly")

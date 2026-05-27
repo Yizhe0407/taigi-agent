@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+import httpx
 import polyline
-import requests
 
 _DEFAULT_BASE_URL = "http://localhost:8081"
 _GRAPHQL_PATH = "/otp/gtfs/v1"
@@ -270,15 +270,12 @@ def _parse_plan_response(payload: Any) -> list[Itinerary]:
     return itineraries
 
 
-def _post_graphql(query: str) -> Any:
+async def _post_graphql(query: str) -> Any:
     try:
-        response = requests.post(
-            _endpoint(),
-            json={"query": query},
-            timeout=_TIMEOUT_SECONDS,
-        )
+        async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+            response = await client.post(_endpoint(), json={"query": query})
         response.raise_for_status()
-    except requests.RequestException as error:
+    except httpx.HTTPError as error:
         raise OtpError(f"OTP request failed: {error}") from error
 
     try:
@@ -287,11 +284,11 @@ def _post_graphql(query: str) -> Any:
         raise OtpError("OTP response is not valid JSON") from error
 
 
-def plan_bus_connections(
+async def plan_bus_connections(
     origin: Coordinate,
     destination: Coordinate,
     departure_time: datetime,
 ) -> list[Itinerary]:
-    """Fetch BUS + WALK route candidates from OTP."""
-    payload = _post_graphql(_plan_query(origin, destination, departure_time))
+    """Fetch BUS + WALK route candidates from OTP without blocking the event loop."""
+    payload = await _post_graphql(_plan_query(origin, destination, departure_time))
     return _parse_plan_response(payload)

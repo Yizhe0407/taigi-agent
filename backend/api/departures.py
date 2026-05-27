@@ -30,18 +30,18 @@ router = APIRouter()
 # Tests monkeypatch these symbols on `api.departures` so route handlers see
 # the patched callable.
 
-def get_departure_snapshot_here(
+async def get_departure_snapshot_here(
     *, updated_at: datetime | None = None
 ) -> StopDepartureSnapshot:
-    return build_departure_snapshot(
+    return await build_departure_snapshot(
         _kiosk_stop(),
         _kiosk_go_back_filter(),
         updated_at=updated_at,
     )
 
 
-def get_route_detail_here(route: str) -> DepartureRouteDetail:
-    return build_route_detail(route, _kiosk_stop(), _kiosk_go_back_filter())
+async def get_route_detail_here(route: str) -> DepartureRouteDetail:
+    return await build_route_detail(route, _kiosk_stop(), _kiosk_go_back_filter())
 
 
 # ── Pydantic response schemas ─────────────────────────────────────────────────
@@ -119,10 +119,10 @@ def _route_detail_to_response(
 
 
 @router.get("/api/departures/here", response_model=StopDepartureSnapshotResponse)
-def get_departures_here() -> StopDepartureSnapshotResponse:
+async def get_departures_here() -> StopDepartureSnapshotResponse:
     """Return the current kiosk stop departure decisions."""
     try:
-        snapshot = get_departure_snapshot_here()
+        snapshot = await get_departure_snapshot_here()
     except DepartureSnapshotUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     return _snapshot_to_response(snapshot)
@@ -132,10 +132,10 @@ def get_departures_here() -> StopDepartureSnapshotResponse:
     "/api/departures/routes/{route}/detail",
     response_model=DepartureRouteDetailResponse,
 )
-def get_departure_route_detail(route: str) -> DepartureRouteDetailResponse:
+async def get_departure_route_detail(route: str) -> DepartureRouteDetailResponse:
     """Return structured stop-order details for a route serving this kiosk."""
     try:
-        detail = get_route_detail_here(route)
+        detail = await get_route_detail_here(route)
     except RouteDetailNotFound as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except RouteDetailUnavailable as error:

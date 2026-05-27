@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 
-import requests
+import httpx
 
 from providers.bus import BusProvider
 
@@ -46,51 +46,36 @@ class YunlinEbusProvider(BusProvider):
 
     # ── HTTP ──────────────────────────────────────────────────────────────────
 
-    def fetch_routes_at_stop(self, stop_name: str) -> list[dict]:
-        resp = requests.get(
-            f"{self._base}/stop/route",
-            params={"stop_name": stop_name},
-            timeout=self._timeout,
-        )
+    async def fetch_routes_at_stop(self, stop_name: str) -> list[dict]:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(
+                f"{self._base}/stop/route",
+                params={"stop_name": stop_name},
+            )
         resp.raise_for_status()
         return resp.json()
 
-    def fetch_eta_at_stop(self, stop_name: str) -> list[dict]:
-        resp = requests.get(
-            f"{self._base}/stop/eta",
-            params={"stop_name": stop_name},
-            timeout=self._timeout,
-        )
+    async def fetch_eta_at_stop(self, stop_name: str) -> list[dict]:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(
+                f"{self._base}/stop/eta",
+                params={"stop_name": stop_name},
+            )
         resp.raise_for_status()
         return resp.json()
 
-    def fetch_route_estimate(self, route_id: int) -> list[dict]:
-        resp = requests.get(
-            f"{self._base}/route/{route_id}/estimate",
-            timeout=self._timeout,
-        )
+    async def fetch_route_estimate(self, route_id: int) -> list[dict]:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.get(f"{self._base}/route/{route_id}/estimate")
         resp.raise_for_status()
         return resp.json()
 
     # ── derived ───────────────────────────────────────────────────────────────
 
-    def load_route_info(self, stop_name: str) -> dict[str, dict]:
-        """拿指定站牌的停靠路線，建立 route name -> {id, go_dest, back_dest} cache。
-
-        同名路線在全站資料中可能有歧義；站牌停靠清單會先把候選範圍縮到
-        使用者所在站牌。若同一站牌仍出現同名但不同 id，寧可不選該名稱，
-        避免 route name 靜默覆蓋。
-
-        同時存起終點，讓輸出顯示「往高鐵雲林站」而不是「回程」，
-        跟真實站牌的標示方式一致。
-        """
-        cached = self._route_info_by_stop.get(stop_name)
-        if cached is not None and not self._is_expired(cached[0]):
-            return cached[1]
-
+    def _build_route_info(self, rows: list[dict]) -> dict[str, dict]:
         route_info: dict[str, dict] = {}
         ambiguous_names: set[str] = set()
-        for r in self.fetch_routes_at_stop(stop_name):
+        for r in rows:
             name = r.get("name")
             if not name or name in ambiguous_names:
                 continue
@@ -107,13 +92,28 @@ class YunlinEbusProvider(BusProvider):
                     ambiguous_names.add(name)
                 continue
 
-            # destination = 去程終點，departure = 回程終點（也是去程起點）
             route_info[name] = {
                 "id": route_id,
                 "go_dest": r.get("destination", ""),
                 "back_dest": r.get("departure", ""),
             }
+        return route_info
 
+    async def load_route_info(self, stop_name: str) -> dict[str, dict]:
+        """拿指定站牌的停靠路線，建立 route name -> {id, go_dest, back_dest} cache。
+
+        同名路線在全站資料中可能有歧義；站牌停靠清單會先把候選範圍縮到
+        使用者所在站牌。若同一站牌仍出現同名但不同 id，寧可不選該名稱，
+        避免 route name 靜默覆蓋。
+
+        同時存起終點，讓輸出顯示「往高鐵雲林站」而不是「回程」，
+        跟真實站牌的標示方式一致。
+        """
+        cached = self._route_info_by_stop.get(stop_name)
+        if cached is not None and not self._is_expired(cached[0]):
+            return cached[1]
+
+        route_info = self._build_route_info(await self.fetch_routes_at_stop(stop_name))
         self._route_info_by_stop[stop_name] = (self._clock(), route_info)
         return route_info
 
@@ -121,16 +121,3 @@ class YunlinEbusProvider(BusProvider):
         if self._ttl is None or self._ttl <= 0:
             return False
         return (self._clock() - fetched_at) >= self._ttl
-
-    def get_route_id(self, route: str, stop_name: str) -> int | None:
-        info = self.load_route_info(stop_name).get(route)
-        return info["id"] if info else None
-
-    def direction_label(self, route: str, stop_name: str, go_back: int) -> str:
-        """把 GoBack 數字轉成『往 X』的標籤。"""
-        info = self.load_route_info(stop_name).get(route, {})
-        if go_back == 1:
-            dest = info.get("go_dest", "")
-            return f"往{dest}" if dest else "去程"
-        dest = info.get("back_dest", "")
-        return f"往{dest}" if dest else "回程"

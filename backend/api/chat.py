@@ -8,7 +8,6 @@ from `Settings`; only the mutable message log is persisted (see
 
 from __future__ import annotations
 
-import asyncio
 import os
 from pathlib import Path
 
@@ -105,17 +104,13 @@ async def send_chat_message(session_id: str, body: ChatMessageRequest) -> object
     """Append a user message, run the agent, persist updated history."""
     store = _get_store()
 
-    def run() -> str:
+    try:
         messages = store.load_messages(session_id)
         if messages is None:
             raise LookupError(session_id)
         session = _rehydrate_session(messages)
-        reply = session.respond(body.message)
+        reply = await session.respond(body.message)
         store.save_messages(session_id, session.messages)
-        return reply
-
-    try:
-        reply = await asyncio.to_thread(run)
     except LookupError as error:
         raise HTTPException(
             status_code=404, detail="對話階段不存在或已過期，請重新開始"

@@ -6,6 +6,8 @@ Services-layer behaviour is tested with a fake provider in
 contract.
 """
 
+import asyncio
+
 import pytest
 
 from providers import yunlin_ebus
@@ -21,6 +23,24 @@ class Response:
 
     def json(self):
         return self.payload
+
+
+def _patch_get(monkeypatch, payload, calls):
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, url, params=None):
+            calls.append((url, params, self.timeout))
+            return Response(payload)
+
+    monkeypatch.setattr(yunlin_ebus.httpx, "AsyncClient", FakeAsyncClient)
 
 
 @pytest.fixture
@@ -47,15 +67,14 @@ def test_route_info_uses_stop_lookup_endpoint(monkeypatch, provider):
     ]
     calls = []
 
-    def fake_get(url, params=None, timeout=None):
-        calls.append((url, params, timeout))
-        return Response(payload)
+    _patch_get(monkeypatch, payload, calls)
 
-    monkeypatch.setattr(yunlin_ebus.requests, "get", fake_get)
-
-    assert provider.get_route_id("201", "雲林科技大學") == 65036
-    assert provider.direction_label("201", "雲林科技大學", 1) == "往雲林科技大學"
-    assert provider.direction_label("201", "雲林科技大學", 2) == "往高鐵雲林站"
+    route_info = asyncio.run(provider.load_route_info("雲林科技大學"))
+    assert route_info["201"] == {
+        "id": 65036,
+        "go_dest": "雲林科技大學",
+        "back_dest": "高鐵雲林站",
+    }
     assert calls == [
         (
             "https://ebus.yunlin.gov.tw/api/stop/route",
@@ -69,17 +88,13 @@ def test_route_info_caches_per_instance(monkeypatch):
     payload = [{"xno": "65036", "name": "201"}]
     calls = []
 
-    def fake_get(url, params=None, timeout=None):
-        calls.append((url, params, timeout))
-        return Response(payload)
-
-    monkeypatch.setattr(yunlin_ebus.requests, "get", fake_get)
+    _patch_get(monkeypatch, payload, calls)
 
     provider = YunlinEbusProvider()
-    provider.load_route_info("雲林科技大學")
-    provider.load_route_info("雲林科技大學")
+    asyncio.run(provider.load_route_info("雲林科技大學"))
+    asyncio.run(provider.load_route_info("雲林科技大學"))
     fresh = YunlinEbusProvider()
-    fresh.load_route_info("雲林科技大學")
+    asyncio.run(fresh.load_route_info("雲林科技大學"))
 
     assert len(calls) == 2  # 1st instance cached, 2nd instance independent
 
@@ -89,11 +104,7 @@ def test_route_info_refetches_after_ttl_expiry(monkeypatch):
     payload = [{"xno": "65036", "name": "201"}]
     calls = []
 
-    def fake_get(url, params=None, timeout=None):
-        calls.append((url, params, timeout))
-        return Response(payload)
-
-    monkeypatch.setattr(yunlin_ebus.requests, "get", fake_get)
+    _patch_get(monkeypatch, payload, calls)
 
     fake_now = [1000.0]
     provider = YunlinEbusProvider(
@@ -101,13 +112,13 @@ def test_route_info_refetches_after_ttl_expiry(monkeypatch):
         clock=lambda: fake_now[0],
     )
 
-    provider.load_route_info("雲林科技大學")
+    asyncio.run(provider.load_route_info("雲林科技大學"))
     fake_now[0] += 30  # within TTL
-    provider.load_route_info("雲林科技大學")
+    asyncio.run(provider.load_route_info("雲林科技大學"))
     assert len(calls) == 1
 
     fake_now[0] += 60  # crosses TTL
-    provider.load_route_info("雲林科技大學")
+    asyncio.run(provider.load_route_info("雲林科技大學"))
     assert len(calls) == 2
 
 
@@ -115,17 +126,13 @@ def test_route_info_disables_cache_when_ttl_none(monkeypatch):
     payload = [{"xno": "65036", "name": "201"}]
     calls = []
 
-    monkeypatch.setattr(
-        yunlin_ebus.requests,
-        "get",
-        lambda *args, **kwargs: (calls.append(None), Response(payload))[1],
-    )
+    _patch_get(monkeypatch, payload, calls)
 
     provider = YunlinEbusProvider(route_info_ttl_seconds=None)
     # No TTL means cache never invalidates, but we still verify the value is
     # cached on the first call.
-    provider.load_route_info("雲林科技大學")
-    provider.load_route_info("雲林科技大學")
+    asyncio.run(provider.load_route_info("雲林科技大學"))
+    asyncio.run(provider.load_route_info("雲林科技大學"))
     assert len(calls) == 1
 
 
@@ -135,10 +142,7 @@ def test_route_info_rejects_ambiguous_names(monkeypatch, provider):
         {"xno": "2", "name": "201"},
     ]
 
-    monkeypatch.setattr(
-        yunlin_ebus.requests,
-        "get",
-        lambda *args, **kwargs: Response(payload),
-    )
+    calls = []
+    _patch_get(monkeypatch, payload, calls)
 
-    assert provider.get_route_id("201", "測試站") is None
+    assert asyncio.run(provider.load_route_info("測試站")).get("201") is None

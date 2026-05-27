@@ -161,7 +161,7 @@ def _display_leg_names(
     return from_name, to_name
 
 
-def plan_route_to_coordinate(
+async def plan_route_to_coordinate(
     latitude: float,
     longitude: float,
     departure_time: datetime | None = None,
@@ -186,7 +186,7 @@ def plan_route_to_coordinate(
         raise InvalidRouteDestination("目前僅支援雲林縣內目的地")
 
     try:
-        itineraries = otp.plan_bus_connections(
+        itineraries = await otp.plan_bus_connections(
             origin.coordinate,
             destination_place.coordinate,
             departure_time or datetime.now(_TAIPEI),

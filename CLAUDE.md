@@ -50,7 +50,7 @@ backend/
     text_processor.py  # Mandarin → HanloFlow(漢羅) → Taibun(Tailo)；module-level 單例
   providers/
     bus.py         # BusProvider Protocol：fetch_*, load_route_info, direction_label
-    yunlin_ebus.py # YunlinEbusProvider 實作（requests + per-instance route cache + TTL）
+    yunlin_ebus.py # YunlinEbusProvider 實作（httpx async + per-instance route cache + TTL）
     otp.py         # OpenTripPlanner GraphQL provider：BUS planConnection 與 itinerary parser
     moovo.py       # TdxBikeProvider：TDX OAuth + station / availability fetch
   services/
@@ -104,7 +104,7 @@ frontend/
 - **ebus 後端介面不是本專題控制的公開契約**：欲換縣市或加 fallback 時，新實作只要滿足 `backend/providers/bus.py` 的 `BusProvider` Protocol，再透過 `services.departures.set_provider()` 換掉預設 `YunlinEbusProvider` 即可。若 ebus payload 改版，修補只發生在 `backend/providers/yunlin_ebus.py`。
 - **Compact 後的完整內容暫無 retrieval tool**：`AgentSession` 會把 transcript 與長 tool result 保存到 `.agent_state/`，active context 只保留摘要、路徑與預覽。若後續讓 agent 主動回讀壓縮資料，需要明確的 retrieval tool 與資料保留策略。
 - **Chat session 持久化在單檔 SQLite**：`.agent_state/sessions.db` 由 `api/session_store.py` 寫入，跨 `--reload` 與 crash 存活，但仍綁單機檔案。若 scale out 多 worker / 多機，需改用外部 KV / Redis。
-- **Provider sync (`requests`) 與 FastAPI async 並存**：所有 provider 仍是同步呼叫；chat / route plan / departures 在需要時用 `asyncio.to_thread` 包裝。單機 kiosk 收益有限，未做完整 async 遷移。
+- **Backend runtime 採 async 單一路徑**：HTTP-facing providers、services、AgentSession tool dispatch 與 LLM client 都是 async；同步 CLI 入口只用 `asyncio.run()` 驅動同一套 runtime。GTFS 更新腳本仍可使用 `requests`，不屬於線上 API 路徑。
 
 ## 已知 Gotcha
 

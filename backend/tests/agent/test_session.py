@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -27,7 +28,7 @@ class FakeCompletions:
         self.responses = list(responses)
         self.calls = []
 
-    def create(self, **kwargs):
+    async def create(self, **kwargs):
         self.calls.append(kwargs)
         response = self.responses.pop(0)
         if isinstance(response, Exception):
@@ -106,7 +107,7 @@ def test_session_tool_limit_does_not_leave_unpaired_tool_call():
         max_tool_rounds=0,
     )
 
-    assert session.respond("還有車嗎") == "查詢逾時，請換個方式再問一次。"
+    assert asyncio.run(session.respond("還有車嗎")) == "查詢逾時，請換個方式再問一次。"
     assert session.messages == [
         {"role": "user", "content": "還有車嗎"},
         {"role": "assistant", "content": "查詢逾時，請換個方式再問一次。"},
@@ -130,7 +131,7 @@ def test_session_returns_tool_errors_to_model_before_final_answer():
         telemetry=telemetry,
     )
 
-    assert session.respond("查一下") == "已處理"
+    assert asyncio.run(session.respond("查一下")) == "已處理"
     tool_messages = [msg for msg in session.messages if msg["role"] == "tool"]
     assert tool_messages == [
         {
@@ -160,13 +161,16 @@ def test_session_retries_context_overflow_after_context_recovery():
         telemetry=telemetry,
     )
 
-    assert session.respond("新問題") == "恢復成功"
+    assert asyncio.run(session.respond("新問題")) == "恢復成功"
     assert len(session.client.chat.completions.calls) == 2
     assert telemetry.llm_retries == [("respond", "context_window")]
 
 
 def test_session_records_llm_tool_latency_and_routing():
     telemetry = RecordingTelemetry()
+    async def bus_handler(route):
+        return f"{route} 約 3 分鐘"
+
     session = make_session(
         [
             llm_response(
@@ -177,10 +181,10 @@ def test_session_records_llm_tool_latency_and_routing():
             llm_response(assistant_message("201 快到了")),
         ],
         telemetry=telemetry,
-        tool_handlers={"bus": lambda route: f"{route} 約 3 分鐘"},
+        tool_handlers={"bus": bus_handler},
     )
 
-    assert session.respond("201") == "201 快到了"
+    assert asyncio.run(session.respond("201")) == "201 快到了"
     assert [span.name for span in telemetry.spans] == [
         "agent.turn",
         "agent.llm.call",
@@ -220,7 +224,7 @@ def test_session_compacts_old_history_with_transcript_and_summary(tmp_path):
         {"role": "assistant", "content": "舊回答"},
     ]
 
-    assert session.respond("新問題") == "新回答"
+    assert asyncio.run(session.respond("新問題")) == "新回答"
     assert session.client.chat.completions.calls[0]["tools"] is None
     assert session.messages[0]["content"].startswith("[先前對話已壓縮]")
     transcripts = list((tmp_path / "transcripts").glob("*.jsonl"))

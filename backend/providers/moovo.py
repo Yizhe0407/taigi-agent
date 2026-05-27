@@ -11,7 +11,7 @@ import os
 import time
 from typing import Any
 
-import requests
+import httpx
 
 _TOKEN_URL = (
     "https://tdx.transportdata.tw/auth/realms/TDXConnect/"
@@ -61,19 +61,19 @@ class TdxBikeProvider:
         self._timeout = timeout
         self._token_cache: tuple[float, str] | None = None
 
-    def fetch_station_payloads(self) -> tuple[list[Any], list[Any]]:
+    async def fetch_station_payloads(self) -> tuple[list[Any], list[Any]]:
         """Return raw (stations, availability) lists for the configured city."""
-        with requests.Session() as session:
-            token = self._get_token(session)
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            token = await self._get_token(client)
             params = {"$format": "JSON"}
-            stations = self._get_json(
-                session,
+            stations = await self._get_json(
+                client,
                 token,
                 f"Station/City/{self._city}",
                 params=params,
             )
-            availability = self._get_json(
-                session,
+            availability = await self._get_json(
+                client,
                 token,
                 f"Availability/City/{self._city}",
                 params=params,
@@ -89,7 +89,7 @@ class TdxBikeProvider:
 
     # ── internal ──────────────────────────────────────────────────────────────
 
-    def _get_token(self, session: requests.Session) -> str:
+    async def _get_token(self, client: httpx.AsyncClient) -> str:
         now = time.monotonic()
         if self._token_cache is not None:
             expires_at, token = self._token_cache
@@ -98,18 +98,17 @@ class TdxBikeProvider:
 
         client_id, client_secret = _tdx_credentials()
         try:
-            response = session.post(
+            response = await client.post(
                 _TOKEN_URL,
                 data={
                     "grant_type": "client_credentials",
                     "client_id": client_id,
                     "client_secret": client_secret,
                 },
-                timeout=self._timeout,
             )
             response.raise_for_status()
             payload = response.json()
-        except requests.RequestException as error:
+        except httpx.HTTPError as error:
             raise MoovoApiError(f"TDX token request failed: {error}") from error
         except ValueError as error:
             raise MoovoApiError("TDX token response is not valid JSON") from error
@@ -120,31 +119,29 @@ class TdxBikeProvider:
 
         expires_in = payload.get("expires_in")
         ttl = int(expires_in) if isinstance(expires_in, int | float) else 3600
-        # Refresh 60s early so a token doesn't tick to expiry mid-request.
         self._token_cache = (now + max(60, ttl - 60), token)
         return token
 
-    def _get_json(
+    async def _get_json(
         self,
-        session: requests.Session,
+        client: httpx.AsyncClient,
         token: str,
         path: str,
         *,
         params: dict[str, str] | None = None,
     ) -> Any:
         try:
-            response = session.get(
+            response = await client.get(
                 f"{self._base}/{path}",
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Accept": "application/json",
                 },
                 params=params,
-                timeout=self._timeout,
             )
             response.raise_for_status()
             return response.json()
-        except requests.RequestException as error:
+        except httpx.HTTPError as error:
             raise MoovoApiError(f"TDX Bike request failed: {error}") from error
         except ValueError as error:
             raise MoovoApiError("TDX Bike response is not valid JSON") from error

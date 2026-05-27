@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 
 import polyline
@@ -94,17 +95,29 @@ def _plan_payload():
 def test_plan_bus_connections_queries_otp_and_parses_legs(monkeypatch):
     calls = []
 
-    def fake_post(url, json, timeout):
-        calls.append((url, json, timeout))
-        return Response(_plan_payload())
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, json):
+            calls.append((url, json, self.timeout))
+            return Response(_plan_payload())
 
     monkeypatch.setenv("OTP_BASE_URL", "http://otp.local/")
-    monkeypatch.setattr(otp.requests, "post", fake_post)
+    monkeypatch.setattr(otp.httpx, "AsyncClient", FakeAsyncClient)
 
-    itineraries = otp.plan_bus_connections(
-        otp.Coordinate(latitude=23.69602, longitude=120.533793),
-        otp.Coordinate(latitude=23.71192, longitude=120.540291),
-        datetime.fromisoformat("2026-05-21T08:00:00+08:00"),
+    itineraries = asyncio.run(
+        otp.plan_bus_connections(
+            otp.Coordinate(latitude=23.69602, longitude=120.533793),
+            otp.Coordinate(latitude=23.71192, longitude=120.540291),
+            datetime.fromisoformat("2026-05-21T08:00:00+08:00"),
+        )
     )
 
     itinerary = itineraries[0]
@@ -124,10 +137,12 @@ def test_plan_bus_connections_queries_otp_and_parses_legs(monkeypatch):
 
 def test_plan_bus_connections_rejects_naive_departure_time():
     with pytest.raises(ValueError, match="timezone"):
-        otp.plan_bus_connections(
-            otp.Coordinate(latitude=23.69602, longitude=120.533793),
-            otp.Coordinate(latitude=23.71192, longitude=120.540291),
-            datetime(2026, 5, 21, 8, 0),
+        asyncio.run(
+            otp.plan_bus_connections(
+                otp.Coordinate(latitude=23.69602, longitude=120.533793),
+                otp.Coordinate(latitude=23.71192, longitude=120.540291),
+                datetime(2026, 5, 21, 8, 0),
+            )
         )
 
 

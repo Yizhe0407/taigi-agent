@@ -50,24 +50,24 @@ def _kiosk_go_back_filter() -> int | None:
     return None
 
 
-def get_routes_at_stop(stop_name: str) -> str:
+async def get_routes_at_stop(stop_name: str) -> str:
     """查詢指定站牌停靠路線，並套用 Kiosk 常用站名縮寫。"""
-    return departures.render_routes_at_stop(_resolve(stop_name))
+    return await departures.render_routes_at_stop(_resolve(stop_name))
 
 
-def get_route_stops(route: str) -> str:
+async def get_route_stops(route: str) -> str:
     """查詢停靠 Kiosk 站牌的路線站牌順序（去程與回程）。"""
-    return departures.render_route_stops(route, _kiosk_stop())
+    return await departures.render_route_stops(route, _kiosk_stop())
 
 
-def get_stop_arrival_statuses_here() -> str:
+async def get_stop_arrival_statuses_here() -> str:
     """查詢本站所有停靠路線目前的到站狀態。"""
-    return departures.render_stop_arrival_statuses(
+    return await departures.render_stop_arrival_statuses(
         _kiosk_stop(), _kiosk_go_back_filter()
     )
 
 
-def get_arrivals_here(route: str) -> str:
+async def get_arrivals_here(route: str) -> str:
     """查詢某路線下一班到本站的時間
 
     stop_name 從 KIOSK_STOP 取，方向從 KIOSK_DIRECTION 取。
@@ -77,19 +77,19 @@ def get_arrivals_here(route: str) -> str:
     - 「回程」→ go_back=2
     - 不設定 → 顯示兩個方向
     """
-    return departures.render_arrivals(
+    return await departures.render_arrivals(
         route, _kiosk_stop(), go_back=_kiosk_go_back_filter()
     )
 
 
-def prefetch_route_arrival_context(user_input: str) -> str:
+async def prefetch_route_arrival_context(user_input: str) -> str:
     """路線號碼很明確時先查本站到站資訊，降低小模型跳過工具的機率。"""
     match = _ROUTE_RE.search(user_input)
     if match is None:
         return ""
 
     route = match.group(1)
-    result = get_arrivals_here(route)
+    result = await get_arrivals_here(route)
     return (
         "\n\n[工具查詢結果，必須直接使用，禁止用訓練資料替代]\n"
         f"路線 {route} 到本站的資訊：\n{result}"

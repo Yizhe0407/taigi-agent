@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from agent.prompt import build_system_prompt
 from agent.session import AgentSession, InputEnricher
@@ -107,7 +107,7 @@ def make_agent_session(
         input_enricher = prefetch_route_arrival_context
 
     return AgentSession(
-        client=OpenAI(base_url=settings.llm_base_url, api_key=settings.llm_api_key),
+        client=AsyncOpenAI(base_url=settings.llm_base_url, api_key=settings.llm_api_key),
         model=settings.llm_model,
         system_prompt=build_system_prompt(),
         tool_schemas=TOOL_SCHEMAS,

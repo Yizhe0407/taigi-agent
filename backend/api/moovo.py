@@ -89,17 +89,17 @@ def _raise_moovo_unavailable(error: MoovoError) -> NoReturn:
 
 
 @router.get("/api/moovo/stations", response_model=MoovoStationsResponse)
-def list_moovo_stations() -> object:
+async def list_moovo_stations() -> object:
     """Return Yunlin MOOVO stations with current TDX availability."""
     try:
-        stations = load_moovo_stations()
+        stations = await load_moovo_stations()
     except (MoovoApiError, MoovoConfigError) as error:
         _raise_moovo_unavailable(error)
     return {"stations": [_moovo_station_response(station) for station in stations]}
 
 
 @router.get("/api/moovo/stations/nearby", response_model=NearbyMoovoStationsResponse)
-def list_nearby_moovo_stations(
+async def list_nearby_moovo_stations(
     lat: float = Query(ge=-90, le=90),
     lng: float = Query(ge=-180, le=180),
     radius: int = Query(default=1000, ge=1, le=5000),
@@ -107,7 +107,7 @@ def list_nearby_moovo_stations(
 ) -> object:
     """Return Yunlin MOOVO stations near a frontend-selected coordinate."""
     try:
-        stations = nearby_moovo_stations(
+        stations = await nearby_moovo_stations(
             lat,
             lng,
             radius_meters=radius,

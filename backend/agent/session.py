@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from agent.context import (
@@ -32,7 +32,7 @@ from agent.tool_dispatch import (
     function_tool_calls,
 )
 
-InputEnricher = Callable[[str], str]
+InputEnricher = Callable[[str], Awaitable[str]]
 
 _MAX_CONTEXT_RECOVERY_RETRIES = 1
 _DEFAULT_MAX_TOOL_ROUNDS = 8
@@ -101,13 +101,13 @@ class AgentSession:
         self.messages = trim_history(self.messages, self.max_history_tokens)
         return content
 
-    def _summary_compact(self) -> bool:
+    async def _summary_compact(self) -> bool:
         older_messages, latest_exchange = split_latest_exchange(self.messages)
         if not older_messages:
             return False
 
         transcript_path = self.context_store.save_transcript(self.messages)
-        response = call_llm(
+        response = await call_llm(
             self.client,
             self.model,
             _compact_summary_request(older_messages, str(transcript_path)),
@@ -127,7 +127,7 @@ class AgentSession:
         print(f"[context] 對話歷史已摘要，完整 transcript：{transcript_path}")
         return True
 
-    def _prepare_context(self) -> None:
+    async def _prepare_context(self) -> None:
         self.messages = compact_long_tool_results(
             self.messages,
             self.context_store,
@@ -135,27 +135,27 @@ class AgentSession:
         )
         if estimate_tokens(self.messages) > self.max_history_tokens:
             try:
-                self._summary_compact()
+                await self._summary_compact()
             except Exception as e:
                 print(f"[context] 摘要 compact 失敗，改用裁剪：{e}")
         self.messages = trim_history(self.messages, self.max_history_tokens)
 
-    def _recover_context(self) -> None:
+    async def _recover_context(self) -> None:
         self.messages = compact_long_tool_results(
             self.messages,
             self.context_store,
             max_chars=self.compact_tool_result_chars,
         )
         try:
-            self._summary_compact()
+            await self._summary_compact()
         except Exception as e:
             print(f"[context] overflow 摘要 compact 失敗，改用裁剪：{e}")
 
         recovery_budget = max(self.max_history_tokens // 2, 1)
         self.messages = trim_history(self.messages, recovery_budget)
 
-    def respond(self, user_input: str) -> str:
-        extra = self.input_enricher(user_input) if self.input_enricher else ""
+    async def respond(self, user_input: str) -> str:
+        extra = await self.input_enricher(user_input) if self.input_enricher else ""
         with self.telemetry.start_span(
             "agent.turn",
             {
@@ -168,9 +168,9 @@ class AgentSession:
             tool_rounds = 0
             context_retries = 0
             while True:
-                self._prepare_context()
+                await self._prepare_context()
                 try:
-                    response = call_llm(
+                    response = await call_llm(
                         self.client,
                         self.model,
                         self._request_messages(),
@@ -182,7 +182,7 @@ class AgentSession:
                 except ContextWindowExceeded:
                     if context_retries >= _MAX_CONTEXT_RECOVERY_RETRIES:
                         raise
-                    self._recover_context()
+                    await self._recover_context()
                     context_retries += 1
                     self.telemetry.record_llm_retry(
                         operation="respond",
@@ -215,7 +215,7 @@ class AgentSession:
 
                 tool_rounds += 1
                 self.messages.extend(
-                    execute_tool_calls(
+                    await execute_tool_calls(
                         tool_calls,
                         self.tool_handlers,
                         self.telemetry,
