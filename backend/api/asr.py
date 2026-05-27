@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import os
+
 import httpx
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from agent.telemetry import get_telemetry
-from config import Settings
 
 router = APIRouter()
 
@@ -16,16 +17,18 @@ _ASR_MAX_BYTES = 25 * 1024 * 1024  # 25 MB — OpenAI Whisper API 上限
 
 
 def _asr_config() -> tuple[str, str, str]:
-    """Return (base_url, model, api_key) from settings, raise 503 if not configured.
+    """Return (base_url, model, api_key) from env, raise 503 if not configured.
 
+    Read directly from os.getenv so tests can monkeypatch without needing LLM vars.
     api_key may be empty for self-hosted endpoints that don't require auth.
     """
-    settings = Settings.from_env()
-    if not settings.asr_base_url or not settings.asr_model:
+    base_url = os.getenv("ASR_BASE_URL") or ""
+    model = os.getenv("ASR_MODEL") or ""
+    if not base_url or not model:
         raise HTTPException(
             status_code=503, detail="ASR 服務尚未設定（ASR_BASE_URL / ASR_MODEL）"
         )
-    return settings.asr_base_url.rstrip("/"), settings.asr_model, settings.asr_api_key
+    return base_url.rstrip("/"), model, os.getenv("ASR_API_KEY", "")
 
 
 async def _asr_post_audio(
