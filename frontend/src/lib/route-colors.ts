@@ -70,6 +70,11 @@ const ROUTE_COLOR_TOKENS: RouteColorToken[] = ROUTE_COLOR_POOL.map((token) => ({
   oklab: hexToOklab(token.hex),
 }))
 const DEFAULT_ROUTE_COLOR = ROUTE_COLOR_TOKENS[0]
+
+// This is a screen-level assignment strategy, not a county-wide route identity
+// registry. Kiosk views normally show a small route set, so we keep colors
+// deterministic per visible set and maximize perceptual separation before
+// accepting reuse when the 24-token pool is exhausted.
 const PREFERENCE_STEP = 5
 const REUSE_PENALTY = 0.12
 

@@ -8,6 +8,8 @@ import {
   watch,
 } from "vue"
 
+import { UI_FALLBACK_MESSAGES } from "@/lib/api-messages"
+
 import {
   ChatApiError,
   createChatSession,
@@ -51,7 +53,7 @@ export function usePipChat(isOpen: Readonly<Ref<boolean>>) {
           {
             id: "session-error",
             role: "assistant",
-            text: "公車助理暫時無法連線，請稍後再試。",
+            text: UI_FALLBACK_MESSAGES.agentOffline,
           },
         ]
       }
@@ -83,7 +85,9 @@ export function usePipChat(isOpen: Readonly<Ref<boolean>>) {
       messages.value.push({ id: `${id}-reply`, role: "assistant", text: reply })
     } catch (error) {
       const message =
-        error instanceof ChatApiError ? error.message : "無法取得回覆"
+        error instanceof ChatApiError
+          ? error.message
+          : UI_FALLBACK_MESSAGES.agentNoReply
       messages.value.push({
         id: `${id}-error`,
         role: "assistant",

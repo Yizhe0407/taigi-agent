@@ -1,6 +1,7 @@
 import asyncio
 import sys
 
+from agent.diagnostics import log_diagnostic
 from agent.error import summarize_error
 from agent.session import InputEnricher
 from config import Settings, make_agent_session
@@ -29,7 +30,7 @@ def run(input_enricher: InputEnricher | None = None) -> None:
             answer = asyncio.run(session.respond(user_input))
         except Exception as e:
             print("\n助理: 系統暫時無法回應，請稍後再試。\n")
-            print(f"[error] Agent 回應失敗：{summarize_error(e)}")
+            log_diagnostic("error", f"Agent 回應失敗：{summarize_error(e)}")
             continue
 
         print(f"\n助理: {answer}\n")

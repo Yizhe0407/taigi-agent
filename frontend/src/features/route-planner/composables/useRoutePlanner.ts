@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/vue-query"
 import { computed, ref } from "vue"
 
+import { UI_FALLBACK_MESSAGES } from "@/lib/api-messages"
 import { formatTaipeiHourMinute, parseTaipeiDateTimeInput } from "@/lib/time"
 import { useNow } from "@/lib/useNow"
 
@@ -33,7 +34,7 @@ export function useRoutePlanner() {
   const moovoStations = computed(() => moovoQuery.data.value ?? [])
   const isLoadingMoovoStations = computed(() => moovoQuery.isLoading.value)
   const moovoStationsError = computed(() =>
-    moovoQuery.error.value ? "MOOVO 站點暫時無法載入" : "",
+    moovoQuery.error.value ? UI_FALLBACK_MESSAGES.moovoUnavailable : "",
   )
 
   // —— local form / selection state ——

@@ -23,6 +23,7 @@ from agent.context import (
     split_latest_exchange,
     trim_history,
 )
+from agent.diagnostics import log_diagnostic
 from agent.llm_client import ContextWindowExceeded, call_llm
 from agent.telemetry import AgentTelemetry
 from agent.tool_dispatch import (
@@ -124,7 +125,7 @@ class AgentSession:
             compacted_history_message(summary.strip(), transcript_path),
             *latest_exchange,
         ]
-        print(f"[context] 對話歷史已摘要，完整 transcript：{transcript_path}")
+        log_diagnostic("context", f"對話歷史已摘要，完整 transcript：{transcript_path}")
         return True
 
     async def _prepare_context(self) -> None:
@@ -137,7 +138,7 @@ class AgentSession:
             try:
                 await self._summary_compact()
             except Exception as e:
-                print(f"[context] 摘要 compact 失敗，改用裁剪：{e}")
+                log_diagnostic("context", f"摘要 compact 失敗，改用裁剪：{e}")
         self.messages = trim_history(self.messages, self.max_history_tokens)
 
     async def _recover_context(self) -> None:
@@ -149,7 +150,7 @@ class AgentSession:
         try:
             await self._summary_compact()
         except Exception as e:
-            print(f"[context] overflow 摘要 compact 失敗，改用裁剪：{e}")
+            log_diagnostic("context", f"overflow 摘要 compact 失敗，改用裁剪：{e}")
 
         recovery_budget = max(self.max_history_tokens // 2, 1)
         self.messages = trim_history(self.messages, recovery_budget)
@@ -188,7 +189,7 @@ class AgentSession:
                         operation="respond",
                         error_type="context_window",
                     )
-                    print("[context] LLM 拒收目前歷史，compact 後重試")
+                    log_diagnostic("context", "LLM 拒收目前歷史，compact 後重試")
                     continue
 
                 message = response.choices[0].message
@@ -202,9 +203,9 @@ class AgentSession:
 
                 # 上限判斷必須在 append tool_calls 前做，避免歷史留下未配對結果。
                 if tool_calls and tool_rounds >= self.max_tool_rounds:
-                    print(
-                        "[warn] 單輪 tool call 達到上限 "
-                        f"{self.max_tool_rounds}，強制跳出"
+                    log_diagnostic(
+                        "warn",
+                        f"單輪 tool call 達到上限 {self.max_tool_rounds}，強制跳出",
                     )
                     return self._finish_with_assistant(_TOOL_ROUND_LIMIT_MESSAGE)
 

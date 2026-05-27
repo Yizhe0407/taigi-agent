@@ -1,3 +1,4 @@
+import { API_NETWORK_MESSAGES } from "@/lib/api-messages"
 import { apiFetch, ApiError } from "@/lib/api"
 
 import type { DepartureRouteDetail, StopDepartureSnapshot } from "../types"
@@ -15,7 +16,7 @@ export async function fetchDeparturesHere(
   const response = await apiFetch("/api/departures/here", {
     signal,
     errorClass: DeparturesApiError,
-    networkMessage: "目前無法連到公車資訊服務",
+    networkMessage: API_NETWORK_MESSAGES.departures,
   })
   return (await response.json()) as StopDepartureSnapshot
 }
@@ -29,7 +30,7 @@ export async function fetchDepartureRouteDetail(
     {
       signal,
       errorClass: DeparturesApiError,
-      networkMessage: "目前無法連到路線詳情服務",
+      networkMessage: API_NETWORK_MESSAGES.routeDetail,
     },
   )
   return (await response.json()) as DepartureRouteDetail

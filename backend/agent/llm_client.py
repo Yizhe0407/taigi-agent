@@ -12,6 +12,7 @@ import asyncio
 import time
 from typing import Any
 
+from agent.diagnostics import log_diagnostic
 from agent.error import summarize_error
 from agent.telemetry import AgentTelemetry
 
@@ -103,9 +104,9 @@ async def call_llm(
 
         if retry_error is not None:
             wait = 2 ** attempt
-            print(
-                f"[retry] LLM 呼叫失敗（{summarize_error(retry_error)}），"
-                f"{wait}s 後重試..."
+            log_diagnostic(
+                "retry",
+                f"LLM 呼叫失敗（{summarize_error(retry_error)}），{wait}s 後重試...",
             )
             await asyncio.sleep(wait)
 

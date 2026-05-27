@@ -1,3 +1,4 @@
+import { API_NETWORK_MESSAGES } from "@/lib/api-messages"
 import { apiFetch, ApiError } from "@/lib/api"
 
 import type { MoovoStation } from "../types"
@@ -17,7 +18,7 @@ export async function fetchMoovoStations(
   const response = await apiFetch("/api/moovo/stations", {
     signal,
     errorClass: MoovoApiError,
-    networkMessage: "目前無法連到 MOOVO 站點服務",
+    networkMessage: API_NETWORK_MESSAGES.moovo,
   })
   const payload = (await response.json()) as MoovoStationsResponse
   return payload.stations

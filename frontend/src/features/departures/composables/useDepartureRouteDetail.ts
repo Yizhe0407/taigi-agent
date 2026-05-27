@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/vue-query"
 import { computed, type Ref } from "vue"
 
+import { UI_FALLBACK_MESSAGES } from "@/lib/api-messages"
+
 import {
   DeparturesApiError,
   fetchDepartureRouteDetail,
@@ -20,7 +22,7 @@ export function useDepartureRouteDetail(routeCode: Ref<string>) {
     if (!err) return ""
     return err instanceof DeparturesApiError
       ? err.message
-      : "路線詳情暫時無法載入"
+      : UI_FALLBACK_MESSAGES.routeDetailUnavailable
   })
   const directions = computed(() => detail.value?.directions ?? [])
 

@@ -6,6 +6,8 @@ from uuid import uuid4
 
 import tiktoken
 
+from agent.diagnostics import log_diagnostic
+
 # 對話歷史保留的 token 上限
 # 估算：system prompt ~400 + tools schema ~500 + response buffer ~1000 = ~1900
 # 剩餘 budget 留給歷史，設 4000 讓短對話多保留、長回應快被截
@@ -160,6 +162,9 @@ def trim_history(
 
     dropped = len(exchanges) - len(kept)
     if dropped > 0:
-        print(f"[context] 截掉 {dropped} 輪舊對話，保留約 {tokens_used} tokens")
+        log_diagnostic(
+            "context",
+            f"截掉 {dropped} 輪舊對話，保留約 {tokens_used} tokens",
+        )
 
     return [msg for exchange in kept for msg in exchange]

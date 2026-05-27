@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/vue-query"
 import { computed } from "vue"
 
+import { UI_FALLBACK_MESSAGES } from "@/lib/api-messages"
+
 import { DeparturesApiError, fetchDeparturesHere } from "../api/departures"
 
 export function useDepartureSnapshot(refreshMs = 30_000) {
@@ -18,7 +20,7 @@ export function useDepartureSnapshot(refreshMs = 30_000) {
     if (!err) return ""
     return err instanceof DeparturesApiError
       ? err.message
-      : "公車資訊暫時無法載入"
+      : UI_FALLBACK_MESSAGES.departuresUnavailable
   })
   const routes = computed(() => snapshot.value?.routes ?? [])
   const nextBest = computed(

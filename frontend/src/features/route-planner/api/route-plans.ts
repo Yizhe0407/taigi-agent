@@ -1,3 +1,4 @@
+import { API_NETWORK_MESSAGES } from "@/lib/api-messages"
 import { apiFetch, ApiError } from "@/lib/api"
 
 import type { LngLat, RoutePlan } from "../types"
@@ -23,7 +24,7 @@ export async function createRoutePlan(
     }),
     signal,
     errorClass: RoutePlanApiError,
-    networkMessage: "目前無法連到路線規劃服務",
+    networkMessage: API_NETWORK_MESSAGES.routePlans,
   })
   return (await response.json()) as RoutePlan
 }

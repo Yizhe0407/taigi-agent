@@ -133,6 +133,23 @@ pnpm install
 pnpm dev
 ```
 
+## 快速驗證
+
+後端測試：
+
+```bash
+cd backend
+uv run pytest
+```
+
+前端型別檢查與 production build：
+
+```bash
+cd frontend
+pnpm typecheck
+pnpm build
+```
+
 首頁顯示固定 Kiosk 站牌的可搭、未發車與末班狀態；點路線可查看後端
 `/api/departures/routes/{route}/detail` 回傳的真實站序。路線規劃頁固定顯示
 雲林科技大學 Kiosk 起點，可點地圖或拖曳圖釘確認目的地；確認後會呼叫

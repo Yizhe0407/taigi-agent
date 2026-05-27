@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "NODE_OPTIONS=--disable-warning=DEP0205 vite",
+    "typecheck": "NODE_OPTIONS=--disable-warning=DEP0205 vue-tsc -b",
     "build": "NODE_OPTIONS=--disable-warning=DEP0205 vue-tsc -b && NODE_OPTIONS=--disable-warning=DEP0205 vite build",
     "preview": "NODE_OPTIONS=--disable-warning=DEP0205 vite preview"
   },
