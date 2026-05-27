@@ -2,7 +2,8 @@ from datetime import datetime
 
 import pytest
 
-from tools import kiosk_departures, yunlin_ebus
+from services import departures
+from tools import yunlin_ebus
 
 
 def _updated_at() -> datetime:
@@ -54,7 +55,7 @@ def test_build_departure_snapshot_classifies_and_sorts_routes(monkeypatch):
     monkeypatch.setattr(yunlin_ebus, "_load_route_info", lambda stop: route_info)
     monkeypatch.setattr(yunlin_ebus, "_fetch_eta_at_stop", lambda stop: eta_data)
 
-    snapshot = kiosk_departures.build_departure_snapshot(
+    snapshot = departures.build_departure_snapshot(
         "雲林科技大學",
         go_back=2,
         updated_at=_updated_at(),
@@ -106,7 +107,7 @@ def test_build_departure_snapshot_applies_direction_filter(monkeypatch):
     monkeypatch.setattr(yunlin_ebus, "_load_route_info", lambda stop: route_info)
     monkeypatch.setattr(yunlin_ebus, "_fetch_eta_at_stop", lambda stop: eta_data)
 
-    snapshot = kiosk_departures.build_departure_snapshot(
+    snapshot = departures.build_departure_snapshot(
         "雲林科技大學",
         go_back=1,
         updated_at=_updated_at(),
@@ -130,7 +131,7 @@ def test_build_departure_snapshot_marks_unexpected_values_unknown(monkeypatch):
     monkeypatch.setattr(yunlin_ebus, "_load_route_info", lambda stop: route_info)
     monkeypatch.setattr(yunlin_ebus, "_fetch_eta_at_stop", lambda stop: eta_data)
 
-    snapshot = kiosk_departures.build_departure_snapshot(
+    snapshot = departures.build_departure_snapshot(
         "雲林科技大學",
         go_back=2,
         updated_at=_updated_at(),
@@ -148,8 +149,8 @@ def test_build_departure_snapshot_wraps_provider_errors(monkeypatch):
 
     monkeypatch.setattr(yunlin_ebus, "_fetch_eta_at_stop", unavailable)
 
-    with pytest.raises(kiosk_departures.DepartureSnapshotUnavailable) as error:
-        kiosk_departures.build_departure_snapshot("雲林科技大學")
+    with pytest.raises(departures.DepartureSnapshotUnavailable) as error:
+        departures.build_departure_snapshot("雲林科技大學")
 
     assert "雲林公車查詢失敗" in str(error.value)
 
@@ -176,7 +177,7 @@ def test_build_route_detail_returns_structured_stop_order(monkeypatch):
         lambda route_id: estimate_data,
     )
 
-    detail = kiosk_departures.build_route_detail(
+    detail = departures.build_route_detail(
         "201",
         "雲林科技大學",
         go_back=2,
@@ -204,7 +205,99 @@ def test_build_route_detail_returns_structured_stop_order(monkeypatch):
 def test_build_route_detail_raises_not_found_for_non_kiosk_route(monkeypatch):
     monkeypatch.setattr(yunlin_ebus, "_load_route_info", lambda stop: {})
 
-    with pytest.raises(kiosk_departures.RouteDetailNotFound) as error:
-        kiosk_departures.build_route_detail("999", "雲林科技大學")
+    with pytest.raises(departures.RouteDetailNotFound) as error:
+        departures.build_route_detail("999", "雲林科技大學")
 
     assert "找不到停靠路線 999" in str(error.value)
+
+
+# ── string renderers ──────────────────────────────────────────────────────────
+
+
+def test_render_stop_arrival_statuses_groups_by_section(monkeypatch):
+    route_info = {
+        "201": {
+            "id": 65036,
+            "go_dest": "雲林科技大學",
+            "back_dest": "高鐵雲林站",
+        },
+        "7000B": {
+            "id": 65352,
+            "go_dest": "台北站",
+            "back_dest": "梅山站",
+        },
+        "101": {
+            "id": 15121,
+            "go_dest": "受天宮",
+            "back_dest": "斗六棒球場",
+        },
+    }
+    eta_data = [
+        {"xno": 65036, "GoBack": 2, "Value": None, "ComeTime": "21:35"},
+        {"xno": 65352, "GoBack": 2, "Value": None, "ComeTime": ""},
+        {"xno": 15121, "GoBack": 2, "Value": -3, "ComeTime": ""},
+    ]
+
+    monkeypatch.setattr(yunlin_ebus, "_load_route_info", lambda stop: route_info)
+    monkeypatch.setattr(yunlin_ebus, "_fetch_eta_at_stop", lambda stop: eta_data)
+
+    assert departures.render_stop_arrival_statuses("雲林科技大學", go_back=2) == (
+        "「雲林科技大學」目前到站狀態：\n"
+        "尚有到站資訊：\n"
+        "201 往高鐵雲林站：預定 21:35\n"
+        "未發車：\n"
+        "7000B 往梅山站：未發車\n"
+        "末班駛離：\n"
+        "101 往斗六棒球場：末班駛離"
+    )
+
+
+def test_render_arrivals_uses_classify(monkeypatch):
+    route_info = {
+        "201": {
+            "id": 65036,
+            "go_dest": "雲林科技大學",
+            "back_dest": "高鐵雲林站",
+        },
+    }
+    estimate_data = [
+        {"StopName": "雲林科技大學", "GoBack": 1, "Value": 2, "ComeTime": ""},
+        {"StopName": "雲林科技大學", "GoBack": 2, "Value": 12, "ComeTime": ""},
+        {"StopName": "其他站", "GoBack": 1, "Value": 0, "ComeTime": ""},
+    ]
+
+    monkeypatch.setattr(yunlin_ebus, "_load_route_info", lambda stop: route_info)
+    monkeypatch.setattr(
+        yunlin_ebus, "_fetch_route_estimate", lambda route_id: estimate_data
+    )
+
+    assert departures.render_arrivals("201", "雲林科技大學") == (
+        "往雲林科技大學：即將到站\n"
+        "往高鐵雲林站：約 12 分鐘後"
+    )
+
+
+def test_render_route_stops_lists_both_directions(monkeypatch):
+    route_info = {
+        "201": {
+            "id": 65036,
+            "go_dest": "雲林科技大學",
+            "back_dest": "高鐵雲林站",
+        },
+    }
+    estimate_data = [
+        {"StopName": "高鐵雲林站", "SeqNo": 1, "GoBack": 1, "Value": None},
+        {"StopName": "雲林科技大學", "SeqNo": 2, "GoBack": 1, "Value": 0},
+        {"StopName": "雲林科技大學", "SeqNo": 1, "GoBack": 2, "Value": 0},
+        {"StopName": "高鐵雲林站", "SeqNo": 2, "GoBack": 2, "Value": 4},
+    ]
+
+    monkeypatch.setattr(yunlin_ebus, "_load_route_info", lambda stop: route_info)
+    monkeypatch.setattr(
+        yunlin_ebus, "_fetch_route_estimate", lambda route_id: estimate_data
+    )
+
+    assert departures.render_route_stops("201", "雲林科技大學") == (
+        "往雲林科技大學：高鐵雲林站→雲林科技大學\n"
+        "往高鐵雲林站：雲林科技大學→高鐵雲林站"
+    )

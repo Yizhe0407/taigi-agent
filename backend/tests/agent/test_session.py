@@ -2,7 +2,8 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 from agent.context import ContextStore
-from agent.session import AgentSession, summarize_error
+from agent.error import summarize_error
+from agent.session import AgentSession
 
 
 def assistant_message(content="", tool_calls=None):

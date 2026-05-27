@@ -1,6 +1,7 @@
-"""雲林縣政府公車動態系統（ebus.yunlin.gov.tw）。
+"""雲林縣政府公車動態系統（ebus.yunlin.gov.tw）provider。
 
-本專題以站牌 Kiosk 查詢為主，路線 id 會從指定站牌的停靠路線清單解析。
+Pure I/O：HTTP fetch、路線名稱 → id 快取、方向標籤。
+分類與字串呈現邏輯由 `services.departures` 負責，這一層只回 raw dict / 簡單衍生資料。
 """
 
 import requests
@@ -99,155 +100,12 @@ def _direction_label(route: str, stop_name: str, go_back: int) -> str:
         return f"往{dest}" if dest else "回程"
 
 
-def _arrival_status(stop: dict) -> str:
-    """把 ebus estimate 的 Value/ComeTime 轉成站牌顯示狀態。"""
-    value = stop.get("Value")
-    if value is None:
-        come = stop.get("ComeTime", "")
-        return f"預定 {come}" if come else "未發車"
-    if value == -3:
-        return "末班駛離"
-    if value <= 3:
-        return "即將到站"
-    return f"約 {value} 分鐘後"
-
-
-def _arrival_section(stop: dict) -> str:
-    value = stop.get("Value")
-    if value == -3:
-        return "末班駛離"
-    if value is None and not stop.get("ComeTime", ""):
-        return "未發車"
-    return "尚有到站資訊"
-
-
-def get_arrivals(route: str, stop_name: str, go_back: int | None = None) -> str:
-    """查詢路線在某站的即時到站時間（ebus.yunlin.gov.tw）
-
-    go_back: 1=去程, 2=回程, None=兩個方向都顯示
-    """
-    try:
-        route_id = _get_route_id(route, stop_name)
-    except Exception as e:
-        return f"雲林公車查詢失敗：{e}"
-
-    if route_id is None:
-        return f"在「{stop_name}」找不到停靠路線 {route}"
-
-    try:
-        data = _fetch_route_estimate(route_id)
-    except Exception as e:
-        return f"雲林公車查詢失敗：{e}"
-
-    matches = [
-        s for s in data
-        if stop_name in s.get("StopName", "")
-        and (go_back is None or s.get("GoBack") == go_back)
-    ]
-    if not matches:
-        return f"路線 {route} 上找不到包含「{stop_name}」的站牌"
-
-    results = []
-    for stop in matches:
-        stop_go_back = stop.get("GoBack", 1)
-        label = _direction_label(route, stop_name, stop_go_back)
-        results.append(f"{label}：{_arrival_status(stop)}")
-
-    return "\n".join(results)
-
-
-def get_stop_arrival_statuses(stop_name: str, go_back: int | None = None) -> str:
-    """查詢某站牌全部路線目前的到站狀態。"""
-    try:
-        eta_data = _fetch_eta_at_stop(stop_name)
-        route_info = _load_route_info(stop_name)
-    except Exception as e:
-        return f"雲林公車查詢失敗：{e}"
-
-    route_by_id = {info["id"]: name for name, info in route_info.items()}
-    sections: dict[str, list[str]] = {
-        "尚有到站資訊": [],
-        "未發車": [],
-        "末班駛離": [],
-    }
-    seen: set[str] = set()
-
-    for stop in eta_data:
-        stop_go_back = stop.get("GoBack", 1)
-        if go_back is not None and stop_go_back != go_back:
-            continue
-
-        try:
-            route_id = int(stop["xno"])
-        except (KeyError, TypeError, ValueError):
-            continue
-
-        route = route_by_id.get(route_id)
-        if route is None:
-            continue
-
-        label = _direction_label(route, stop_name, stop_go_back)
-        line = f"{route} {label}：{_arrival_status(stop)}"
-        if line in seen:
-            continue
-
-        seen.add(line)
-        sections[_arrival_section(stop)].append(line)
-
-    if not seen:
-        return f"「{stop_name}」目前無到站狀態資料"
-
-    results = [f"「{stop_name}」目前到站狀態："]
-    for title, lines in sections.items():
-        if lines:
-            results.append(f"{title}：")
-            results.extend(lines)
-
-    return "\n".join(results)
-
-
-def get_route_stops(route: str, stop_name: str) -> str:
-    """查詢路線沿途站牌（去程＋回程）
-
-    estimate endpoint 雖然名為「到站時間」，但它回傳路線上每一站的資料，
-    包含 StopName、SeqNo、GoBack——剛好能重組出完整站牌順序。
-    ebus 沒有獨立的 StopOfRoute endpoint，所以借用 estimate 的副產品。
-    """
-    try:
-        route_id = _get_route_id(route, stop_name)
-    except Exception as e:
-        return f"雲林公車查詢失敗：{e}"
-
-    if route_id is None:
-        return f"在「{stop_name}」找不到停靠路線 {route}"
-
-    try:
-        data = _fetch_route_estimate(route_id)
-    except Exception as e:
-        return f"雲林公車查詢失敗：{e}"
-
-    # 按方向分組，依 SeqNo 排序後取 StopName
-    by_direction: dict[int, list[tuple[int, str]]] = {}
-    for stop in data:
-        go_back = stop.get("GoBack", 1)
-        seq = stop.get("SeqNo", 0)
-        name = stop.get("StopName", "")
-        by_direction.setdefault(go_back, []).append((seq, name))
-
-    if not by_direction:
-        return f"路線 {route} 無站牌資料"
-
-    results = []
-    for go_back, stops in sorted(by_direction.items()):
-        label = _direction_label(route, stop_name, go_back)
-        ordered = [name for _, name in sorted(stops)]
-        results.append(f"{label}：{'→'.join(ordered)}")
-
-    return "\n".join(results)
-
-
 def get_routes_at_stop(stop_name: str) -> str:
-    """查詢某站牌有哪些路線停靠（ebus.yunlin.gov.tw）"""
+    """查詢某站牌有哪些路線停靠（ebus.yunlin.gov.tw）。
+
+    純粹列出路線、不牽涉 ETA 分類，所以仍留在 provider 層；其餘字串
+    渲染搬到 `services.departures`。
+    """
     try:
         data = _fetch_routes_at_stop(stop_name)
     except Exception as e:

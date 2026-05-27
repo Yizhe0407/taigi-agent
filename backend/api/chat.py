@@ -13,7 +13,8 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from agent.session import AgentSession, summarize_error
+from agent.error import summarize_error
+from agent.session import AgentSession
 from config import Settings, make_agent_session
 
 router = APIRouter()

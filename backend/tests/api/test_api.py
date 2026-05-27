@@ -6,8 +6,7 @@ import api
 import api.departures
 import api.moovo
 import api.route_plans
-from tools import otp
-from tools.kiosk_departures import (
+from services.departures import (
     DepartureDecision,
     DepartureRouteDetail,
     DepartureRouteStatus,
@@ -19,6 +18,7 @@ from tools.kiosk_departures import (
     RouteStopDetail,
     StopDepartureSnapshot,
 )
+from tools import otp
 from tools.kiosk_route_planner import (
     InvalidRouteDestination,
     Place,

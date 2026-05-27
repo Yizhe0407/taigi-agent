@@ -1,18 +1,21 @@
-"""Kiosk 公車查詢 facade。
+"""Kiosk 公車查詢 facade（LLM agent 直接呼叫的 str 工具）。
 
 外部入口：
-  get_arrivals_here(route)  <- Kiosk 主要工具，站名從 KIOSK_STOP 取
-  get_stop_arrival_statuses_here() <- 本站全部路線目前到站狀態
-  get_routes_at_stop(stop_name) <- 指定站牌停靠路線，含常用站名縮寫
-  get_route_stops(route)    <- 只查 Kiosk 站牌有停靠的路線
+  get_arrivals_here(route)             <- Kiosk 主要工具，站名從 KIOSK_STOP 取
+  get_stop_arrival_statuses_here()     <- 本站全部路線目前到站狀態
+  get_routes_at_stop(stop_name)        <- 指定站牌停靠路線，含常用站名縮寫
+  get_route_stops(route)               <- 只查 Kiosk 站牌有停靠的路線
 
-資料來源固定為 ebus.yunlin.gov.tw。路線 id 由站牌停靠清單解析，
-讓 route lookup 跟 Kiosk 所在站牌綁在一起，避免同名路線歧義。
+字串渲染與分類規則住 `services.departures`，本檔只負責：
+  * 解析 KIOSK_STOP / KIOSK_DIRECTION 等 kiosk 範圍
+  * 套用常用站名縮寫 (_ALIASES)
+  * 包裝 input enricher 給 agent harness
 """
 
 import os
 import re
 
+from services import departures
 from tools import yunlin_ebus
 
 # 站名縮寫對照：使用者說「雲科大」但 API 站名是「雲林科技大學」
@@ -55,12 +58,12 @@ def get_routes_at_stop(stop_name: str) -> str:
 
 def get_route_stops(route: str) -> str:
     """查詢停靠 Kiosk 站牌的路線站牌順序（去程與回程）。"""
-    return yunlin_ebus.get_route_stops(route, _kiosk_stop())
+    return departures.render_route_stops(route, _kiosk_stop())
 
 
 def get_stop_arrival_statuses_here() -> str:
     """查詢本站所有停靠路線目前的到站狀態。"""
-    return yunlin_ebus.get_stop_arrival_statuses(
+    return departures.render_stop_arrival_statuses(
         _kiosk_stop(), _kiosk_go_back_filter()
     )
 
@@ -75,7 +78,7 @@ def get_arrivals_here(route: str) -> str:
     - 「回程」→ go_back=2
     - 不設定 → 顯示兩個方向
     """
-    return yunlin_ebus.get_arrivals(
+    return departures.render_arrivals(
         route, _kiosk_stop(), go_back=_kiosk_go_back_filter()
     )
 

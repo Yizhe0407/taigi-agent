@@ -1,4 +1,13 @@
-"""Structured departure decisions for the fixed kiosk stop."""
+"""Departure decisions for the kiosk stop — single classification source.
+
+This module owns the rules that turn a raw ebus ETA row into a user-facing
+decision. Both the HTTP API (structured dataclasses) and the LLM agent
+(string renderers) call into the same `_classify_stop` so their wording
+cannot drift.
+
+Provider I/O lives in `tools.yunlin_ebus`; this module treats it as a pure
+fetch layer.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +17,6 @@ from enum import StrEnum
 from zoneinfo import ZoneInfo
 
 from tools import yunlin_ebus
-from tools.kiosk_bus import _kiosk_go_back_filter, _kiosk_stop
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
@@ -100,6 +108,9 @@ class DepartureRouteDetail:
     stop_name: str
     direction_filter: int | None
     directions: tuple[RouteDirectionDetail, ...]
+
+
+# ── classification ────────────────────────────────────────────────────────────
 
 
 def _scheduled_minutes_from_now(scheduled_time: str, now: datetime) -> int:
@@ -251,6 +262,9 @@ def _classify_stop(
     )
 
 
+# ── structured product builds (HTTP API) ──────────────────────────────────────
+
+
 def _summary(routes: tuple[DepartureRouteStatus, ...]) -> DepartureSummary:
     return DepartureSummary(
         available_count=sum(
@@ -299,8 +313,8 @@ def build_departure_snapshot(
 ) -> StopDepartureSnapshot:
     """Build a structured departure snapshot for one stop.
 
-    This is the deterministic product layer: it converts raw ebus ETA rows into
-    stable sections and decisions that the dashboard, TTS, and avatar can share.
+    Deterministic product layer: converts raw ebus ETA rows into stable
+    sections and decisions that the dashboard, TTS, and avatar can share.
     """
     now = datetime.now(TAIPEI_TZ)
 
@@ -371,17 +385,6 @@ def build_departure_snapshot(
     )
 
 
-def get_departure_snapshot_here(
-    *, updated_at: datetime | None = None
-) -> StopDepartureSnapshot:
-    """Build the departure snapshot for the configured kiosk stop."""
-    return build_departure_snapshot(
-        _kiosk_stop(),
-        _kiosk_go_back_filter(),
-        updated_at=updated_at,
-    )
-
-
 def build_route_detail(
     route: str,
     stop_name: str,
@@ -439,6 +442,145 @@ def build_route_detail(
     )
 
 
-def get_route_detail_here(route: str) -> DepartureRouteDetail:
-    """Build structured route details for a route serving the configured kiosk stop."""
-    return build_route_detail(route, _kiosk_stop(), _kiosk_go_back_filter())
+# ── string renderers (LLM agent tools) ────────────────────────────────────────
+#
+# These collapse classification + provider into the str outputs the LLM sees.
+# They share `_classify_stop` so wording never drifts from the API surface.
+
+_SECTION_GROUP_LABEL: dict[DepartureSection, str] = {
+    DepartureSection.AVAILABLE: "尚有到站資訊",
+    DepartureSection.NOT_DEPARTED: "未發車",
+    DepartureSection.LAST_DEPARTED: "末班駛離",
+}
+
+
+def render_arrivals(
+    route: str,
+    stop_name: str,
+    go_back: int | None = None,
+) -> str:
+    """Render `route` arrivals at `stop_name` as a kiosk-style string."""
+    try:
+        route_id = yunlin_ebus._get_route_id(route, stop_name)
+    except Exception as error:
+        return f"雲林公車查詢失敗：{error}"
+
+    if route_id is None:
+        return f"在「{stop_name}」找不到停靠路線 {route}"
+
+    try:
+        data = yunlin_ebus._fetch_route_estimate(route_id)
+    except Exception as error:
+        return f"雲林公車查詢失敗：{error}"
+
+    matches = [
+        stop for stop in data
+        if stop_name in stop.get("StopName", "")
+        and (go_back is None or stop.get("GoBack") == go_back)
+    ]
+    if not matches:
+        return f"路線 {route} 上找不到包含「{stop_name}」的站牌"
+
+    now = datetime.now(TAIPEI_TZ)
+    results = []
+    for stop in matches:
+        stop_go_back = stop.get("GoBack", 1)
+        label = yunlin_ebus._direction_label(route, stop_name, stop_go_back)
+        _, _, status_text, _, _, _, _, _ = _classify_stop(stop, now)
+        results.append(f"{label}：{status_text}")
+
+    return "\n".join(results)
+
+
+def render_stop_arrival_statuses(
+    stop_name: str,
+    go_back: int | None = None,
+) -> str:
+    """Render every route currently serving `stop_name` grouped by section."""
+    try:
+        eta_data = yunlin_ebus._fetch_eta_at_stop(stop_name)
+        route_info = yunlin_ebus._load_route_info(stop_name)
+    except Exception as error:
+        return f"雲林公車查詢失敗：{error}"
+
+    route_by_id = {info["id"]: name for name, info in route_info.items()}
+    sections: dict[str, list[str]] = {
+        "尚有到站資訊": [],
+        "未發車": [],
+        "末班駛離": [],
+    }
+    seen: set[str] = set()
+    now = datetime.now(TAIPEI_TZ)
+
+    for stop in eta_data:
+        stop_go_back = stop.get("GoBack", 1)
+        if go_back is not None and stop_go_back != go_back:
+            continue
+
+        try:
+            route_id = int(stop["xno"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        route = route_by_id.get(route_id)
+        if route is None:
+            continue
+
+        section, _, status_text, _, _, _, _, _ = _classify_stop(stop, now)
+        # UNKNOWN rows are skipped — the agent's kiosk-style output only
+        # surfaces the three actionable groups (matches the legacy renderer).
+        group = _SECTION_GROUP_LABEL.get(section)
+        if group is None:
+            continue
+
+        label = yunlin_ebus._direction_label(route, stop_name, stop_go_back)
+        line = f"{route} {label}：{status_text}"
+        if line in seen:
+            continue
+        seen.add(line)
+        sections[group].append(line)
+
+    if not seen:
+        return f"「{stop_name}」目前無到站狀態資料"
+
+    results = [f"「{stop_name}」目前到站狀態："]
+    for title, lines in sections.items():
+        if lines:
+            results.append(f"{title}：")
+            results.extend(lines)
+
+    return "\n".join(results)
+
+
+def render_route_stops(route: str, stop_name: str) -> str:
+    """Render the full stop sequence (both directions) of `route`."""
+    try:
+        route_id = yunlin_ebus._get_route_id(route, stop_name)
+    except Exception as error:
+        return f"雲林公車查詢失敗：{error}"
+
+    if route_id is None:
+        return f"在「{stop_name}」找不到停靠路線 {route}"
+
+    try:
+        data = yunlin_ebus._fetch_route_estimate(route_id)
+    except Exception as error:
+        return f"雲林公車查詢失敗：{error}"
+
+    by_direction: dict[int, list[tuple[int, str]]] = {}
+    for stop in data:
+        go_back = stop.get("GoBack", 1)
+        seq = stop.get("SeqNo", 0)
+        name = stop.get("StopName", "")
+        by_direction.setdefault(go_back, []).append((seq, name))
+
+    if not by_direction:
+        return f"路線 {route} 無站牌資料"
+
+    results = []
+    for go_back, stops in sorted(by_direction.items()):
+        label = yunlin_ebus._direction_label(route, stop_name, go_back)
+        ordered = [name for _, name in sorted(stops)]
+        results.append(f"{label}：{'→'.join(ordered)}")
+
+    return "\n".join(results)

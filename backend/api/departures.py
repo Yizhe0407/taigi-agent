@@ -7,7 +7,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from tools.kiosk_departures import (
+from services.departures import (
     DepartureDecision,
     DepartureRouteDetail,
     DepartureSection,
@@ -15,11 +15,36 @@ from tools.kiosk_departures import (
     RouteDetailNotFound,
     RouteDetailUnavailable,
     StopDepartureSnapshot,
-    get_departure_snapshot_here,
-    get_route_detail_here,
+    build_departure_snapshot,
+    build_route_detail,
 )
+from tools.kiosk_bus import _kiosk_go_back_filter, _kiosk_stop
 
 router = APIRouter()
+
+
+# ── Kiosk-scoped service wrappers ─────────────────────────────────────────────
+#
+# These keep the env-driven kiosk scope at the HTTP boundary so the service
+# layer (services/departures.py) stays a pure (stop_name, go_back) function.
+# Tests monkeypatch these symbols on `api.departures` so route handlers see
+# the patched callable.
+
+def get_departure_snapshot_here(
+    *, updated_at: datetime | None = None
+) -> StopDepartureSnapshot:
+    return build_departure_snapshot(
+        _kiosk_stop(),
+        _kiosk_go_back_filter(),
+        updated_at=updated_at,
+    )
+
+
+def get_route_detail_here(route: str) -> DepartureRouteDetail:
+    return build_route_detail(route, _kiosk_stop(), _kiosk_go_back_filter())
+
+
+# ── Pydantic response schemas ─────────────────────────────────────────────────
 
 
 class DepartureResponseModel(BaseModel):

@@ -36,20 +36,25 @@ backend/
     asr.py         # /api/asr（Qwen3-ASR proxy）
     tts.py         # /api/tts（HanloFlow → Taibun → Piper TTS proxy）
   agent/
-    loop.py        # CLI I/O：讀 input、印回答，呼叫 AgentSession
-    session.py     # Harness 核心：messages + LLM call + tool-call loop + recovery
-    telemetry.py   # OpenTelemetry spans / metrics；有 OTLP endpoint 才啟用 exporter
-    prompt.py      # build_system_prompt()，system prompt 組裝
-    tools.py       # TOOL_SCHEMAS + TOOL_HANDLERS
-    context.py     # token budget、ContextStore、transcript / 長 tool result compact
+    loop.py          # CLI I/O：讀 input、印回答，呼叫 AgentSession
+    session.py       # Harness orchestration：messages + tool-call loop + context recovery
+    llm_client.py    # call_llm + ContextWindowExceeded + retry/backoff
+    tool_dispatch.py # function_tool_calls / assistant_message / execute_tool_calls
+    error.py         # summarize_error（HTML / Cloudflare error 收斂）
+    telemetry.py     # OpenTelemetry spans / metrics；有 OTLP endpoint 才啟用 exporter
+    prompt.py        # build_system_prompt()，system prompt 組裝
+    tools.py         # TOOL_SCHEMAS + TOOL_HANDLERS
+    context.py       # token budget、ContextStore、transcript / 長 tool result compact
   pipeline/
     text_processor.py  # Mandarin → HanloFlow(漢羅) → Taibun(Tailo)；module-level 單例
+  services/
+    departures.py  # 唯一分類來源：_classify_stop、build_*（API 結構化）、render_*（agent str）
   tools/
-    kiosk_bus.py   # Kiosk facade：單一路線 / 本站概況 / 站序工具
+    kiosk_bus.py   # Kiosk facade：站名縮寫、KIOSK_STOP/DIRECTION、prefetch；委派 services
     kiosk_route_planner.py  # Kiosk 固定出發、前端地圖選點目的地的 OTP planner
     otp.py         # OTP GTFS GraphQL provider：BUS planConnection 與 itinerary parser
     stop_catalog.py  # 讀取 TDX / GTFS 更新流程產生的雲林 stop index
-    yunlin_ebus.py # 雲林公車 ebus provider
+    yunlin_ebus.py # 雲林公車 ebus provider（pure I/O：fetch + 路線快取 + 方向標籤）
   scripts/
     update_yunlin_gtfs.py  # TDX GTFS 與 stop metadata 更新流程
   otp/
@@ -80,11 +85,12 @@ frontend/
 
 ## 加新工具的步驟
 
-1. 在 `backend/tools/` 下建或找對應的 `.py`，寫函式，回傳 `str`
-2. 在 `backend/agent/tools.py` 加 import
-3. 在 `TOOL_SCHEMAS` 加一筆 OpenAI function calling 格式的 schema
-4. 在 `TOOL_HANDLERS` 加 `"函式名": 函式` 的對應
-5. `AgentSession` 不加公車專屬分支；若需輸入預取，從入口注入 `input_enricher`
+1. 領域邏輯（分類、決策、結構化 dataclass）寫在 `backend/services/`；provider I/O 寫在 `backend/tools/`
+2. Agent 看到的 str 形式：在 services 提供 `render_*` 函式，或在 `backend/tools/` 的 facade 內呼叫 services
+3. 在 `backend/agent/tools.py` 加 import
+4. 在 `TOOL_SCHEMAS` 加一筆 OpenAI function calling 格式的 schema
+5. 在 `TOOL_HANDLERS` 加 `"函式名": 函式` 的對應
+6. `AgentSession` 不加公車專屬分支；若需輸入預取，從入口注入 `input_enricher`
 
 ## 已知技術債
 

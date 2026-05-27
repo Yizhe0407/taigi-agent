@@ -1,6 +1,7 @@
 import sys
 
-from agent.session import InputEnricher, summarize_error
+from agent.error import summarize_error
+from agent.session import InputEnricher
 from config import Settings, make_agent_session
 
 
