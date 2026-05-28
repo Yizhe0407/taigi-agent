@@ -5,6 +5,7 @@ import pytest
 
 from providers import otp
 from services import route_plans as kiosk_route_planner
+from services.kiosk_config import KioskConfig
 from services.stop_catalog import StopCatalog, StopRecord
 
 
@@ -73,7 +74,11 @@ def test_plan_route_to_coordinate_formats_bus_itineraries(monkeypatch):
         ),
     )
 
-    monkeypatch.setenv("KIOSK_STOP", "雲科")
+    monkeypatch.setattr(
+        kiosk_route_planner,
+        "get_kiosk_config",
+        lambda: KioskConfig(stop_name="雲林科技大學", direction=None, lat=None, lon=None),
+    )
     _use_catalog(
         monkeypatch,
         _stop("YUN-NYUST", "雲林科技大學", 23.69602, 120.533793),

@@ -1,10 +1,10 @@
-import os
+from services.kiosk_config import get_kiosk_config
 
 
 def build_system_prompt() -> str:
-    kiosk_stop = os.getenv("KIOSK_STOP", "雲林科技大學")
-    kiosk_dir = os.getenv("KIOSK_DIRECTION", "").strip()
-    direction_hint = f"（{kiosk_dir}方向）" if kiosk_dir else "（去回程都有）"
+    cfg = get_kiosk_config()
+    kiosk_stop = cfg.stop_name
+    direction_hint = f"（{cfg.direction}方向）" if cfg.direction else "（去回程都有）"
 
     return f"""你是部署在「{kiosk_stop}」站牌 {direction_hint} 的公車查詢助理，
 用繁體中文回答。

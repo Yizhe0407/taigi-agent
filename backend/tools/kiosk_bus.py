@@ -12,12 +12,13 @@
   * 包裝 input enricher 給 agent harness
 """
 
-import os
 import re
 
 from services import departures
+from services.kiosk_config import get_kiosk_config
 
-# 站名縮寫對照：使用者說「雲科大」但 API 站名是「雲林科技大學」
+# 站名縮寫對照：LLM agent 工具接受使用者輸入的縮寫（e.g. 「雲科大」）
+# Kiosk 設定的站牌名稱由 admin UI 選取，永遠是完整名稱，不需縮寫解析。
 _ALIASES: dict[str, str] = {
     "雲科大": "雲林科技大學",
     "雲科":   "雲林科技大學",
@@ -34,18 +35,19 @@ _ROUTE_RE = re.compile(
 
 
 def _resolve(stop_name: str) -> str:
+    """Resolve user-input stop name aliases (for LLM tool calls, not kiosk config)."""
     return _ALIASES.get(stop_name, stop_name)
 
 
 def _kiosk_stop() -> str:
-    return _resolve(os.getenv("KIOSK_STOP", "雲林科技大學"))
+    return get_kiosk_config().stop_name
 
 
 def _kiosk_go_back_filter() -> int | None:
-    kiosk_dir = os.getenv("KIOSK_DIRECTION", "").strip()
-    if kiosk_dir == "去程":
+    direction = get_kiosk_config().direction
+    if direction == "去程":
         return 1
-    if kiosk_dir == "回程":
+    if direction == "回程":
         return 2
     return None
 

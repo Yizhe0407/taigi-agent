@@ -7,7 +7,7 @@ import {
   RefreshCw,
   TriangleAlert,
 } from "@lucide/vue"
-import { computed, ref } from "vue"
+import { computed, ref, watch } from "vue"
 
 import { Map, MapMarker, MapRoute, MarkerContent } from "@/components/ui/map"
 
@@ -17,11 +17,11 @@ import MapZoomControl from "../map/MapZoomControl.vue"
 import MoovoStationMarkers from "../map/MoovoStationMarkers.vue"
 import RouteViewportFit from "../map/RouteViewportFit.vue"
 import YunlinServiceAreaLayer from "../map/YunlinServiceAreaLayer.vue"
-import type { LngLat, MoovoStation, PlaceCoordinate, RouteOption } from "../types"
+import type { KioskPlace, LngLat, MoovoStation, RouteOption } from "../types"
 import { legDisplayCoordinates } from "../utils/route-display"
 
 const props = defineProps<{
-  kiosk: PlaceCoordinate
+  kiosk: KioskPlace
   destination: LngLat | null
   route: RouteOption | null
   moovoStations: MoovoStation[]
@@ -35,9 +35,15 @@ const emit = defineEmits<{
   "refresh-moovo-stations": []
 }>()
 
-// Use a computed so the map recenter if kiosk coordinates load after mount.
-// In practice the fallback is already the catalog value, but this is safer.
 const viewportCenter = computed(() => props.kiosk.coordinates)
+
+// Fly to kiosk when the API resolves and replaces the fallback coordinates.
+// We use flyTo (not a controlled :viewport) so user panning after destination
+// selection doesn't get overridden on every parent re-render.
+const mapRef = ref<InstanceType<typeof Map> | null>(null)
+watch(viewportCenter, (coords) => {
+  mapRef.value?.map?.flyTo({ center: coords, zoom: 13, duration: 600 })
+})
 
 const updateDestination = (coordinates: { lng: number; lat: number }) => {
   const nextDestination: LngLat = [coordinates.lng, coordinates.lat]
@@ -82,6 +88,7 @@ function selectStyle(id: StyleId) {
 <template>
   <div class="relative min-h-[22rem] overflow-hidden bg-kiosk-dim">
     <Map
+      ref="mapRef"
       :center="viewportCenter"
       :zoom="13"
       :pitch="0"
@@ -134,6 +141,7 @@ function selectStyle(id: StyleId) {
               class="absolute top-11 min-w-max rounded bg-white/95 px-2 py-1 text-xs font-medium text-kiosk-ink shadow-sm ring-1 ring-kiosk-line"
             >
               {{ kiosk.name }}
+              <span v-if="kiosk.direction" class="ml-1 text-kiosk-muted">{{ kiosk.direction }}</span>
             </span>
           </div>
         </MarkerContent>

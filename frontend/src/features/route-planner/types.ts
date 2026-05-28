@@ -5,6 +5,11 @@ export type PlaceCoordinate = {
   coordinates: LngLat
 }
 
+/** Kiosk stop with its current direction filter (去程 / 回程 / null = both). */
+export type KioskPlace = PlaceCoordinate & {
+  direction: "去程" | "回程" | null
+}
+
 export type RoutePlace = {
   name: string
   lat: number

@@ -15,6 +15,7 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor  # noqa:
 from agent.telemetry import configure_telemetry  # noqa: E402
 from config import parse_cors_origins  # noqa: E402
 
+from .admin import router as admin_router  # noqa: E402
 from .asr import router as asr_router  # noqa: E402
 from .chat import router as chat_router  # noqa: E402
 from .departures import router as departures_router  # noqa: E402
@@ -29,11 +30,12 @@ if cors_origins:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
-        allow_methods=["GET", "POST", "DELETE"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["*"],
         expose_headers=["*"],
     )
 
+app.include_router(admin_router)
 app.include_router(chat_router)
 app.include_router(departures_router)
 app.include_router(route_plans_router)

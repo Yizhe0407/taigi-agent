@@ -43,7 +43,9 @@ const {
         <span>返回</span>
       </button>
       <div class="text-left">
-        <div class="text-[13px] text-kiosk-muted font-medium mb-0.5">{{ kiosk.name }}</div>
+        <div class="text-[13px] text-kiosk-muted font-medium mb-0.5">
+          {{ kiosk.name }}<span v-if="kiosk.direction">・{{ kiosk.direction }}</span>
+        </div>
         <div class="text-[30px] font-extrabold tracking-[-0.02em] leading-none text-kiosk-ink">路線規劃</div>
       </div>
       <div class="text-right">

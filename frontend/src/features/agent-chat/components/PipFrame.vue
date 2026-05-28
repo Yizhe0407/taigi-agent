@@ -28,8 +28,8 @@ const emit = defineEmits<{
 const BUTTON_AREA_HEIGHT = 62
 
 const controlButtons = [
-  { label: "移動", icon: Move, event: "enter-move" as const },
-  { label: "大小", icon: Maximize2, event: "cycle-size" as const },
+  { label: "移動", icon: Move, action: () => emit("enter-move") },
+  { label: "大小", icon: Maximize2, action: () => emit("cycle-size") },
 ]
 </script>
 
@@ -87,7 +87,7 @@ const controlButtons = [
         v-for="btn in controlButtons"
         :key="btn.label"
         class="flex-1 h-11 bg-white/15 text-white border border-white/20 rounded-[14px] text-[13px] font-bold cursor-pointer font-[inherit] flex flex-col items-center justify-center gap-0.5 p-0"
-        @click="emit(btn.event)"
+        @click="btn.action()"
       >
         <component :is="btn.icon" class="size-[18px]" :stroke-width="2.2" />
         <span class="text-xs font-bold leading-none">{{ btn.label }}</span>

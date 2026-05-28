@@ -26,7 +26,7 @@ defineEmits<{ confirm: [] }>()
 
 <template>
   <button
-    v-if="destination && !isDestinationConfirmed && !isPlanningRoute"
+    v-if="destination && !isDestinationConfirmed && !isPlanningRoute && !routePlanError"
     class="h-14 bg-kiosk-accent text-white border-0 rounded-[18px] text-lg font-extrabold font-[inherit] cursor-pointer flex items-center justify-center gap-2.5 shrink-0 tracking-[-0.01em] disabled:opacity-45 disabled:cursor-default"
     :disabled="departureMode === 'scheduled' && !scheduledDateTime"
     @click="$emit('confirm')"

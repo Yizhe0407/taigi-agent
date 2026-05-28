@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TypedDict
 from zoneinfo import ZoneInfo
 
 from providers import otp
+from services.kiosk_config import get_kiosk_config
 from services.stop_catalog import StopCatalogError, StopRecord, load_stop_catalog
 from services.yunlin_boundary import is_in_yunlin_county
 
@@ -89,15 +89,7 @@ class RoutePlanViewModel(TypedDict):
     routes: list[RouteOptionViewModel]
 
 
-_ALIASES: dict[str, str] = {
-    "雲科": "雲林科技大學",
-    "雲科大": "雲林科技大學",
-}
 _MAX_STOP_SPREAD_DEGREES = 0.02
-
-
-def _known_name(name: str) -> str:
-    return _ALIASES.get(name.strip(), name.strip())
 
 
 def _average_coordinate(stops: list[StopRecord]) -> otp.Coordinate | None:
@@ -115,7 +107,12 @@ def _average_coordinate(stops: list[StopRecord]) -> otp.Coordinate | None:
 
 
 def _resolve_place(name: str) -> Place | None:
-    stop_name = _known_name(name)
+    """Look up a stop name in the catalog and average nearby stop coordinates.
+
+    Returns None if the name is not found or stops are too geographically spread
+    to produce a meaningful single coordinate.
+    """
+    stop_name = name.strip()
     if not stop_name:
         return None
 
@@ -131,26 +128,17 @@ def _resolve_place(name: str) -> Place | None:
 
 
 def _kiosk_place() -> Place | None:
-    """Resolve kiosk origin.
+    """Resolve kiosk origin from runtime config.
 
     Priority:
-    1. KIOSK_LAT + KIOSK_LON — precise coordinate, bypasses name lookup.
-    2. KIOSK_STOP name — averaged over matching GTFS stop records.
+    1. Runtime config lat/lon — precise coordinate set via admin UI, bypasses averaging.
+    2. Runtime config stop_name — averaged over matching GTFS records (fallback).
     """
-    lat_raw = os.getenv("KIOSK_LAT")
-    lon_raw = os.getenv("KIOSK_LON")
-    if lat_raw and lon_raw:
-        try:
-            lat = float(lat_raw)
-            lon = float(lon_raw)
-        except ValueError:
-            pass
-        else:
-            if math.isfinite(lat) and math.isfinite(lon):
-                stop_name = os.getenv("KIOSK_STOP", "雲林科技大學")
-                return Place(stop_name, otp.Coordinate(latitude=lat, longitude=lon))
-
-    return _resolve_place(os.getenv("KIOSK_STOP", "雲林科技大學"))
+    cfg = get_kiosk_config()
+    if cfg.lat is not None and cfg.lon is not None:
+        if math.isfinite(cfg.lat) and math.isfinite(cfg.lon):
+            return Place(cfg.stop_name, otp.Coordinate(latitude=cfg.lat, longitude=cfg.lon))
+    return _resolve_place(cfg.stop_name)
 
 
 def _destination_place(latitude: float, longitude: float) -> Place | None:
@@ -192,8 +180,9 @@ async def plan_route_to_coordinate(
         raise RoutePlanningUnavailable(f"雲林站牌索引讀取失敗：{error}") from error
 
     if origin is None:
-        stop = os.getenv("KIOSK_STOP", "雲林科技大學")
-        raise RoutePlanningUnavailable(f"目前無法解析本站「{stop}」的路線規劃起點")
+        raise RoutePlanningUnavailable(
+            f"目前無法解析本站「{get_kiosk_config().stop_name}」的路線規劃起點"
+        )
 
     destination_place = _destination_place(latitude, longitude)
     if destination_place is None:

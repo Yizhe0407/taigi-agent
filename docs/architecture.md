@@ -30,9 +30,10 @@ backend/
 ### API
 
 - `api/__init__.py`：FastAPI app、CORS、router include、telemetry setup。
+- `api/admin.py`：`/api/admin/kiosk`（GET/PUT）與 `/api/admin/stops`（GET）；供後台 UI 讀寫 runtime 站牌設定與站牌目錄。
 - `api/chat.py`：`/api/chat/*`，SQLite-backed `ChatSessionStore`。
 - `api/departures.py`：`/api/departures/here` 與路線詳情。
-- `api/route_plans.py`：`/api/route-plans` 與 `/api/kiosk`。
+- `api/route_plans.py`：`/api/route-plans` 與 `/api/kiosk`（含 direction）。
 - `api/moovo.py`：`/api/moovo/*`。
 - `api/asr.py`：Qwen3-ASR proxy。
 - `api/tts.py`：HanloFlow -> Taibun -> Piper TTS proxy。
@@ -53,12 +54,13 @@ backend/
 - `providers/yunlin_ebus.py`：雲林 ebus provider。
 - `providers/otp.py`：OpenTripPlanner GraphQL provider。
 - `providers/moovo.py`：TDX bike provider。
+- `services/kiosk_config.py`：Runtime kiosk 設定 singleton（stop_name、direction、lat/lon）；持久化至 `.agent_state/kiosk_config.json`，預設雲林科技大學／回程。所有需要站牌資訊的模組從此讀取，不用 env var。
 - `services/departures.py`：離站決策唯一分類來源，支援 provider override。
 - `services/route_plans.py`：OTP 路線規劃 facade、Kiosk 起點、雲林邊界、view model。
 - `services/moovo.py`：公共自行車站 dataclass、解析、cache、距離查詢。
 - `services/stop_catalog.py`：TDX / GTFS 更新流程產生的雲林 stop index。
 - `services/yunlin_boundary.py`：雲林縣 GeoJSON point-in-polygon。
-- `tools/kiosk_bus.py`：Agent str facade、站名縮寫、`KIOSK_STOP` / direction、prefetch。
+- `tools/kiosk_bus.py`：Agent str facade、站名縮寫（僅用於 LLM 工具輸入）、prefetch。
 
 ## 前端
 
@@ -74,7 +76,8 @@ frontend/
 
 - `App.vue`：Kiosk shell，控制首頁與路線規劃 view。
 - `features/departures/`：離站決策首頁、路線詳情、route colors、輪詢與顯示狀態。
-- `features/route-planner/`：MapCN destination picker、路線規劃 request、指定時間 wheel。
+- `features/route-planner/`：MapCN destination picker、路線規劃 request、指定時間 wheel；地圖顯示當前站牌名稱與方向。
+- `features/admin/`：後台站牌切換 UI（`/admin`）；地圖搜尋選站、方向設定、即時套用；無密碼保護，設定立即生效。
 - `features/agent-chat/`：PIP 對話 session / send / scroll 狀態。
 - `components/ui/`：shadcn-vue 與 MapCN Vue copy-paste UI components。
 

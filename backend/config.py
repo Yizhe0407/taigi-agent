@@ -41,10 +41,6 @@ class Settings:
     llm_model: str
     llm_api_key: str                    # default "ollama" for local deployments
 
-    # ── Kiosk identity ────────────────────────────────────────────────────────
-    kiosk_stop: str                     # default "雲林科技大學"
-    kiosk_direction: str | None         # "去程" | "回程" | None (show both)
-
     # ── ASR (optional — service is disabled when asr_base_url is None) ────────
     asr_base_url: str | None
     asr_model: str | None
@@ -82,8 +78,6 @@ class Settings:
             llm_base_url=llm_base_url,
             llm_model=llm_model,
             llm_api_key=os.getenv("LLM_API_KEY", "ollama"),
-            kiosk_stop=os.getenv("KIOSK_STOP", "雲林科技大學"),
-            kiosk_direction=os.getenv("KIOSK_DIRECTION") or None,
             asr_base_url=os.getenv("ASR_BASE_URL") or None,
             asr_model=os.getenv("ASR_MODEL") or None,
             asr_api_key=os.getenv("ASR_API_KEY", ""),

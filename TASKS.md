@@ -56,7 +56,8 @@
 - ebus 工具：本站到站狀態、停靠路線、路線站序、stop-scoped route lookup、站名縮寫。
 - 離站決策：資料模型、決策分類、`/api/departures/here`、route detail API、首頁 dashboard。
 - 前端基礎：Vue、Tailwind、shadcn-vue、Lucide、Kiosk shell、PIP overlay、route planner full-page flow。
-- 路線規劃：OTP graph、TDX stop index、coordinate planner、MapCN route view model、`POST /api/route-plans`。
+- 路線規劃：OTP graph、TDX stop index、coordinate planner、MapCN route view model、`POST /api/route-plans`；無班次錯誤顯示、地圖自動定位、站牌方向標示。
+- 後台管理：`/admin` 站牌切換 UI；runtime `KioskConfig` singleton；`/api/admin/kiosk` GET/PUT、`/api/admin/stops`；不需重啟即可切換站牌與方向。
 - 語音基礎：ASR proxy、前端錄音、TTS proxy、台語文字處理、分段播放。
 
 ## 文件

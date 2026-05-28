@@ -7,7 +7,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from config import Settings
+from services.kiosk_config import get_kiosk_config
 from services.route_plans import (
     InvalidRouteDestination,
     RoutePlanningUnavailable,
@@ -93,6 +93,7 @@ class KioskResponse(BaseModel):
     name: str
     lat: float
     lng: float
+    direction: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -105,16 +106,18 @@ def get_kiosk() -> object:
     """Return the kiosk stop name and its actual OTP origin coordinates."""
     from services.route_plans import _kiosk_place  # noqa: PLC0415
 
+    cfg = get_kiosk_config()
     place = _kiosk_place()
     if place is None:
-        stop = Settings.from_env().kiosk_stop
         raise HTTPException(
-            status_code=503, detail=f"找不到站牌「{stop}」的座標資料"
+            status_code=503,
+            detail=f"找不到站牌「{cfg.stop_name}」的座標資料",
         )
     return KioskResponse(
         name=place.name,
         lat=place.coordinate.latitude,
         lng=place.coordinate.longitude,
+        direction=cfg.direction,
     )
 
 

@@ -9,12 +9,13 @@ import { fetchKiosk } from "../api/kiosk"
 import { fetchMoovoStations } from "../api/moovo"
 import { createRoutePlan, RoutePlanApiError } from "../api/route-plans"
 import { isInYunlinCounty } from "../geo/yunlin-service-area"
-import type { LngLat, PlaceCoordinate, RoutePlan } from "../types"
+import type { KioskPlace, LngLat, RoutePlan } from "../types"
 import type { DepartureMode } from "./useScheduledTimeWheel"
 
-const FALLBACK_KIOSK: PlaceCoordinate = {
+const FALLBACK_KIOSK: KioskPlace = {
   name: "雲林科技大學",
   coordinates: [120.5355922, 23.6940747],
+  direction: "回程",
 }
 
 export function useRoutePlanner() {
@@ -30,7 +31,7 @@ export function useRoutePlanner() {
     queryFn: ({ signal }) => fetchMoovoStations(signal),
     retry: false,
   })
-  const kiosk = computed(() => kioskQuery.data.value ?? FALLBACK_KIOSK)
+  const kiosk = computed<KioskPlace>(() => kioskQuery.data.value ?? FALLBACK_KIOSK)
   const moovoStations = computed(() => moovoQuery.data.value ?? [])
   const isLoadingMoovoStations = computed(() => moovoQuery.isLoading.value)
   const moovoStationsError = computed(() =>
