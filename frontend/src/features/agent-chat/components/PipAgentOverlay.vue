@@ -28,8 +28,10 @@ const {
 watch(
   () => props.open,
   (open) => {
-    showChat.value = open
-    if (!open) moveMode.value = false
+    if (!open) {
+      showChat.value = false
+      moveMode.value = false
+    }
   },
 )
 
@@ -91,6 +93,7 @@ const dirClass = computed(() =>
       <PipFrame
         :width="frameSize.w"
         :height="frameSize.h"
+        :size="size"
         :last-agent-text="lastAgentText"
         :show-chat="showChat"
         :move-mode="moveMode"
