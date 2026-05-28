@@ -137,7 +137,10 @@ def _kiosk_place() -> Place | None:
     cfg = get_kiosk_config()
     if cfg.lat is not None and cfg.lon is not None:
         if math.isfinite(cfg.lat) and math.isfinite(cfg.lon):
-            return Place(cfg.stop_name, otp.Coordinate(latitude=cfg.lat, longitude=cfg.lon))
+            return Place(
+                cfg.stop_name,
+                otp.Coordinate(latitude=cfg.lat, longitude=cfg.lon),
+            )
     return _resolve_place(cfg.stop_name)
 
 

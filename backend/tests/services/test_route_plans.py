@@ -74,11 +74,8 @@ def test_plan_route_to_coordinate_formats_bus_itineraries(monkeypatch):
         ),
     )
 
-    monkeypatch.setattr(
-        kiosk_route_planner,
-        "get_kiosk_config",
-        lambda: KioskConfig(stop_name="雲林科技大學", direction=None, lat=None, lon=None),
-    )
+    cfg_stub = KioskConfig(stop_name="雲林科技大學", direction=None, lat=None, lon=None)
+    monkeypatch.setattr(kiosk_route_planner, "get_kiosk_config", lambda: cfg_stub)
     _use_catalog(
         monkeypatch,
         _stop("YUN-NYUST", "雲林科技大學", 23.69602, 120.533793),

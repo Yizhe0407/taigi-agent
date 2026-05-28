@@ -1,4 +1,5 @@
-"""Runtime kiosk configuration — persists across restarts via .agent_state/kiosk_config.json.
+"""Runtime kiosk configuration — persists across restarts via
+.agent_state/kiosk_config.json.
 
 Default: 雲林科技大學, 回程.
 Set by the admin UI; no env vars required.
@@ -52,7 +53,11 @@ def _load() -> KioskConfig:
             lon=data.get("lon"),
         )
     except Exception:
-        _log.warning("Failed to load kiosk config from %s; using defaults", _STATE_PATH, exc_info=True)
+        _log.warning(
+            "Failed to load kiosk config from %s; using defaults",
+            _STATE_PATH,
+            exc_info=True,
+        )
         return KioskConfig()
 
 
