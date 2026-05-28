@@ -131,6 +131,25 @@ def _resolve_place(name: str) -> Place | None:
 
 
 def _kiosk_place() -> Place | None:
+    """Resolve kiosk origin.
+
+    Priority:
+    1. KIOSK_LAT + KIOSK_LON — precise coordinate, bypasses name lookup.
+    2. KIOSK_STOP name — averaged over matching GTFS stop records.
+    """
+    lat_raw = os.getenv("KIOSK_LAT")
+    lon_raw = os.getenv("KIOSK_LON")
+    if lat_raw and lon_raw:
+        try:
+            lat = float(lat_raw)
+            lon = float(lon_raw)
+        except ValueError:
+            pass
+        else:
+            if math.isfinite(lat) and math.isfinite(lon):
+                stop_name = os.getenv("KIOSK_STOP", "雲林科技大學")
+                return Place(stop_name, otp.Coordinate(latitude=lat, longitude=lon))
+
     return _resolve_place(os.getenv("KIOSK_STOP", "雲林科技大學"))
 
 
