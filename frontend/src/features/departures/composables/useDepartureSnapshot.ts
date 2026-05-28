@@ -33,5 +33,39 @@ export function useDepartureSnapshot(refreshMs = 30_000) {
     () => routes.value.find((route) => route.section === "available") ?? null,
   )
 
-  return { snapshot, isLoading, errorMessage, hasBackgroundError, routes, nextBest }
+  /**
+   * True when the last bus of every route has departed and no route is still
+   * available or waiting to depart — i.e. the kiosk has no service until
+   * tomorrow morning.
+   */
+  const isAllClosed = computed(() => {
+    const s = snapshot.value?.summary
+    if (!s) return false
+    return s.availableCount === 0 && s.notDepartedCount === 0 && s.lastDepartedCount > 0
+  })
+
+  /**
+   * Earliest scheduled time (HH:MM) across all routes, treated as the first
+   * bus of the following day.  Relies on the upstream ETA API populating
+   * ComeTime → scheduledTime even for last-departed rows.
+   */
+  const tomorrowFirstTime = computed<string | null>(() => {
+    if (!isAllClosed.value) return null
+    const times = routes.value
+      .map((r) => r.scheduledTime)
+      .filter((t): t is string => !!t)
+      .sort()
+    return times[0] ?? null
+  })
+
+  return {
+    snapshot,
+    isLoading,
+    errorMessage,
+    hasBackgroundError,
+    routes,
+    nextBest,
+    isAllClosed,
+    tomorrowFirstTime,
+  }
 }

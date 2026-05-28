@@ -9,12 +9,22 @@ import { useRouteColors } from "@/lib/useRouteColors"
 import { useDepartureSnapshot } from "../composables/useDepartureSnapshot"
 import type { DepartureRouteStatus } from "../types"
 import DepartureHeroCard from "./DepartureHeroCard.vue"
+import NoServiceHeroCard from "./NoServiceHeroCard.vue"
 import RouteDetailPanel from "./RouteDetailPanel.vue"
 import RouteList from "./RouteList.vue"
+import TomorrowFirstBusList from "./TomorrowFirstBusList.vue"
 
 const selectedRoute = ref<DepartureRouteStatus | null>(null)
-const { snapshot, isLoading, errorMessage, hasBackgroundError, routes, nextBest } =
-  useDepartureSnapshot()
+const {
+  snapshot,
+  isLoading,
+  errorMessage,
+  hasBackgroundError,
+  routes,
+  nextBest,
+  isAllClosed,
+  tomorrowFirstTime,
+} = useDepartureSnapshot()
 const { now } = useNow()
 const nowText = computed(() => formatTaipeiHourMinute(now.value))
 const { assignments: routeColorAssignments } = useRouteColors(
@@ -69,7 +79,8 @@ const lastUpdatedText = computed(() => {
     </div>
 
     <div v-else class="flex-1 grid grid-cols-[minmax(0,1.1fr)_minmax(340px,1fr)] gap-5 min-h-0 max-[920px]:grid-cols-[minmax(0,1fr)] max-[920px]:auto-rows-auto max-[920px]:overflow-visible">
-      <DepartureHeroCard :next-best="nextBest" />
+      <NoServiceHeroCard v-if="isAllClosed" :tomorrow-first-time="tomorrowFirstTime" />
+      <DepartureHeroCard v-else :next-best="nextBest" />
 
       <div class="bg-white border-2 border-kiosk-line rounded-[32px] pt-5 px-5 pb-4 flex flex-col min-h-0 max-[920px]:min-h-[560px]">
         <RouteDetailPanel
@@ -77,6 +88,12 @@ const lastUpdatedText = computed(() => {
           :route="selectedRoute"
           :route-colors="routeColorAssignments"
           @back="selectedRoute = null"
+        />
+        <TomorrowFirstBusList
+          v-else-if="isAllClosed"
+          :routes="routes"
+          :route-colors="routeColorAssignments"
+          @select="selectedRoute = $event"
         />
         <RouteList
           v-else
