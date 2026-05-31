@@ -21,7 +21,6 @@ const {
   userInput,
   isSending,
   showChat,
-  lastAgentText,
   displayedAgentText,
   clearDisplayedText,
   ttsState,

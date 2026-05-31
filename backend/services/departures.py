@@ -375,7 +375,9 @@ async def build_departure_snapshot(
         )
     except Exception as error:
         _log.warning("Departure snapshot fetch failed: %s", error)
-        raise DepartureSnapshotUnavailable("公車資訊暫時無法取得，請稍後再試") from error
+        raise DepartureSnapshotUnavailable(
+            "公車資訊暫時無法取得，請稍後再試"
+        ) from error
 
     route_by_id = {info["id"]: name for name, info in route_info.items()}
     routes: list[DepartureRouteStatus] = []
