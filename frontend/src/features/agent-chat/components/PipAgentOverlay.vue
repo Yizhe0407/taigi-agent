@@ -22,6 +22,11 @@ const {
   isSending,
   showChat,
   lastAgentText,
+  displayedAgentText,
+  clearDisplayedText,
+  ttsState,
+  mouthAmplitude,
+  cancelTts,
   sendMessage,
   sendVoiceMessage,
   handleKeydown,
@@ -31,7 +36,15 @@ function onVoiceError(msg: string) {
   messages.value.push({ id: `voice-err-${Date.now()}`, role: "assistant", text: `（${msg}）` })
 }
 
-const { voiceState, toggle: toggleVoice } = useVoiceInput(sendVoiceMessage, onVoiceError)
+const { voiceState, toggle: toggleVoiceRaw } = useVoiceInput(sendVoiceMessage, onVoiceError)
+
+function toggleVoice() {
+  if (voiceState.value === "idle") {
+    cancelTts()
+    clearDisplayedText()
+  }
+  toggleVoiceRaw()
+}
 
 watch(
   () => props.open,
@@ -40,6 +53,9 @@ watch(
       showChat.value = false
       moveMode.value = false
       settingsMode.value = false
+      cancelTts()
+      clearDisplayedText()
+      if (voiceState.value === "recording") toggleVoiceRaw()
     }
   },
 )
@@ -109,9 +125,12 @@ const dirClass = computed(() =>
         :width="frameSize.w"
         :height="frameSize.h"
         :size="size"
-        :last-agent-text="lastAgentText"
+        :last-agent-text="displayedAgentText"
+        :is-sending="isSending"
         :show-chat="showChat"
         :voice-state="voiceState"
+        :tts-state="ttsState"
+        :mouth-amplitude="mouthAmplitude"
         :move-mode="moveMode"
         :settings-mode="settingsMode"
         :corner="corner"

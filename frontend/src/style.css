@@ -107,6 +107,18 @@ body,
   animation: voice-wave 0.75s ease-in-out infinite;
 }
 
+@keyframes pip-dot-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30%           { transform: translateY(-5px); opacity: 1; }
+}
+.pip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: white;
+  animation: pip-dot-bounce 1.1s ease-in-out infinite;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

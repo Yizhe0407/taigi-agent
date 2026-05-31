@@ -7,7 +7,7 @@ declare global {
 const CUBISM_CORE_SRC = "/vendor/live2dcubismcore.min.js"
 const CUBISM_SHADER_PATH = "/vendor/live2d/shaders/webgl/"
 const AVATAR_VISIBLE_HEIGHT = 2.1
-const AVATAR_TOP_Y = 0.72
+const AVATAR_TOP_Y = 0.85
 
 let coreScriptPromise: Promise<void> | null = null
 let frameworkPromise: Promise<void> | null = null
@@ -26,7 +26,8 @@ export class OfficialCubismAvatar {
   private textures: WebGLTexture[] = []
   private frameId = 0
   private disposed = false
-  private speakingUntil = 0
+  private mouthTarget = 0
+  private mouthCurrent = 0
   private readonly parameterIds = new Map<string, any>()
 
   // Random phase offsets so each axis starts at different point in cycle
@@ -84,8 +85,8 @@ export class OfficialCubismAvatar {
     this.start()
   }
 
-  speak(durationMs = 2600) {
-    this.speakingUntil = performance.now() + durationMs
+  setMouthAmplitude(value: number) {
+    this.mouthTarget = value
   }
 
   resize() {
@@ -239,12 +240,9 @@ export class OfficialCubismAvatar {
     this.setParameter("ParamEyeBallX", this.eyeCurrentX)
     this.setParameter("ParamEyeBallY", this.eyeCurrentY)
 
-    // Speaking: faster mouth, lower base so mouth can nearly close between syllables
-    const speaking = now < this.speakingUntil
-    const mouthOpen = speaking
-      ? 0.06 + Math.abs(Math.sin(t * 14.5)) * 0.58 + Math.abs(Math.sin(t * 7.2)) * 0.12
-      : 0
-    this.setParameter("ParamMouthOpenY", mouthOpen)
+    // Lerp toward target amplitude for smooth response
+    this.mouthCurrent += (this.mouthTarget - this.mouthCurrent) * 0.4
+    this.setParameter("ParamMouthOpenY", this.mouthCurrent)
   }
 
   /**

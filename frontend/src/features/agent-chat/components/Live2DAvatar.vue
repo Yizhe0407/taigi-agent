@@ -5,7 +5,7 @@ import { OfficialCubismAvatar } from "../live2d/officialCubismAvatar"
 const props = defineProps<{
   modelSrc: string
   fallbackSrc: string
-  lastAgentText: string
+  mouthAmplitude: number
 }>()
 
 const host = ref<HTMLDivElement | null>(null)
@@ -15,10 +15,8 @@ let avatar: OfficialCubismAvatar | null = null
 let resizeObserver: ResizeObserver | null = null
 
 watch(
-  () => props.lastAgentText,
-  (text) => {
-    if (text.trim()) avatar?.speak()
-  },
+  () => props.mouthAmplitude,
+  (v) => avatar?.setMouthAmplitude(v),
 )
 
 onMounted(async () => {

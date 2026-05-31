@@ -17,6 +17,7 @@ import {
   sendChatMessage,
 } from "../api/chat"
 import type { PipChatMessage } from "../types"
+import { useTts } from "./useTts"
 
 let messageCounter = 0
 
@@ -32,6 +33,30 @@ export function usePipChat(isOpen: Readonly<Ref<boolean>>) {
   const isSending = ref(false)
   const showChat = ref(false)
   const chatBodyRef = useTemplateRef<HTMLElement>("pip-chat-body")
+  const { ttsState, mouthAmplitude, speak: speakTts, cancel: cancelTts } = useTts()
+
+  const displayedAgentText = ref("")
+  let typewriterToken = 0
+
+  async function animateText(text: string, durationMs?: number) {
+    const token = ++typewriterToken
+    displayedAgentText.value = ""
+    const delay = durationMs ? Math.max(15, durationMs / text.length) : 35
+    for (const char of text) {
+      if (token !== typewriterToken) return
+      displayedAgentText.value += char
+      await new Promise<void>(r => setTimeout(r, delay))
+    }
+  }
+
+  function speakWithAnimation(text: string) {
+    void speakTts(text).then(durationMs => void animateText(text, durationMs ?? undefined))
+  }
+
+  function clearDisplayedText() {
+    typewriterToken++
+    displayedAgentText.value = ""
+  }
 
   async function ensureSession() {
     if (sessionId.value) return
@@ -39,13 +64,9 @@ export function usePipChat(isOpen: Readonly<Ref<boolean>>) {
     try {
       sessionId.value = await createChatSession()
       if (!messages.value.length) {
-        messages.value = [
-          {
-            id: "welcome",
-            role: "assistant",
-            text: "您好，我是小芸。請問需要什麼幫忙呢？",
-          },
-        ]
+        const welcomeText = "您好，我是小芸。請問需要什麼幫忙呢？"
+        messages.value = [{ id: "welcome", role: "assistant", text: welcomeText }]
+        speakWithAnimation(welcomeText)
       }
     } catch {
       if (!messages.value.length) {
@@ -83,6 +104,7 @@ export function usePipChat(isOpen: Readonly<Ref<boolean>>) {
     try {
       const reply = await sendChatMessage(sessionId.value, text)
       messages.value.push({ id: `${id}-reply`, role: "assistant", text: reply })
+      speakWithAnimation(reply)
     } catch (error) {
       const message =
         error instanceof ChatApiError
@@ -93,6 +115,7 @@ export function usePipChat(isOpen: Readonly<Ref<boolean>>) {
         role: "assistant",
         text: `（${message}）`,
       })
+      void animateText(`（${message}）`)
     } finally {
       isSending.value = false
       await scrollToBottom()
@@ -121,10 +144,12 @@ export function usePipChat(isOpen: Readonly<Ref<boolean>>) {
     try {
       const reply = await sendChatMessage(sessionId.value, message)
       messages.value.push({ id: `${id}-reply`, role: "assistant", text: reply })
+      speakWithAnimation(reply)
     }
     catch (error) {
       const msg = error instanceof ChatApiError ? error.message : UI_FALLBACK_MESSAGES.agentNoReply
       messages.value.push({ id: `${id}-error`, role: "assistant", text: `（${msg}）` })
+      void animateText(`（${msg}）`)
     }
     finally {
       isSending.value = false
@@ -162,6 +187,11 @@ export function usePipChat(isOpen: Readonly<Ref<boolean>>) {
     isSending,
     showChat,
     lastAgentText,
+    displayedAgentText,
+    clearDisplayedText,
+    ttsState,
+    mouthAmplitude,
+    cancelTts,
     ensureSession,
     sendMessage,
     sendVoiceMessage,
