@@ -2,6 +2,7 @@
 import { computed, ref, toRef, watch } from "vue"
 
 import { usePipChat } from "@/features/agent-chat/composables/usePipChat"
+import { useVoiceInput } from "@/features/agent-chat/composables/useVoiceInput"
 
 import PipChatPanel from "./PipChatPanel.vue"
 import PipFrame from "./PipFrame.vue"
@@ -13,6 +14,7 @@ const emit = defineEmits<{ close: [] }>()
 const corner = ref<PipCorner>("br")
 const size = ref<PipSize>("lg")
 const moveMode = ref(false)
+const settingsMode = ref(false)
 
 const {
   messages,
@@ -21,9 +23,15 @@ const {
   showChat,
   lastAgentText,
   sendMessage,
+  sendVoiceMessage,
   handleKeydown,
-  toggleChat,
 } = usePipChat(toRef(props, "open"))
+
+function onVoiceError(msg: string) {
+  messages.value.push({ id: `voice-err-${Date.now()}`, role: "assistant", text: `（${msg}）` })
+}
+
+const { voiceState, toggle: toggleVoice } = useVoiceInput(sendVoiceMessage, onVoiceError)
 
 watch(
   () => props.open,
@@ -31,19 +39,26 @@ watch(
     if (!open) {
       showChat.value = false
       moveMode.value = false
+      settingsMode.value = false
     }
   },
 )
 
 const frameSize = computed(() => PIP_SIZES[size.value])
 
-function cycleSize() {
-  size.value = size.value === "sm" ? "md" : size.value === "md" ? "lg" : "sm"
-}
-
 function selectCorner(next: PipCorner) {
   corner.value = next
   moveMode.value = false
+}
+
+function enterMoveFromSettings() {
+  settingsMode.value = false
+  moveMode.value = true
+}
+
+function openChatFromSettings() {
+  settingsMode.value = false
+  showChat.value = true
 }
 
 // Class-based positioning — Tailwind utilities derived from corner. Avoids inline-style reactivity issues with Transition.
@@ -96,12 +111,17 @@ const dirClass = computed(() =>
         :size="size"
         :last-agent-text="lastAgentText"
         :show-chat="showChat"
+        :voice-state="voiceState"
         :move-mode="moveMode"
+        :settings-mode="settingsMode"
         :corner="corner"
         @close="emit('close')"
-        @toggle-chat="toggleChat"
-        @enter-move="moveMode = true"
-        @cycle-size="cycleSize"
+        @toggle-voice="toggleVoice"
+        @toggle-settings="settingsMode = !settingsMode"
+        @cancel-settings="settingsMode = false"
+        @set-size="size = $event"
+        @enter-move="enterMoveFromSettings"
+        @open-chat="openChatFromSettings"
         @select-corner="selectCorner"
         @cancel-move="moveMode = false"
       />

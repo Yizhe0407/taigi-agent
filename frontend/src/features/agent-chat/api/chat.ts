@@ -43,13 +43,13 @@ export async function sendChatMessage(
 
 /** POST audio blob to backend ASR proxy. Returns transcription text. */
 export async function transcribeAudio(audio: Blob): Promise<string> {
-  const ext = audio.type.includes("wav") ? "wav" : audio.type.includes("ogg") ? "ogg" : "webm"
   const form = new FormData()
-  form.append("file", audio, `audio.${ext}`)
+  form.append("file", audio, "audio.wav")
 
   const response = await apiFetch("/api/asr", {
     method: "POST",
     body: form,
+    signal: AbortSignal.timeout(20_000),
     errorClass: ChatApiError,
     networkMessage: API_NETWORK_MESSAGES.asr,
   })

@@ -106,6 +106,32 @@ export function usePipChat(isOpen: Readonly<Ref<boolean>>) {
     }
   }
 
+  async function sendVoiceMessage(text: string) {
+    const message = text.trim()
+    if (!message || isSending.value) return
+
+    await ensureSession()
+    if (!sessionId.value) return
+
+    const id = nextMessageId()
+    messages.value.push({ id, role: "user", text: message })
+    await scrollToBottom()
+
+    isSending.value = true
+    try {
+      const reply = await sendChatMessage(sessionId.value, message)
+      messages.value.push({ id: `${id}-reply`, role: "assistant", text: reply })
+    }
+    catch (error) {
+      const msg = error instanceof ChatApiError ? error.message : UI_FALLBACK_MESSAGES.agentNoReply
+      messages.value.push({ id: `${id}-error`, role: "assistant", text: `（${msg}）` })
+    }
+    finally {
+      isSending.value = false
+      await scrollToBottom()
+    }
+  }
+
   function toggleChat() {
     showChat.value = !showChat.value
     if (showChat.value) void ensureSession()
@@ -138,6 +164,7 @@ export function usePipChat(isOpen: Readonly<Ref<boolean>>) {
     lastAgentText,
     ensureSession,
     sendMessage,
+    sendVoiceMessage,
     handleKeydown,
     toggleChat,
   }

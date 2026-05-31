@@ -6,8 +6,8 @@ declare global {
 
 const CUBISM_CORE_SRC = "/vendor/live2dcubismcore.min.js"
 const CUBISM_SHADER_PATH = "/vendor/live2d/shaders/webgl/"
-const AVATAR_VISIBLE_HEIGHT = 2.65
-const AVATAR_TOP_Y = 0.90
+const AVATAR_VISIBLE_HEIGHT = 2.1
+const AVATAR_TOP_Y = 0.72
 
 let coreScriptPromise: Promise<void> | null = null
 let frameworkPromise: Promise<void> | null = null
@@ -34,11 +34,19 @@ export class OfficialCubismAvatar {
   private readonly phaseY = Math.random() * Math.PI * 2
   private readonly phaseZ = Math.random() * Math.PI * 2
   private readonly phaseBody = Math.random() * Math.PI * 2
+  private readonly phaseBreath = Math.random() * Math.PI * 2
 
   // Blink state
   private nextBlinkAt = performance.now() + 2000 + Math.random() * 3000
   private blinking = false
   private blinkStartAt = 0
+
+  // Eye ball state — smooth random glances
+  private eyeTargetX = 0
+  private eyeTargetY = 0
+  private eyeCurrentX = 0
+  private eyeCurrentY = 0
+  private nextEyeMoveAt = performance.now() + 1500 + Math.random() * 2000
 
   constructor(host: HTMLElement, modelSrc: string) {
     this.host = host
@@ -205,10 +213,31 @@ export class OfficialCubismAvatar {
     this.setParameter("ParamAngleZ", angleZ)
     this.setParameter("ParamBodyAngleX", bodyAngleX)
 
+    // Breathing — slow ~7.5 s cycle, maps to 0–1
+    const breath = 0.5 + 0.5 * Math.sin(t * 0.84 + this.phaseBreath)
+    this.setParameter("ParamBreath", breath)
+
     // Random-interval blink with smooth eyelid curve
     const blink = this.computeBlink(now)
     this.setParameter("ParamEyeLOpen", blink)
     this.setParameter("ParamEyeROpen", blink)
+
+    // Eye ball — random glances every 2–6 s, 30% chance to return to center
+    if (now >= this.nextEyeMoveAt) {
+      if (Math.random() < 0.3) {
+        this.eyeTargetX = 0
+        this.eyeTargetY = 0
+      }
+      else {
+        this.eyeTargetX = (Math.random() - 0.5) * 1.2
+        this.eyeTargetY = (Math.random() - 0.5) * 0.8
+      }
+      this.nextEyeMoveAt = now + 2000 + Math.random() * 4000
+    }
+    this.eyeCurrentX += (this.eyeTargetX - this.eyeCurrentX) * 0.06
+    this.eyeCurrentY += (this.eyeTargetY - this.eyeCurrentY) * 0.06
+    this.setParameter("ParamEyeBallX", this.eyeCurrentX)
+    this.setParameter("ParamEyeBallY", this.eyeCurrentY)
 
     // Speaking: faster mouth, lower base so mouth can nearly close between syllables
     const speaking = now < this.speakingUntil
