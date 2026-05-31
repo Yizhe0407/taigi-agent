@@ -206,7 +206,7 @@ def test_build_departure_snapshot_wraps_provider_errors(use_provider):
     with pytest.raises(departures.DepartureSnapshotUnavailable) as error:
         asyncio.run(departures.build_departure_snapshot("雲林科技大學"))
 
-    assert "雲林公車查詢失敗" in str(error.value)
+    assert "公車資訊暫時無法取得" in str(error.value)
 
 
 def test_build_route_detail_returns_structured_stop_order(use_provider):
