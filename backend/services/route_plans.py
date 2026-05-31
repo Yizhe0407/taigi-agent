@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime
@@ -9,6 +10,8 @@ from typing import TypedDict
 from zoneinfo import ZoneInfo
 
 from providers import otp
+
+_log = logging.getLogger(__name__)
 from services.kiosk_config import get_kiosk_config
 from services.stop_catalog import StopCatalogError, StopRecord, load_stop_catalog
 from services.yunlin_boundary import is_in_yunlin_county
@@ -203,7 +206,8 @@ async def plan_route_to_coordinate(
             departure_time or datetime.now(_TAIPEI),
         )
     except otp.OtpError as error:
-        raise RoutePlanningUnavailable(f"OTP 路線規劃失敗：{error}") from error
+        _log.warning("OTP route planning failed: %s", error)
+        raise RoutePlanningUnavailable("路線規劃服務暫時無法使用，請稍後再試") from error
 
     bus_itineraries = [plan for plan in itineraries if plan.bus_legs][:3]
     if not bus_itineraries:

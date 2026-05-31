@@ -14,6 +14,7 @@ instance lives at module scope (`_provider`) and can be swapped via
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from providers.yunlin_ebus import YunlinEbusProvider
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 
+_log = logging.getLogger(__name__)
 _provider: BusProvider = YunlinEbusProvider()
 
 
@@ -372,7 +374,8 @@ async def build_departure_snapshot(
             provider.load_route_info(stop_name),
         )
     except Exception as error:
-        raise DepartureSnapshotUnavailable(f"雲林公車查詢失敗：{error}") from error
+        _log.warning("Departure snapshot fetch failed: %s", error)
+        raise DepartureSnapshotUnavailable("公車資訊暫時無法取得，請稍後再試") from error
 
     route_by_id = {info["id"]: name for name, info in route_info.items()}
     routes: list[DepartureRouteStatus] = []
@@ -445,7 +448,8 @@ async def build_route_detail(
     try:
         route_info = await provider.load_route_info(stop_name)
     except Exception as error:
-        raise RouteDetailUnavailable(f"雲林公車查詢失敗：{error}") from error
+        _log.warning("Route detail fetch (load_route_info) failed: %s", error)
+        raise RouteDetailUnavailable("路線詳情暫時無法取得，請稍後再試") from error
 
     info = route_info.get(route)
     if info is None:
@@ -458,7 +462,8 @@ async def build_route_detail(
     try:
         estimate_data = await provider.fetch_route_estimate(route_id)
     except Exception as error:
-        raise RouteDetailUnavailable(f"雲林公車查詢失敗：{error}") from error
+        _log.warning("Route detail fetch (fetch_route_estimate) failed: %s", error)
+        raise RouteDetailUnavailable("路線詳情暫時無法取得，請稍後再試") from error
 
     by_direction: dict[int, list[RouteStopDetail]] = {}
     for row in estimate_data:
