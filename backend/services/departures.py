@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -26,6 +27,25 @@ from providers.bus import BusProvider
 from providers.yunlin_ebus import YunlinEbusProvider
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+_PAREN_RE = re.compile(r"\s*[（(][^）)]{0,40}[）)]\s*")
+_ONES_ZH = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"]
+
+
+def _strip_paren(name: str) -> str:
+    """Remove parenthetical suffixes from stop names: 持法媽祖宮(頂溪) → 持法媽祖宮."""
+    return _PAREN_RE.sub("", name).strip()
+
+
+def _mins_zh(n: int) -> str:
+    """Integer minutes 0–99 → natural Chinese count."""
+    if n <= 0:
+        return "零"
+    if n < 10:
+        return _ONES_ZH[n]
+    if n < 20:
+        return "十" + _ONES_ZH[n % 10]
+    return _ONES_ZH[n // 10] + "十" + _ONES_ZH[n % 10]
 
 
 _log = logging.getLogger(__name__)
@@ -259,7 +279,7 @@ def _classify_stop(
             return (
                 DepartureSection.AVAILABLE,
                 DepartureDecision.CAN_WAIT,
-                f"約 {value} 分鐘後",
+                f"約{_mins_zh(value)}分鐘後",
                 "可以等",
                 value,
                 scheduled_time,
@@ -269,7 +289,7 @@ def _classify_stop(
         return (
             DepartureSection.AVAILABLE,
             DepartureDecision.LONG_WAIT,
-            f"約 {value} 分鐘後",
+            f"約{_mins_zh(value)}分鐘後",
             "等待較久",
             value,
             scheduled_time,
@@ -455,7 +475,7 @@ async def build_route_detail(
 
     info = route_info.get(route)
     if info is None:
-        raise RouteDetailNotFound(f"在「{stop_name}」找不到停靠路線 {route}")
+        raise RouteDetailNotFound(f"在 {stop_name} 找不到停靠路線 {route}")
 
     route_id = _as_int(info.get("id"))
     if route_id is None:
@@ -527,7 +547,7 @@ async def render_arrivals(
     info = route_info.get(route)
     route_id = _as_int(info.get("id")) if info is not None else None
     if route_id is None:
-        return f"在「{stop_name}」找不到停靠路線 {route}"
+        return f"在 {stop_name} 找不到停靠路線 {route}"
 
     try:
         data = await provider.fetch_route_estimate(route_id)
@@ -540,7 +560,7 @@ async def render_arrivals(
         and (go_back is None or stop.get("GoBack") == go_back)
     ]
     if not matches:
-        return f"路線 {route} 上找不到包含「{stop_name}」的站牌"
+        return f"路線 {route} 上找不到包含 {stop_name} 的站牌"
 
     now = datetime.now(TAIPEI_TZ)
     results = []
@@ -605,9 +625,9 @@ async def render_stop_arrival_statuses(
         sections[group].append(line)
 
     if not seen:
-        return f"「{stop_name}」目前無到站狀態資料"
+        return f"{stop_name} 目前無到站狀態資料"
 
-    results = [f"「{stop_name}」目前到站狀態："]
+    results = [f"{stop_name} 目前到站狀態："]
     for title, lines in sections.items():
         if lines:
             results.append(f"{title}：")
@@ -627,7 +647,7 @@ async def render_route_stops(route: str, stop_name: str) -> str:
     info = route_info.get(route)
     route_id = _as_int(info.get("id")) if info is not None else None
     if route_id is None:
-        return f"在「{stop_name}」找不到停靠路線 {route}"
+        return f"在 {stop_name} 找不到停靠路線 {route}"
 
     try:
         data = await provider.fetch_route_estimate(route_id)
@@ -638,7 +658,7 @@ async def render_route_stops(route: str, stop_name: str) -> str:
     for stop in data:
         go_back = stop.get("GoBack", 1)
         seq = stop.get("SeqNo", 0)
-        name = stop.get("StopName", "")
+        name = _strip_paren(stop.get("StopName", ""))
         by_direction.setdefault(go_back, []).append((seq, name))
 
     if not by_direction:
@@ -662,7 +682,7 @@ async def render_routes_at_stop(stop_name: str) -> str:
         return f"站名查詢失敗：{error}"
 
     if not data:
-        return f"找不到「{stop_name}」這個站牌"
+        return f"找不到 {stop_name} 這個站牌"
 
     seen: set[str] = set()
     lines: list[str] = []
@@ -670,7 +690,6 @@ async def render_routes_at_stop(stop_name: str) -> str:
         name = r.get("name", "?")
         if name not in seen:
             seen.add(name)
-            desc = r.get("ddesc", "")
-            lines.append(f"{name}（{desc}）")
+            lines.append(name)
 
-    return f"「{stop_name}」停靠路線：\n" + "\n".join(lines)
+    return f"{stop_name} 停靠路線：\n" + "\n".join(lines)

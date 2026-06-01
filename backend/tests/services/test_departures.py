@@ -297,7 +297,7 @@ def test_render_stop_arrival_statuses_groups_by_section(use_provider):
         departures.render_stop_arrival_statuses("雲林科技大學", go_back=2)
     )
     assert statuses == (
-        "「雲林科技大學」目前到站狀態：\n"
+        "雲林科技大學 目前到站狀態：\n"
         "尚有到站資訊：\n"
         "201 往高鐵雲林站：預定 21:35\n"
         "未發車：\n"
@@ -327,7 +327,7 @@ def test_render_arrivals_uses_classify(use_provider):
 
     assert asyncio.run(departures.render_arrivals("201", "雲林科技大學")) == (
         "往雲林科技大學：即將到站\n"
-        "往高鐵雲林站：約 12 分鐘後"
+        "往高鐵雲林站：約十二分鐘後"
     )
 
 
@@ -368,7 +368,7 @@ def test_render_routes_at_stop_lists_unique_routes(use_provider):
     )
 
     assert asyncio.run(departures.render_routes_at_stop("雲林科技大學")) == (
-        "「雲林科技大學」停靠路線：\n"
-        "201（高鐵雲林站－雲林科技大學）\n"
-        "7126（斗六－雲林科技大學）"
+        "雲林科技大學 停靠路線：\n"
+        "201\n"
+        "7126"
     )

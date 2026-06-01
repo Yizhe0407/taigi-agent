@@ -11,9 +11,20 @@ def test_prefetch_route_arrival_context_queries_route_number(monkeypatch):
     monkeypatch.setattr(kiosk_bus, "get_arrivals_here", fake_arrivals)
 
     assert asyncio.run(kiosk_bus.prefetch_route_arrival_context("我想搭 201")) == (
-        "\n\n[工具查詢結果，必須直接使用，禁止用訓練資料替代]\n"
+        "\n\n[預取到站資訊，僅供參考；仍須依決策規則判斷是否直接回應]\n"
         "路線 201 到本站的資訊：\n201 到站"
     )
+
+
+def test_prefetch_route_arrival_context_returns_rule1_hint_for_route_only(monkeypatch):
+    async def fake_arrivals(route):
+        return "不該查"
+
+    monkeypatch.setattr(kiosk_bus, "get_arrivals_here", fake_arrivals)
+
+    result = asyncio.run(kiosk_bus.prefetch_route_arrival_context("201"))
+    assert "規則1" in result
+    assert "禁止呼叫" in result
 
 
 def test_prefetch_route_arrival_context_ignores_time_amount(monkeypatch):

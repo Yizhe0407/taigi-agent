@@ -26,12 +26,16 @@ _ALIASES: dict[str, str] = {
     "北港廟": "北港朝天宮",
 }
 
-# 路線號碼 pattern：Y01 / 101 / 7126 等。
+# 路線號碼 pattern：Y01 / 101 / 7126 / 7000b / 201A 等（前綴或後綴單字母）。
 # negative lookahead 排除 101 大樓、3 號出口、30 分鐘等常見非路線用法。
 _ROUTE_RE = re.compile(
-    r"\b([A-Za-z]?\d{2,4})\b"
+    r"\b([A-Za-z]?\d{2,4}[A-Za-z]?)\b"
     r"(?!\s*(?:大樓|號出口|出口|樓層|樓|棟|館|分鐘|分|秒|公里|公尺|元|歲))"
 )
+
+# 純路線號碼輸入（不含問句或動詞）：「201」「7000b」「Y01路」等。
+# 這類輸入應走 Rule 1 詢問使用者意圖，不預取以免小模型跳過 Rule 1 直接使用預取資料。
+_ROUTE_ONLY_RE = re.compile(r"^[A-Za-z]?\d{1,4}[A-Za-z]?路?$")
 
 
 def _resolve(stop_name: str) -> str:
@@ -85,7 +89,13 @@ async def get_arrivals_here(route: str) -> str:
 
 
 async def prefetch_route_arrival_context(user_input: str) -> str:
-    """路線號碼很明確時先查本站到站資訊，降低小模型跳過工具的機率。"""
+    """路線號碼很明確時先查本站到站資訊，降低小模型跳過工具的機率。
+
+    純路線號碼輸入（如「201」「7000b」）不預取：
+    應走 Rule 1 詢問意圖，注入資料反而讓小模型繞過 Rule 1 直接回答。
+    """
+    if _ROUTE_ONLY_RE.match(user_input.strip()):
+        return "\n\n[規則1：使用者只輸入路線號碼，請詢問想查什麼資訊，禁止呼叫任何工具]"
     match = _ROUTE_RE.search(user_input)
     if match is None:
         return ""
@@ -93,6 +103,6 @@ async def prefetch_route_arrival_context(user_input: str) -> str:
     route = match.group(1)
     result = await get_arrivals_here(route)
     return (
-        "\n\n[工具查詢結果，必須直接使用，禁止用訓練資料替代]\n"
+        "\n\n[預取到站資訊，僅供參考；仍須依決策規則判斷是否直接回應]\n"
         f"路線 {route} 到本站的資訊：\n{result}"
     )

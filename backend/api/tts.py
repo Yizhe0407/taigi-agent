@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from agent.telemetry import get_telemetry
 from config import Settings
 from pipeline.text_processor import process as text_process
+from pipeline.tts_normalizer import normalize_for_tts
 
 router = APIRouter()
 
@@ -69,8 +70,9 @@ async def synthesize(body: TTSRequest) -> Response:
     tel = get_telemetry()
     t0 = time.perf_counter()
     try:
-        with tel.start_span("tts.text_process", {"tts.input_chars": len(body.text)}):
-            result = text_process(body.text)
+        tts_text = normalize_for_tts(body.text)
+        with tel.start_span("tts.text_process", {"tts.input_chars": len(tts_text)}):
+            result = text_process(tts_text)
         # Distinguish "ran but produced nothing" from true success so dashboards
         # can surface empty-output events separately from exceptions.
         outcome = "ok" if result.tailo else "empty_output"
