@@ -210,6 +210,62 @@ def test_summarize_error_collapses_cloudflare_tunnel_html():
     )
 
 
+def test_session_retries_when_tool_call_violates_injected_rule():
+    async def enricher(_):
+        return "\n[規則1：使用者只輸入路線號碼，禁止呼叫任何工具]"
+
+    executed = []
+
+    async def fake_tool():
+        executed.append(True)
+        return "不該被執行"
+
+    session = make_session(
+        [
+            llm_response(assistant_message(tool_calls=[tool_call("bus", "{}", "t1")])),
+            llm_response(assistant_message("請問您想查什麼資訊？")),
+        ],
+        input_enricher=enricher,
+        tool_handlers={"bus": fake_tool},
+    )
+
+    result = asyncio.run(session.respond("201"))
+
+    assert result == "請問您想查什麼資訊？"
+    assert executed == []  # tool never ran
+    tool_msgs = [m for m in session.messages if m["role"] == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0]["tool_call_id"] == "t1"
+    assert "禁止呼叫" in tool_msgs[0]["content"]
+
+
+def test_session_rule_retry_falls_through_after_max_retries():
+    async def enricher(_):
+        return "\n禁止呼叫任何工具"
+
+    executed = []
+
+    async def fake_tool():
+        executed.append(True)
+        return "執行了"
+
+    session = make_session(
+        [
+            llm_response(assistant_message(tool_calls=[tool_call("bus", "{}", "t1")])),
+            llm_response(assistant_message(tool_calls=[tool_call("bus", "{}", "t2")])),
+            llm_response(assistant_message(tool_calls=[tool_call("bus", "{}", "t3")])),
+            llm_response(assistant_message("最終回答")),
+        ],
+        input_enricher=enricher,
+        tool_handlers={"bus": fake_tool},
+    )
+
+    result = asyncio.run(session.respond("201"))
+
+    assert result == "最終回答"
+    assert executed == [True]  # exactly one real tool execution after retries exhausted
+
+
 def test_session_compacts_old_history_with_transcript_and_summary(tmp_path):
     session = make_session(
         [

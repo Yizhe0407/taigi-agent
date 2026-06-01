@@ -31,17 +31,36 @@ from agent.tool_dispatch import (
     assistant_message,
     execute_tool_calls,
     function_tool_calls,
+    tool_error,
 )
 
 InputEnricher = Callable[[str], Awaitable[str]]
 
 _MAX_CONTEXT_RECOVERY_RETRIES = 1
 _DEFAULT_MAX_TOOL_ROUNDS = 8
+_MAX_RULE_RETRIES = 2
+# Marker injected by input_enricher to signal that tool calls are forbidden this turn.
+_FORBIDDEN_TOOL_MARKER = "禁止呼叫"
 _TOOL_ROUND_LIMIT_MESSAGE = "查詢逾時，請換個方式再問一次。"
 _COMPACT_SUMMARY_SYSTEM_PROMPT = """你負責壓縮一段公車查詢助理的對話歷史。
 請保留使用者目標、已知站牌與方向、已查到的路線或到站狀態、
 重要工具錯誤、尚未回答的問題與所有限制。
 不要補充 transcript 沒有的事實。用繁體中文，條列簡短。"""
+
+
+def _forbidden_tool_correction(enriched_content: str, tool_calls: list) -> list[dict] | None:
+    """Return fake tool-result messages if the enriched user content forbids tool calls.
+
+    Preserves tool_call_id pairing so the message history stays valid.
+    """
+    if _FORBIDDEN_TOOL_MARKER not in enriched_content:
+        return None
+    names = "、".join(c.function.name for c in tool_calls)
+    msg = (
+        f"系統：本輪偵測到工具呼叫（{names}），但注入的規則禁止呼叫任何工具。"
+        "請直接用繁體中文文字回覆使用者，不要呼叫任何工具。"
+    )
+    return [tool_error(call.id, msg) for call in tool_calls]
 
 
 def _compact_summary_request(messages: list[dict], transcript_path: str) -> list[dict]:
@@ -157,6 +176,7 @@ class AgentSession:
 
     async def respond(self, user_input: str) -> str:
         extra = await self.input_enricher(user_input) if self.input_enricher else ""
+        enriched_content = user_input + extra
         with self.telemetry.start_span(
             "agent.turn",
             {
@@ -164,9 +184,10 @@ class AgentSession:
                 "agent.input.enriched": bool(extra),
             },
         ):
-            self.messages.append({"role": "user", "content": user_input + extra})
+            self.messages.append({"role": "user", "content": enriched_content})
 
             tool_rounds = 0
+            rule_retries = 0
             context_retries = 0
             while True:
                 await self._prepare_context()
@@ -213,6 +234,17 @@ class AgentSession:
                 if not tool_calls:
                     self.messages = trim_history(self.messages, self.max_history_tokens)
                     return message.content or ""
+
+                if rule_retries < _MAX_RULE_RETRIES:
+                    corrections = _forbidden_tool_correction(enriched_content, tool_calls)
+                    if corrections:
+                        self.messages.extend(corrections)
+                        rule_retries += 1
+                        log_diagnostic(
+                            "warn",
+                            f"工具呼叫違反注入規則（第 {rule_retries} 次修正），重試",
+                        )
+                        continue
 
                 tool_rounds += 1
                 self.messages.extend(
