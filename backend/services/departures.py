@@ -673,6 +673,93 @@ async def render_route_stops(route: str, stop_name: str) -> str:
     return "\n".join(results)
 
 
+async def render_stop_on_route(
+    route: str,
+    stop_name: str,
+    kiosk_stop: str,
+) -> str:
+    """Return a yes/no string: does route stop at stop_name?
+
+    Matching is substring-based (both directions) so aliases like "斗六" match
+    "斗六火車站". The LLM reads the result verbatim — no comparison needed.
+    """
+    provider = get_provider()
+    try:
+        route_info = await provider.load_route_info(kiosk_stop)
+    except Exception as error:
+        return f"雲林公車查詢失敗：{error}"
+
+    info = route_info.get(route)
+    route_id = _as_int(info.get("id")) if info is not None else None
+    if route_id is None:
+        return f"在 {kiosk_stop} 找不到停靠路線 {route}"
+
+    try:
+        data = await provider.fetch_route_estimate(route_id)
+    except Exception as error:
+        return f"雲林公車查詢失敗：{error}"
+
+    by_direction: dict[int, list[str]] = {}
+    for stop in data:
+        gb = stop.get("GoBack", 1)
+        name = _strip_paren(stop.get("StopName", ""))
+        by_direction.setdefault(gb, []).append(name)
+
+    matched: list[str] = []
+    for gb, stops in sorted(by_direction.items()):
+        label = _direction_label_from_info(route_info, route, gb)
+        if any(stop_name in name or name in stop_name for name in stops):
+            matched.append(label)
+
+    if matched:
+        return f"有，{route} {'、'.join(matched)}有停{stop_name}。"
+    return f"沒有，{route} 不停{stop_name}。"
+
+
+async def render_routes_to_destination(
+    destination: str,
+    kiosk_stop: str,
+) -> str:
+    """Find all routes at kiosk_stop that pass through destination.
+
+    Queries all routes in parallel; matching is substring-based. Returns at
+    most two matching route+direction strings so LLM output stays concise.
+    """
+    provider = get_provider()
+    try:
+        route_info = await provider.load_route_info(kiosk_stop)
+    except Exception as error:
+        return f"雲林公車查詢失敗：{error}"
+
+    if not route_info:
+        return f"找不到 {kiosk_stop} 的路線資訊"
+
+    async def _check(route_name: str, route_id: int) -> list[str]:
+        try:
+            data = await provider.fetch_route_estimate(route_id)
+        except Exception:
+            return []
+        by_direction: dict[int, list[str]] = {}
+        for stop in data:
+            gb = stop.get("GoBack", 1)
+            name = _strip_paren(stop.get("StopName", ""))
+            by_direction.setdefault(gb, []).append(name)
+        hits: list[str] = []
+        for gb, stops in by_direction.items():
+            label = _direction_label_from_info(route_info, route_name, gb)
+            if any(destination in name or name in destination for name in stops):
+                hits.append(f"{route_name} {label}")
+        return hits
+
+    valid = [(name, _as_int(info.get("id"))) for name, info in route_info.items()]
+    tasks = [_check(name, rid) for name, rid in valid if rid is not None]
+    all_hits = [hit for hits in await asyncio.gather(*tasks) for hit in hits]
+
+    if not all_hits:
+        return f"本站沒有直達{destination}的路線"
+    return "、".join(all_hits[:2])
+
+
 async def render_routes_at_stop(stop_name: str) -> str:
     """Render the list of routes serving `stop_name` (no ETA, no classify)."""
     provider = get_provider()

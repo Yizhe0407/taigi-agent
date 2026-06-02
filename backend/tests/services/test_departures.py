@@ -372,3 +372,60 @@ def test_render_routes_at_stop_lists_unique_routes(use_provider):
         "201\n"
         "7126"
     )
+
+
+def test_render_stop_on_route_found(use_provider):
+    use_provider(
+        FakeBusProvider(
+            route_info={"201": {"id": 1, "go_dest": "高鐵雲林站", "back_dest": "雲林科技大學"}},
+            route_estimate=[
+                {"GoBack": 1, "SeqNo": 1, "StopName": "雲林科技大學", "Value": 10},
+                {"GoBack": 1, "SeqNo": 2, "StopName": "斗六火車站", "Value": 20},
+            ],
+        )
+    )
+    result = asyncio.run(departures.render_stop_on_route("201", "斗六火車站", "雲林科技大學"))
+    assert result.startswith("有")
+    assert "201" in result
+    assert "斗六火車站" in result
+
+
+def test_render_stop_on_route_not_found(use_provider):
+    use_provider(
+        FakeBusProvider(
+            route_info={"201": {"id": 1, "go_dest": "高鐵雲林站", "back_dest": "雲林科技大學"}},
+            route_estimate=[
+                {"GoBack": 1, "SeqNo": 1, "StopName": "雲林科技大學", "Value": 10},
+            ],
+        )
+    )
+    result = asyncio.run(departures.render_stop_on_route("201", "台北101", "雲林科技大學"))
+    assert result.startswith("沒有")
+
+
+def test_render_routes_to_destination_found(use_provider):
+    use_provider(
+        FakeBusProvider(
+            route_info={"201": {"id": 1, "go_dest": "高鐵雲林站", "back_dest": "雲林科技大學"}},
+            route_estimate=[
+                {"GoBack": 1, "SeqNo": 1, "StopName": "斗六火車站", "Value": 10},
+                {"GoBack": 1, "SeqNo": 2, "StopName": "高鐵雲林站", "Value": 20},
+            ],
+        )
+    )
+    result = asyncio.run(departures.render_routes_to_destination("斗六", "雲林科技大學"))
+    assert "201" in result
+    assert result != "本站沒有直達斗六的路線"
+
+
+def test_render_routes_to_destination_not_found(use_provider):
+    use_provider(
+        FakeBusProvider(
+            route_info={"201": {"id": 1, "go_dest": "高鐵雲林站", "back_dest": "雲林科技大學"}},
+            route_estimate=[
+                {"GoBack": 1, "SeqNo": 1, "StopName": "雲林科技大學", "Value": 10},
+            ],
+        )
+    )
+    result = asyncio.run(departures.render_routes_to_destination("台北101", "雲林科技大學"))
+    assert "沒有" in result

@@ -63,6 +63,16 @@ def _kiosk_go_back_filter() -> int | None:
     return None
 
 
+async def check_stop_on_route(route: str, stop_name: str) -> str:
+    """查詢某路線是否停靠指定站牌（Python 精確比對，結果直接念給使用者）。"""
+    return await departures.render_stop_on_route(route, _resolve(stop_name), _kiosk_stop())
+
+
+async def find_routes_to_destination(destination: str) -> str:
+    """查詢本站哪些路線能到達目的地（Python 平行查全部路線）。"""
+    return await departures.render_routes_to_destination(_resolve(destination), _kiosk_stop())
+
+
 async def get_routes_at_stop(stop_name: str) -> str:
     """查詢指定站牌停靠路線，並套用 Kiosk 常用站名縮寫。"""
     return await departures.render_routes_at_stop(_resolve(stop_name))

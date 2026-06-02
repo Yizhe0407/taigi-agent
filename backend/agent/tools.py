@@ -1,4 +1,6 @@
 from tools.kiosk_bus import (
+    check_stop_on_route,
+    find_routes_to_destination,
     get_arrivals_here,
     get_route_stops,
     get_routes_at_stop,
@@ -47,11 +49,58 @@ TOOL_SCHEMAS: list = [
     {
         "type": "function",
         "function": {
+            "name": "find_routes_to_destination",
+            "description": (
+                "查詢本站有哪些路線能到達指定目的地，回傳路線與方向。"
+                "MUST 呼叫：使用者問「怎麼去某地」「要搭哪台去某地」「到某地搭什麼車」（尚未知路線號碼）。"
+                "NEVER：目的地是遠距城市（台北、台中、高雄、嘉義）時不呼叫。"
+                "NEVER：使用者已知路線號碼時不呼叫（改用 check_stop_on_route）。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "destination": {
+                        "type": "string",
+                        "description": "目的地名稱，例如 '斗六火車站'、'北港朝天宮'。",
+                    },
+                },
+                "required": ["destination"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_stop_on_route",
+            "description": (
+                "查詢某路線是否停靠指定站牌，回傳「有」或「沒有」。"
+                "MUST 呼叫：使用者已說出路線號碼，且問有沒有停某站、能不能到某地。"
+                "NEVER：用來查到站時間或完整站牌清單。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "route": {
+                        "type": "string",
+                        "description": "路線號碼，例如 '201'、'Y01'。",
+                    },
+                    "stop_name": {
+                        "type": "string",
+                        "description": "要查詢的站牌或地點名稱，例如 '斗六火車站'。",
+                    },
+                },
+                "required": ["route", "stop_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_routes_at_stop",
             "description": (
                 "查詢某站牌有哪些公車路線停靠，回傳路線清單。"
-                "MUST 呼叫：使用者問某站有哪些路線、本站停靠幾路公車。"
-                "NEVER：用來判斷哪條路線能到達目的地（此工具只列停靠路線，無法判斷目的地）。"
+                "MUST 呼叫：使用者問本站停靠幾路公車、這裡有哪些路線。"
+                "NEVER：用來判斷哪條路線能到達目的地（改用 find_routes_to_destination）。"
             ),
             "parameters": {
                 "type": "object",
@@ -70,9 +119,10 @@ TOOL_SCHEMAS: list = [
         "function": {
             "name": "get_route_stops",
             "description": (
-                "查詢本站有停靠的某路線去程與回程所有站牌名稱。"
-                "MUST 呼叫：使用者問某路線的站牌、沿途停哪裡、去程或回程站序。"
+                "查詢本站有停靠的某路線去程與回程所有站牌名稱（完整清單）。"
+                "MUST 呼叫：使用者明確要求列出去程或回程全部站牌。"
                 "NEVER：用來查即時到站時間（此工具只回傳站牌名稱，無即時資料）。"
+                "NEVER：查某站有沒有停某站（改用 check_stop_on_route）。"
             ),
             "parameters": {
                 "type": "object",
@@ -93,4 +143,6 @@ TOOL_HANDLERS: dict = {
     "get_stop_arrival_statuses_here": get_stop_arrival_statuses_here,
     "get_route_stops": get_route_stops,
     "get_routes_at_stop": get_routes_at_stop,
+    "check_stop_on_route": check_stop_on_route,
+    "find_routes_to_destination": find_routes_to_destination,
 }
