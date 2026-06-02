@@ -17,6 +17,13 @@ import re
 from services import departures
 from services.kiosk_config import get_kiosk_config
 
+
+def _to_halfwidth(s: str) -> str:
+    """Convert full-width ASCII (Ａ-Ｚ, ａ-ｚ, ０-９) to half-width for regex matching."""
+    return "".join(
+        chr(ord(c) - 0xFEE0) if 0xFF01 <= ord(c) <= 0xFF5E else c for c in s
+    )
+
 # 站名縮寫對照：LLM agent 工具接受使用者輸入的縮寫（e.g. 「雲科大」）
 # Kiosk 設定的站牌名稱由 admin UI 選取，永遠是完整名稱，不需縮寫解析。
 _ALIASES: dict[str, str] = {
@@ -94,9 +101,10 @@ async def prefetch_route_arrival_context(user_input: str) -> str:
     純路線號碼輸入（如「201」「7000b」）不預取：
     應走 Rule 1 詢問意圖，注入資料反而讓小模型繞過 Rule 1 直接回答。
     """
-    if _ROUTE_ONLY_RE.match(user_input.strip()):
+    normalized = _to_halfwidth(user_input)
+    if _ROUTE_ONLY_RE.match(normalized.strip()):
         return "\n\n[規則1：使用者只輸入路線號碼，請詢問想查什麼資訊，禁止呼叫任何工具]"
-    match = _ROUTE_RE.search(user_input)
+    match = _ROUTE_RE.search(normalized)
     if match is None:
         return ""
 

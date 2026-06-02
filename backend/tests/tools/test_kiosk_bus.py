@@ -54,6 +54,17 @@ def test_get_route_stops_uses_kiosk_config_stop_name(monkeypatch):
     assert calls == [("201", "雲林科技大學")]
 
 
+def test_prefetch_route_arrival_context_fullwidth_route_triggers_rule1(monkeypatch):
+    async def fake_arrivals(route):
+        return "不該查"
+
+    monkeypatch.setattr(kiosk_bus, "get_arrivals_here", fake_arrivals)
+
+    result = asyncio.run(kiosk_bus.prefetch_route_arrival_context("Ｙ01"))
+    assert "規則1" in result
+    assert "禁止呼叫" in result
+
+
 def test_get_stop_arrival_statuses_here_passes_direction_filter(monkeypatch):
     calls = []
 
