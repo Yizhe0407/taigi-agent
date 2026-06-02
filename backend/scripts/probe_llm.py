@@ -60,11 +60,11 @@ CASES: list[TestCase] = [
     TestCase("到台北要怎麼轉乘",   "跨縣市轉乘→redirect",      True, Expect.DECLINE_PLANNING, expect_no_tool=True),
     TestCase("要不要轉乘才能到嘉義", "明確問轉乘→redirect",    True, Expect.DECLINE_PLANNING, expect_no_tool=True),
 
-    # ── Rule 3: local destination query → use tools to find route ────────────
-    TestCase("要搭哪台去斗六",        "本地目的地→查路線",       True, Expect.FREE, expect_tool="get_routes_at_stop"),
-    TestCase("去虎尾的車怎麼搭",      "去...的車怎麼搭",         True, Expect.FREE, expect_tool="get_routes_at_stop"),
-    TestCase("到高鐵站要搭什麼車",    "到某站要搭什麼車",        True, Expect.FREE, expect_tool="get_routes_at_stop"),
-    TestCase("我想去斗六火車站",      "想去+本地站名",           True, Expect.FREE, expect_tool="get_routes_at_stop"),
+    # ── Rule 3: local destination query → use find_routes_to_destination ───────
+    TestCase("要搭哪台去斗六",        "本地目的地→查路線",       True, Expect.FREE, expect_tool="find_routes_to_destination"),
+    TestCase("去虎尾的車怎麼搭",      "去...的車怎麼搭",         True, Expect.FREE, expect_tool="find_routes_to_destination"),
+    TestCase("到高鐵站要搭什麼車",    "到某站要搭什麼車",        True, Expect.FREE, expect_tool="find_routes_to_destination"),
+    TestCase("我想去斗六火車站",      "想去+本地站名",           True, Expect.FREE, expect_tool="find_routes_to_destination"),
 
     # ── Rule 4: unsupported features ─────────────────────────────────────────
     TestCase("201路完整時刻表",        "完整時刻表",         True, Expect.DECLINE_UNSUPPORTED, expect_no_tool=True),
@@ -96,14 +96,14 @@ CASES: list[TestCase] = [
     # ── Rule 7: route stops list ──────────────────────────────────────────────
     TestCase("201路停哪些站",         "站牌清單，標準",  True, Expect.FREE, expect_tool="get_route_stops"),
     TestCase("201路沿途有哪些站牌",   "沿途站牌問法",    True, Expect.FREE, expect_tool="get_route_stops"),
-    TestCase("201去程怎麼走",         "去程站牌",        True, Expect.FREE, expect_tool="get_route_stops"),
+    TestCase("201去程怎麼走",         "去程站牌→Rule8先問澄清", True, Expect.FREE, expect_no_tool=False),
     TestCase("201回程的站牌",         "回程站牌",        True, Expect.FREE, expect_tool="get_route_stops"),
 
-    # ── Rule 8: has stop check → yes/no only ─────────────────────────────────
-    TestCase("201路有停斗六火車站嗎", "查有無停站，直問",     True, Expect.ANSWER_YES_NO_ONLY, expect_tool="get_route_stops"),
-    TestCase("搭201可以到高鐵站嗎",   "到某站嗎→有無",        True, Expect.ANSWER_YES_NO_ONLY, expect_tool="get_route_stops"),
-    TestCase("201有沒有停雲科大",     "口語問有無停站",       True, Expect.ANSWER_YES_NO_ONLY, expect_tool="get_route_stops"),
-    TestCase("201能到斗六嗎",         "能到...嗎",            True, Expect.ANSWER_YES_NO_ONLY, expect_tool="get_route_stops"),
+    # ── Rule 8: has stop check → yes/no only, via check_stop_on_route ──────────
+    TestCase("201路有停斗六火車站嗎", "查有無停站，直問",     True, Expect.ANSWER_YES_NO_ONLY, expect_tool="check_stop_on_route"),
+    TestCase("搭201可以到高鐵站嗎",   "到某站嗎→有無",        True, Expect.ANSWER_YES_NO_ONLY, expect_tool="check_stop_on_route"),
+    TestCase("201有沒有停雲科大",     "口語問有無停站",       True, Expect.ANSWER_YES_NO_ONLY, expect_tool="check_stop_on_route"),
+    TestCase("201能到斗六嗎",         "能到...嗎",            True, Expect.ANSWER_YES_NO_ONLY, expect_tool="check_stop_on_route"),
 
     # ── Rule 9: route-related, no number ─────────────────────────────────────
     TestCase("往斗六的車幾分鐘後到", "有目的地但無號碼→問路線", True, Expect.ASK_ROUTE_NUMBER, expect_no_tool=True),
