@@ -734,7 +734,7 @@ async def render_routes_to_destination(
     if not route_info:
         return f"找不到 {kiosk_stop} 的路線資訊"
 
-    async def _check(route_name: str, route_id: int) -> list[str]:
+    async def _check(route_name: str, route_id: int) -> list[tuple[str, str]]:
         try:
             data = await provider.fetch_route_estimate(route_id)
         except Exception:
@@ -744,16 +744,26 @@ async def render_routes_to_destination(
             gb = stop.get("GoBack", 1)
             name = _strip_paren(stop.get("StopName", ""))
             by_direction.setdefault(gb, []).append(name)
-        hits: list[str] = []
+        hits: list[tuple[str, str]] = []
         for gb, stops in by_direction.items():
             label = _direction_label_from_info(route_info, route_name, gb)
             if any(destination in name or name in destination for name in stops):
-                hits.append(f"{route_name} {label}")
+                hits.append((route_name, label))
         return hits
 
     valid = [(name, _as_int(info.get("id"))) for name, info in route_info.items()]
     tasks = [_check(name, rid) for name, rid in valid if rid is not None]
-    all_hits = [hit for hits in await asyncio.gather(*tasks) for hit in hits]
+    raw_hits = [hit for hits in await asyncio.gather(*tasks) for hit in hits]
+
+    # Collapse same route appearing in multiple directions: direction label adds
+    # no signal when all directions serve the destination.
+    by_route: dict[str, list[str]] = {}
+    for route_name, label in raw_hits:
+        by_route.setdefault(route_name, []).append(label)
+    all_hits = [
+        route_name if len(labels) > 1 else f"{route_name} {labels[0]}"
+        for route_name, labels in by_route.items()
+    ]
 
     if not all_hits:
         return f"本站沒有直達{destination}的路線"
