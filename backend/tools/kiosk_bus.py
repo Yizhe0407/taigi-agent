@@ -78,6 +78,11 @@ async def get_routes_at_stop(stop_name: str) -> str:
     return await departures.render_routes_at_stop(_resolve(stop_name))
 
 
+async def get_routes_at_stop_here() -> str:
+    """查詢本站停靠路線（Router 直接呼叫，無需傳站名）。"""
+    return await departures.render_routes_at_stop(_kiosk_stop())
+
+
 async def get_route_stops(route: str) -> str:
     """查詢停靠 Kiosk 站牌的路線站牌順序（去程與回程）。"""
     return await departures.render_route_stops(route, _kiosk_stop())

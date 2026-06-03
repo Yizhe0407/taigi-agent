@@ -4,6 +4,7 @@ from tools.kiosk_bus import (
     get_arrivals_here,
     get_route_stops,
     get_routes_at_stop,
+    get_routes_at_stop_here,
     get_stop_arrival_statuses_here,
 )
 
@@ -143,6 +144,7 @@ TOOL_HANDLERS: dict = {
     "get_stop_arrival_statuses_here": get_stop_arrival_statuses_here,
     "get_route_stops": get_route_stops,
     "get_routes_at_stop": get_routes_at_stop,
+    "get_routes_at_stop_here": get_routes_at_stop_here,
     "check_stop_on_route": check_stop_on_route,
     "find_routes_to_destination": find_routes_to_destination,
 }

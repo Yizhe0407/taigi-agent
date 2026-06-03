@@ -167,9 +167,6 @@ def test_timetable_does_not_misfire_on_realtime_arrival_queries(
 @pytest.mark.parametrize(
     "user_input",
     [
-        "這站有哪些路線",            # → ROUTES_AT_STOP (not yet migrated)
-        "還有車嗎",                  # → STOP_STATUS (not yet migrated)
-        "201有沒有停斗六",           # → CHECK_STOP_ON_ROUTE (not yet migrated)
         "今天天氣很好",              # off-topic
         "你好",                      # off-topic
     ],
@@ -302,6 +299,132 @@ def test_other_routes_followup_falls_back_without_state(
     decision = router.classify("還有其他路線嗎", empty_state)
     assert decision.intent == Intent.UNKNOWN
     assert decision.fallback_to_llm is True
+
+
+def test_plain_havent_there_more_buses_does_not_fire_followup(
+    router: IntentRouter,
+):
+    """'還有車嗎' with last_destination set → STOP_STATUS, not OTHER_ROUTES_FOLLOWUP."""
+    state = ConvState(last_destination="虎尾科大")
+    decision = router.classify("還有車嗎", state)
+    assert decision.intent == Intent.STOP_STATUS
+
+
+# ── Rule 6: STOP_STATUS ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "還有車嗎",
+        "末班車走了嗎",
+        "還有幾路在跑",
+        "現在還有哪些車",
+        "現在幾點還有車",
+        "還有幾路",
+        "末班車",
+    ],
+)
+def test_stop_status_fires_for_all_bus_status_queries(
+    router: IntentRouter, empty_state: ConvState, user_input: str
+):
+    decision = router.classify(user_input, empty_state)
+    assert decision.intent == Intent.STOP_STATUS
+    assert decision.tool_call == ("get_stop_arrival_statuses_here", {})
+    assert decision.next_state is not None
+    assert decision.next_state.last_intent == Intent.STOP_STATUS
+
+
+def test_stop_status_does_not_fire_when_route_number_present(
+    router: IntentRouter, empty_state: ConvState
+):
+    """'201幾點到' has route + arrival question → ARRIVAL_TIME takes precedence."""
+    decision = router.classify("201幾點到", empty_state)
+    assert decision.intent == Intent.ARRIVAL_TIME
+
+
+# ── Rule 5: ROUTES_AT_STOP ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "這站有哪些路線",
+        "這裡有幾路車",
+        "這個站牌有什麼公車",
+        "本站有哪些路線",
+        "在這搭哪幾路",
+    ],
+)
+def test_routes_at_stop_fires_for_stop_listing_queries(
+    router: IntentRouter, empty_state: ConvState, user_input: str
+):
+    decision = router.classify(user_input, empty_state)
+    assert decision.intent == Intent.ROUTES_AT_STOP
+    assert decision.tool_call == ("get_routes_at_stop_here", {})
+
+
+# ── Rule 9: CHECK_STOP_ON_ROUTE ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "user_input,expected_route,expected_stop",
+    [
+        ("201有沒有停斗六", "201", "斗六"),
+        ("201停斗六嗎", "201", "斗六"),
+        ("201有停斗六火車站嗎", "201", "斗六火車站"),
+        ("7120有到虎尾科大嗎", "7120", "虎尾科大"),
+        ("201到斗六嗎", "201", "斗六"),
+    ],
+)
+def test_check_stop_on_route_fires_with_route_and_stop(
+    router: IntentRouter,
+    empty_state: ConvState,
+    user_input: str,
+    expected_route: str,
+    expected_stop: str,
+):
+    decision = router.classify(user_input, empty_state)
+    assert decision.intent == Intent.CHECK_STOP_ON_ROUTE
+    assert decision.tool_call == (
+        "check_stop_on_route",
+        {"route": expected_route, "stop_name": expected_stop},
+    )
+    assert decision.next_state is not None
+    assert decision.next_state.last_route == expected_route
+
+
+def test_check_stop_on_route_does_not_fire_for_arrival_query(
+    router: IntentRouter, empty_state: ConvState
+):
+    """'201幾點到' has arrival question → ARRIVAL_TIME, not CHECK_STOP_ON_ROUTE."""
+    decision = router.classify("201幾點到", empty_state)
+    assert decision.intent == Intent.ARRIVAL_TIME
+
+
+# ── Rule 8: ROUTE_STOPS_CLARIFY ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "user_input,expected_route",
+    [
+        ("201停哪些站", "201"),
+        ("201有哪些站", "201"),
+        ("7120的站牌", "7120"),
+        ("201停哪裡", "201"),
+    ],
+)
+def test_route_stops_clarify_fires_for_stop_list_queries(
+    router: IntentRouter,
+    empty_state: ConvState,
+    user_input: str,
+    expected_route: str,
+):
+    decision = router.classify(user_input, empty_state)
+    assert decision.intent == Intent.ROUTE_STOPS_CLARIFY
+    assert decision.tool_call == ("get_route_stops", {"route": expected_route})
+    assert decision.next_state is not None
+    assert decision.next_state.last_route == expected_route
 
 
 def test_empty_input_falls_back(router: IntentRouter, empty_state: ConvState):

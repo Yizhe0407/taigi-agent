@@ -131,10 +131,40 @@ _DEST_RE = re.compile(
 )
 
 # Follow-up: "還有其他路線嗎", "其他路線呢", "有沒有其他路線".
+# Requires "其他/別的" qualifier so plain "還有車嗎" (→ STOP_STATUS) is not caught.
 _OTHER_ROUTES_RE = re.compile(
-    r"還有(?:其他|別的)?(?:路線|公車|班次|車)"
+    r"還有(?:其他|別的)(?:路線|公車|班次|車)"
     r"|其他(?:路線|公車|車)(?:呢|嗎)?"
     r"|有(?:沒有|無)其他(?:路線|公車|車)"
+)
+
+# Rule 6: all-bus status at this stop ("還有車嗎", "末班車走了嗎", "現在還有哪些車").
+# Must come after ARRIVAL_TIME so route-specific arrival queries are handled first.
+_STOP_STATUS_RE = re.compile(
+    r"末班車"
+    r"|還有(?:幾路|哪些車|幾台|幾班|車(?:嗎|沒有)?)"
+    r"|幾路(?:在|還在)跑"
+    r"|現在還有"
+    r"|現在幾點還有"
+)
+
+# Rule 5: routes serving this stop — needs "this stop" context clue.
+_ROUTES_AT_STOP_RE = re.compile(
+    r"(?:這站|這裡|這個站牌|本站|這邊)有(?:哪些|幾路?|什麼)(?:路線|公車|車)?"
+    r"|在這裡?搭(?:哪|幾)"
+)
+
+# Rule 9: does route X stop at place Y?
+_CHECK_STOP_CHARS = r"[^\s，。？！嗎呢]"
+_CHECK_STOP_RE = re.compile(
+    rf"(?<![A-Za-z\d])([A-Za-z]?\d{{2,4}}[A-Za-z]?)(?![A-Za-z\d])路?"
+    rf"(?:有沒有停?|有停|停|有到|到)({_CHECK_STOP_CHARS}{{2,10}})(?:嗎|？|$)"
+)
+
+# Rule 8: list all stops of a route ("201停哪些站", "7120的站牌").
+_ROUTE_STOPS_RE = re.compile(
+    r"(?<![A-Za-z\d])([A-Za-z]?\d{2,4}[A-Za-z]?)(?![A-Za-z\d])路?"
+    r"(?:停哪些站?|有哪些站|的站牌|站牌有哪些|停靠哪些站?|停哪裡)"
 )
 
 
@@ -257,6 +287,60 @@ class IntentRouter:
                         last_intent=Intent.FIND_ROUTES_TO_DEST,
                     ),
                 )
+
+        # Rule 6: all-bus status at this stop (no specific route number).
+        if _STOP_STATUS_RE.search(text):
+            return Decision(
+                intent=Intent.STOP_STATUS,
+                tool_call=("get_stop_arrival_statuses_here", {}),
+                next_state=ConvState(
+                    last_route=state.last_route,
+                    last_destination=state.last_destination,
+                    last_intent=Intent.STOP_STATUS,
+                ),
+            )
+
+        # Rule 5: list routes serving this stop.
+        if _ROUTES_AT_STOP_RE.search(text):
+            return Decision(
+                intent=Intent.ROUTES_AT_STOP,
+                tool_call=("get_routes_at_stop_here", {}),
+                next_state=ConvState(
+                    last_route=state.last_route,
+                    last_destination=state.last_destination,
+                    last_intent=Intent.ROUTES_AT_STOP,
+                ),
+            )
+
+        # Rule 8: list all stops of a route — must run before Rule 9 because
+        # "201停哪些站" would also match the CHECK_STOP_ON_ROUTE pattern (stop_name="哪些站").
+        stops_match = _ROUTE_STOPS_RE.search(text)
+        if stops_match:
+            route = stops_match.group(1)
+            return Decision(
+                intent=Intent.ROUTE_STOPS_CLARIFY,
+                tool_call=("get_route_stops", {"route": route}),
+                next_state=ConvState(
+                    last_route=route,
+                    last_destination=state.last_destination,
+                    last_intent=Intent.ROUTE_STOPS_CLARIFY,
+                ),
+            )
+
+        # Rule 9: does a specific route stop at a named place?
+        check_match = _CHECK_STOP_RE.search(text)
+        if check_match:
+            route = check_match.group(1)
+            stop_name = check_match.group(2).strip()
+            return Decision(
+                intent=Intent.CHECK_STOP_ON_ROUTE,
+                tool_call=("check_stop_on_route", {"route": route, "stop_name": stop_name}),
+                next_state=ConvState(
+                    last_route=route,
+                    last_destination=state.last_destination,
+                    last_intent=Intent.CHECK_STOP_ON_ROUTE,
+                ),
+            )
 
         # Everything else → legacy LLM loop.
         return Decision(intent=Intent.UNKNOWN, fallback_to_llm=True)
