@@ -178,15 +178,16 @@ def test_session_records_llm_tool_latency_and_routing():
                     tool_calls=[tool_call("bus", '{"route": "201"}', "bus-1")]
                 )
             ),
-            llm_response(assistant_message("201 快到了")),
+            llm_response(assistant_message("有車還在跑")),
         ],
         telemetry=telemetry,
         tool_handlers={"bus": bus_handler},
     )
 
-    # "201" alone would be intercepted by the router (ROUTE_ONLY canned
-    # response). Use an arrival query so this turn reaches the LLM path.
-    assert asyncio.run(session.respond("201幾點到")) == "201 快到了"
+    # Use a query that still reaches the LLM loop after Cut 2.2 migration.
+    # "201幾點到" is now handled by the router (ARRIVAL_TIME tool path).
+    # "還有車嗎" falls through to LLM (STOP_STATUS not yet migrated).
+    assert asyncio.run(session.respond("還有車嗎")) == "有車還在跑"
     assert [span.name for span in telemetry.spans] == [
         "agent.turn",
         "agent.llm.call",
@@ -231,9 +232,9 @@ def test_session_retries_when_tool_call_violates_injected_rule():
         tool_handlers={"bus": fake_tool},
     )
 
-    # Must bypass router (ROUTE_ONLY would short-circuit) to exercise the
-    # enricher → forbidden-tool retry path under test.
-    result = asyncio.run(session.respond("201幾點到"))
+    # "還有車嗎" falls through to the LLM path (STOP_STATUS not yet migrated),
+    # exercising the enricher → forbidden-tool retry under test.
+    result = asyncio.run(session.respond("還有車嗎"))
 
     assert result == "請問您想查什麼資訊？"
     assert executed == []  # tool never ran
@@ -264,9 +265,9 @@ def test_session_rule_retry_falls_through_after_max_retries():
         tool_handlers={"bus": fake_tool},
     )
 
-    # Must bypass router (ROUTE_ONLY would short-circuit) to exercise the
-    # enricher → forbidden-tool retry path under test.
-    result = asyncio.run(session.respond("201幾點到"))
+    # "還有車嗎" falls through to the LLM path (STOP_STATUS not yet migrated),
+    # exercising the enricher → forbidden-tool retry path under test.
+    result = asyncio.run(session.respond("還有車嗎"))
 
     assert result == "最終回答"
     assert executed == [True]  # exactly one real tool execution after retries exhausted
@@ -335,8 +336,78 @@ def test_router_canned_response_for_timetable_query():
 def test_router_fallthrough_still_calls_llm():
     """Non-router intents still reach the legacy LLM loop."""
     session = make_session(
-        [llm_response(assistant_message("我想去虎尾科大答覆"))]
+        [llm_response(assistant_message("這站有201等路線"))]
     )
-    reply = asyncio.run(session.respond("我想去虎尾科大"))
-    assert reply == "我想去虎尾科大答覆"
+    # "這站有哪些路線" → ROUTES_AT_STOP (not yet migrated) → falls through to LLM.
+    # "我想去虎尾科大" now goes through the tool_respond path (FIND_ROUTES_TO_DEST).
+    reply = asyncio.run(session.respond("這站有哪些路線"))
+    assert reply == "這站有201等路線"
     assert len(session.client.chat.completions.calls) == 1
+
+
+def test_session_tool_call_decision_calls_tool_and_records_turn():
+    """Router-dispatched tool_call path: tool executes, turn is recorded."""
+    telemetry = RecordingTelemetry()
+
+    async def fake_find_routes(destination: str) -> str:
+        return "7120"
+
+    session = make_session(
+        [],  # no LLM calls needed for this path
+        telemetry=telemetry,
+        tool_handlers={"find_routes_to_destination": fake_find_routes},
+    )
+
+    reply = asyncio.run(session.respond("我想去虎尾科大"))
+
+    assert reply == "搭7120就可以到虎尾科大。"
+    assert session.messages == [
+        {"role": "user", "content": "我想去虎尾科大"},
+        {"role": "assistant", "content": reply},
+    ]
+    assert session.conv_state.last_destination == "虎尾科大"
+    assert [span.name for span in telemetry.spans] == [
+        "agent.turn",
+        "agent.tool.call",
+    ]
+    assert [(item[1], item[2]) for item in telemetry.tool_durations] == [
+        ("find_routes_to_destination", "ok")
+    ]
+    # No LLM call.
+    assert session.client.chat.completions.calls == []
+
+
+def test_session_tool_call_arrival_time_returns_raw_result():
+    async def fake_arrivals(route: str) -> str:
+        return "往高鐵雲林站：約3分鐘"
+
+    session = make_session(
+        [],
+        tool_handlers={"get_arrivals_here": fake_arrivals},
+    )
+
+    reply = asyncio.run(session.respond("201幾點到"))
+
+    assert reply == "往高鐵雲林站：約3分鐘"
+    assert session.conv_state.last_route == "201"
+    assert session.client.chat.completions.calls == []
+
+
+def test_session_other_routes_followup_uses_state_destination():
+    calls = []
+
+    async def fake_find_routes(destination: str) -> str:
+        calls.append(destination)
+        return "本站沒有直達虎尾科大的路線"
+
+    session = make_session(
+        [],
+        tool_handlers={"find_routes_to_destination": fake_find_routes},
+    )
+    from agent.router import ConvState
+    session.conv_state = ConvState(last_destination="虎尾科大")
+
+    reply = asyncio.run(session.respond("還有其他路線嗎"))
+
+    assert calls == ["虎尾科大"]
+    assert reply == "本站沒有直達虎尾科大的路線"
