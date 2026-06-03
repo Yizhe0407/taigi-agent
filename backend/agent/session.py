@@ -25,6 +25,7 @@ from agent.context import (
 )
 from agent.diagnostics import log_diagnostic
 from agent.llm_client import ContextWindowExceeded, call_llm
+from agent.router import ConvState, Decision, Intent, IntentRouter
 from agent.telemetry import AgentTelemetry
 from agent.tool_dispatch import (
     ToolHandler,
@@ -96,6 +97,7 @@ class AgentSession:
         compact_tool_result_chars: int = LONG_TOOL_RESULT_CHARS,
         context_store: ContextStore | None = None,
         telemetry: AgentTelemetry | None = None,
+        router: IntentRouter | None = None,
     ) -> None:
         self.client = client
         self.model = model
@@ -111,7 +113,9 @@ class AgentSession:
         self.compact_tool_result_chars = compact_tool_result_chars
         self.context_store = context_store or ContextStore()
         self.telemetry = telemetry or AgentTelemetry()
+        self.router = router or IntentRouter()
         self.messages: list[dict] = []
+        self.conv_state = ConvState()
 
     def _request_messages(self) -> list[dict]:
         return [{"role": "system", "content": self.system_prompt}, *self.messages]
@@ -174,7 +178,48 @@ class AgentSession:
         recovery_budget = max(self.max_history_tokens // 2, 1)
         self.messages = trim_history(self.messages, recovery_budget)
 
+    def _record_canned_turn(self, user_input: str, decision: Decision) -> None:
+        """Append user + canned-assistant turn and apply state update.
+
+        Used when the router resolves a turn without an LLM call. Bypasses
+        input_enricher (prefetch makes no sense if we already have a final
+        answer) and tool dispatch entirely.
+        """
+        assert decision.canned_response is not None
+        self.messages.append({"role": "user", "content": user_input})
+        self.messages.append(
+            {"role": "assistant", "content": decision.canned_response}
+        )
+        self.messages = trim_history(self.messages, self.max_history_tokens)
+        if decision.next_state is not None:
+            self.conv_state = decision.next_state
+
     async def respond(self, user_input: str) -> str:
+        # Router gate: deterministic intents short-circuit before any LLM cost.
+        decision = self.router.classify(user_input, self.conv_state)
+
+        if decision.canned_response is not None:
+            with self.telemetry.start_span(
+                "agent.turn",
+                {
+                    "agent.router.intent": decision.intent.value,
+                    "agent.router.path": "canned",
+                },
+            ):
+                self._record_canned_turn(user_input, decision)
+                return decision.canned_response
+
+        # Fall through to legacy LLM loop. As more intents migrate into the
+        # router, this branch shrinks. The intent label flows into telemetry
+        # so we can monitor migration progress.
+        return await self._llm_respond(user_input, intent=decision.intent)
+
+    async def _llm_respond(
+        self,
+        user_input: str,
+        *,
+        intent: Intent = Intent.UNKNOWN,
+    ) -> str:
         extra = await self.input_enricher(user_input) if self.input_enricher else ""
         enriched_content = user_input + extra
         with self.telemetry.start_span(
@@ -182,6 +227,8 @@ class AgentSession:
             {
                 "agent.llm.model": self.model,
                 "agent.input.enriched": bool(extra),
+                "agent.router.intent": intent.value,
+                "agent.router.path": "llm",
             },
         ):
             self.messages.append({"role": "user", "content": enriched_content})

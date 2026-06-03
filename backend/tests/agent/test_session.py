@@ -184,7 +184,9 @@ def test_session_records_llm_tool_latency_and_routing():
         tool_handlers={"bus": bus_handler},
     )
 
-    assert asyncio.run(session.respond("201")) == "201 快到了"
+    # "201" alone would be intercepted by the router (ROUTE_ONLY canned
+    # response). Use an arrival query so this turn reaches the LLM path.
+    assert asyncio.run(session.respond("201幾點到")) == "201 快到了"
     assert [span.name for span in telemetry.spans] == [
         "agent.turn",
         "agent.llm.call",
@@ -229,7 +231,9 @@ def test_session_retries_when_tool_call_violates_injected_rule():
         tool_handlers={"bus": fake_tool},
     )
 
-    result = asyncio.run(session.respond("201"))
+    # Must bypass router (ROUTE_ONLY would short-circuit) to exercise the
+    # enricher → forbidden-tool retry path under test.
+    result = asyncio.run(session.respond("201幾點到"))
 
     assert result == "請問您想查什麼資訊？"
     assert executed == []  # tool never ran
@@ -260,7 +264,9 @@ def test_session_rule_retry_falls_through_after_max_retries():
         tool_handlers={"bus": fake_tool},
     )
 
-    result = asyncio.run(session.respond("201"))
+    # Must bypass router (ROUTE_ONLY would short-circuit) to exercise the
+    # enricher → forbidden-tool retry path under test.
+    result = asyncio.run(session.respond("201幾點到"))
 
     assert result == "最終回答"
     assert executed == [True]  # exactly one real tool execution after retries exhausted
@@ -286,3 +292,51 @@ def test_session_compacts_old_history_with_transcript_and_summary(tmp_path):
     transcripts = list((tmp_path / "transcripts").glob("*.jsonl"))
     assert len(transcripts) == 1
     assert "舊問題" in transcripts[0].read_text(encoding="utf-8")
+
+
+# ── Router integration ───────────────────────────────────────────────────────
+
+
+def test_router_canned_response_skips_llm_call():
+    """ROUTE_ONLY input: router returns canned, LLM is never invoked."""
+    session = make_session(
+        # Empty response list — if the LLM is called, FakeCompletions raises
+        # IndexError, which would fail this test loudly.
+        [],
+    )
+    reply = asyncio.run(session.respond("201"))
+    assert "201" in reply
+    assert "您想查什麼" in reply
+    # No LLM call was made.
+    assert session.client.chat.completions.calls == []
+    # Session messages still get the user + assistant turn recorded.
+    assert session.messages == [
+        {"role": "user", "content": "201"},
+        {"role": "assistant", "content": reply},
+    ]
+    # ConvState updated.
+    assert session.conv_state.last_route == "201"
+
+
+def test_router_canned_response_for_remote_destination():
+    session = make_session([])
+    reply = asyncio.run(session.respond("我要去台中怎麼搭"))
+    assert reply == "這段要用地圖規劃比較準喔。"
+    assert session.client.chat.completions.calls == []
+
+
+def test_router_canned_response_for_timetable_query():
+    session = make_session([])
+    reply = asyncio.run(session.respond("201路完整時刻表"))
+    assert reply == "時刻表查不了，要查到站時間嗎？"
+    assert session.client.chat.completions.calls == []
+
+
+def test_router_fallthrough_still_calls_llm():
+    """Non-router intents still reach the legacy LLM loop."""
+    session = make_session(
+        [llm_response(assistant_message("我想去虎尾科大答覆"))]
+    )
+    reply = asyncio.run(session.respond("我想去虎尾科大"))
+    assert reply == "我想去虎尾科大答覆"
+    assert len(session.client.chat.completions.calls) == 1
