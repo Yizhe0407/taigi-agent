@@ -9,9 +9,13 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
+
+# Strip <think>…</think> blocks that reasoning models may include in content.
+_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
 from agent.context import (
     LONG_TOOL_RESULT_CHARS,
@@ -201,7 +205,7 @@ class AgentSession:
                 self.messages.append(assistant_message(message, tool_calls))
                 if not tool_calls:
                     self.messages = trim_history(self.messages, self.max_history_tokens)
-                    return message.content or ""
+                    return _THINK_RE.sub("", message.content or "").strip()
 
                 tool_rounds += 1
                 self.messages.extend(
