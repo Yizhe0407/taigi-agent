@@ -13,7 +13,7 @@ TOOL_SCHEMAS: list = [
         "type": "function",
         "function": {
             "name": "get_arrivals_here",
-            "description": "查詢某路線下一班抵達本站的即時到站時間。",
+            "description": "查詢指定路線下一班抵達本站的即時到站時間。必須提供路線號碼。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -30,7 +30,7 @@ TOOL_SCHEMAS: list = [
         "type": "function",
         "function": {
             "name": "get_stop_arrival_statuses_here",
-            "description": "查詢本站目前所有停靠路線的到站狀態（含末班、尚未到站、已過末班）。",
+            "description": "查詢本站所有路線目前是否還有班次（含末班、尚未到站、已過末班）。適用於「還有車嗎」「末班走了沒」「現在幾路在跑」等查詢。",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -78,14 +78,25 @@ TOOL_SCHEMAS: list = [
     {
         "type": "function",
         "function": {
+            "name": "get_routes_at_stop_here",
+            "description": "查詢本站有哪些公車路線停靠，回傳路線清單。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_routes_at_stop",
-            "description": "查詢某站牌有哪些公車路線停靠，回傳路線清單。",
+            "description": "查詢指定站牌有哪些公車路線停靠，回傳路線清單。用於查詢非本站的其他站牌。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "stop_name": {
                         "type": "string",
-                        "description": "站牌名稱，例如 '雲林科技大學'、'斗六火車站'。問本站路線時填本站站名。",
+                        "description": "站牌名稱，例如 '斗六火車站'、'北港朝天宮'。",
                     },
                 },
                 "required": ["stop_name"],
