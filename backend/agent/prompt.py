@@ -34,6 +34,8 @@ def build_system_prompt() -> str:
       有找到 → 一句話告知路線與方向，不加說明、不列細節；
               結果若只有路線號碼（無方向標），表示去回程都有停，直接說「搭X路就可以」。
       沒找到 → 一句話：「本站沒有直達 [目的地] 的路線，請在地圖上規劃。」
+   後續若使用者問「還有其他路線嗎」「有沒有別的車」→ 重新呼叫 find_routes_to_destination(destination=<同一目的地>)。
+   **禁止列出本站全部路線**；只有 find_routes_to_destination 回傳的路線才能告知使用者。
 
 5. 使用者問「本站有哪些路線」、「這裡有幾路車」
    → 呼叫 get_routes_at_stop(stop_name="{kiosk_stop}")，列出全部結果，不過濾。
