@@ -408,8 +408,9 @@ def test_render_routes_to_destination_found(use_provider):
         FakeBusProvider(
             route_info={"201": {"id": 1, "go_dest": "高鐵雲林站", "back_dest": "雲林科技大學"}},
             route_estimate=[
-                {"GoBack": 1, "SeqNo": 1, "StopName": "斗六火車站", "Value": 10},
-                {"GoBack": 1, "SeqNo": 2, "StopName": "高鐵雲林站", "Value": 20},
+                {"GoBack": 1, "SeqNo": 1, "StopName": "雲林科技大學", "Value": 0},
+                {"GoBack": 1, "SeqNo": 2, "StopName": "斗六火車站", "Value": 10},
+                {"GoBack": 1, "SeqNo": 3, "StopName": "高鐵雲林站", "Value": 20},
             ],
         )
     )
@@ -429,3 +430,128 @@ def test_render_routes_to_destination_not_found(use_provider):
     )
     result = asyncio.run(departures.render_routes_to_destination("台北101", "雲林科技大學"))
     assert "沒有" in result
+
+
+# ── geo-awareness ────────────────────────────────────────────────────────────
+#
+# Both `render_routes_to_destination` and `render_stop_on_route` must only
+# count a direction as 有 when the destination is at or after the kiosk's
+# position in the stop sequence. A bus passing the destination *before*
+# reaching the kiosk cannot take a passenger boarding at the kiosk there.
+
+
+def test_render_routes_to_destination_skips_upstream_destination(use_provider):
+    """If destination's seq < kiosk's seq, that direction does not count."""
+    use_provider(
+        FakeBusProvider(
+            route_info={
+                "201": {"id": 1, "go_dest": "東邊終點", "back_dest": "西邊終點"},
+            },
+            route_estimate=[
+                # GoBack=1 (往東): 虎尾(1) → 雲科大(2) → 斗六(3)
+                # From kiosk 雲科大, 虎尾 is upstream — bus already passed it.
+                {"GoBack": 1, "SeqNo": 1, "StopName": "虎尾", "Value": 5},
+                {"GoBack": 1, "SeqNo": 2, "StopName": "雲林科技大學", "Value": 10},
+                {"GoBack": 1, "SeqNo": 3, "StopName": "斗六", "Value": 15},
+            ],
+        )
+    )
+    # 斗六 is downstream → hit
+    result = asyncio.run(
+        departures.render_routes_to_destination("斗六", "雲林科技大學")
+    )
+    assert "201" in result
+
+    # 虎尾 is upstream → no hit
+    result = asyncio.run(
+        departures.render_routes_to_destination("虎尾", "雲林科技大學")
+    )
+    assert result == "本站沒有直達虎尾的路線"
+
+
+def test_render_routes_to_destination_skips_directions_without_kiosk(use_provider):
+    """If kiosk doesn't appear in a direction, skip it entirely."""
+    use_provider(
+        FakeBusProvider(
+            route_info={
+                "201": {"id": 1, "go_dest": "東邊終點", "back_dest": "西邊終點"},
+            },
+            route_estimate=[
+                # GoBack=1 has kiosk + destination downstream
+                {"GoBack": 1, "SeqNo": 1, "StopName": "雲林科技大學", "Value": 0},
+                {"GoBack": 1, "SeqNo": 2, "StopName": "斗六", "Value": 10},
+                # GoBack=2 doesn't include kiosk — should be ignored
+                {"GoBack": 2, "SeqNo": 1, "StopName": "斗六", "Value": 5},
+                {"GoBack": 2, "SeqNo": 2, "StopName": "別的站", "Value": 10},
+            ],
+        )
+    )
+    result = asyncio.run(
+        departures.render_routes_to_destination("斗六", "雲林科技大學")
+    )
+    # Only one direction matched → direction label preserved
+    assert "201" in result
+    assert "往東邊終點" in result
+
+
+def test_render_routes_to_destination_collapses_when_both_downstream(use_provider):
+    """Same route, destination downstream in both directions → no direction label."""
+    use_provider(
+        FakeBusProvider(
+            route_info={
+                "7120": {"id": 1, "go_dest": "高鐵雲林站", "back_dest": "斗六火車站"},
+            },
+            route_estimate=[
+                # GoBack=1: kiosk → 虎尾科大 → 高鐵
+                {"GoBack": 1, "SeqNo": 1, "StopName": "雲林科技大學", "Value": 0},
+                {"GoBack": 1, "SeqNo": 2, "StopName": "虎尾科大", "Value": 10},
+                {"GoBack": 1, "SeqNo": 3, "StopName": "高鐵雲林站", "Value": 20},
+                # GoBack=2: kiosk → 虎尾科大 → 斗六 (loops through 虎尾科大 both ways)
+                {"GoBack": 2, "SeqNo": 1, "StopName": "雲林科技大學", "Value": 0},
+                {"GoBack": 2, "SeqNo": 2, "StopName": "虎尾科大", "Value": 12},
+                {"GoBack": 2, "SeqNo": 3, "StopName": "斗六火車站", "Value": 25},
+            ],
+        )
+    )
+    result = asyncio.run(
+        departures.render_routes_to_destination("虎尾科大", "雲林科技大學")
+    )
+    # Both directions reach 虎尾科大 → collapse to bare route number
+    assert result == "7120"
+
+
+def test_render_stop_on_route_rejects_upstream_destination(use_provider):
+    """`check_stop_on_route` is geo-aware too: upstream destination → 沒有."""
+    use_provider(
+        FakeBusProvider(
+            route_info={
+                "201": {"id": 1, "go_dest": "東邊終點", "back_dest": "西邊終點"},
+            },
+            route_estimate=[
+                # 虎尾 is at seq 1, kiosk at seq 2 — upstream from kiosk.
+                {"GoBack": 1, "SeqNo": 1, "StopName": "虎尾", "Value": 5},
+                {"GoBack": 1, "SeqNo": 2, "StopName": "雲林科技大學", "Value": 10},
+            ],
+        )
+    )
+    result = asyncio.run(departures.render_stop_on_route("201", "虎尾", "雲林科技大學"))
+    assert result.startswith("沒有")
+
+
+def test_render_stop_on_route_allows_kiosk_itself(use_provider):
+    """Asking '有沒有停 <kiosk>' at the kiosk should answer 有 (trivially)."""
+    use_provider(
+        FakeBusProvider(
+            route_info={
+                "201": {"id": 1, "go_dest": "東邊終點", "back_dest": "西邊終點"},
+            },
+            route_estimate=[
+                {"GoBack": 1, "SeqNo": 1, "StopName": "雲林科技大學", "Value": 0},
+                {"GoBack": 1, "SeqNo": 2, "StopName": "斗六", "Value": 10},
+            ],
+        )
+    )
+    result = asyncio.run(departures.render_stop_on_route(
+        "201", "雲林科技大學", "雲林科技大學"
+    ))
+    assert result.startswith("有")

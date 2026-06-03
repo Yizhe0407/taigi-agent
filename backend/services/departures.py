@@ -673,15 +673,55 @@ async def render_route_stops(route: str, stop_name: str) -> str:
     return "\n".join(results)
 
 
+def _stops_by_direction_with_seq(
+    data: list[dict],
+) -> dict[int, list[tuple[int, str]]]:
+    """Group route_estimate rows by GoBack, retaining (seq, stripped_name)."""
+    by_direction: dict[int, list[tuple[int, str]]] = {}
+    for stop in data:
+        gb = stop.get("GoBack", 1)
+        seq = _as_int(stop.get("SeqNo"))
+        if seq is None:
+            continue
+        name = _strip_paren(stop.get("StopName", ""))
+        by_direction.setdefault(gb, []).append((seq, name))
+    return by_direction
+
+
+def _name_matches(needle: str, hay: str) -> bool:
+    """Substring match in either direction so '斗六' matches '斗六火車站'."""
+    return needle in hay or hay in needle
+
+
+def _downstream_names(
+    stops: list[tuple[int, str]],
+    kiosk_stop: str,
+) -> list[str] | None:
+    """Return stop names at or after the first kiosk-matching position.
+
+    Returns None when kiosk doesn't appear in this direction — caller should
+    skip it (the bus on this direction doesn't pass through here at all).
+    Includes the kiosk itself so「有沒有停 X 」when X is the kiosk answers 有.
+    """
+    kiosk_seq = next(
+        (s for s, n in stops if _name_matches(kiosk_stop, n)),
+        None,
+    )
+    if kiosk_seq is None:
+        return None
+    return [n for s, n in stops if s >= kiosk_seq]
+
+
 async def render_stop_on_route(
     route: str,
     stop_name: str,
     kiosk_stop: str,
 ) -> str:
-    """Return a yes/no string: does route stop at stop_name?
+    """Return a yes/no string: can you reach stop_name from kiosk on this route?
 
-    Matching is substring-based (both directions) so aliases like "斗六" match
-    "斗六火車站". The LLM reads the result verbatim — no comparison needed.
+    Geo-aware: only directions where stop_name appears at or after the kiosk's
+    position in the stop sequence count as 有. Substring matching so aliases
+    like '斗六' match '斗六火車站'. LLM reads result verbatim.
     """
     provider = get_provider()
     try:
@@ -699,17 +739,13 @@ async def render_stop_on_route(
     except Exception as error:
         return f"雲林公車查詢失敗：{error}"
 
-    by_direction: dict[int, list[str]] = {}
-    for stop in data:
-        gb = stop.get("GoBack", 1)
-        name = _strip_paren(stop.get("StopName", ""))
-        by_direction.setdefault(gb, []).append(name)
-
     matched: list[str] = []
-    for gb, stops in sorted(by_direction.items()):
-        label = _direction_label_from_info(route_info, route, gb)
-        if any(stop_name in name or name in stop_name for name in stops):
-            matched.append(label)
+    for gb, stops in sorted(_stops_by_direction_with_seq(data).items()):
+        downstream = _downstream_names(stops, kiosk_stop)
+        if downstream is None:
+            continue
+        if any(_name_matches(stop_name, n) for n in downstream):
+            matched.append(_direction_label_from_info(route_info, route, gb))
 
     if matched:
         return f"有，{route} {'、'.join(matched)}有停{stop_name}。"
@@ -739,15 +775,13 @@ async def render_routes_to_destination(
             data = await provider.fetch_route_estimate(route_id)
         except Exception:
             return []
-        by_direction: dict[int, list[str]] = {}
-        for stop in data:
-            gb = stop.get("GoBack", 1)
-            name = _strip_paren(stop.get("StopName", ""))
-            by_direction.setdefault(gb, []).append(name)
         hits: list[tuple[str, str]] = []
-        for gb, stops in by_direction.items():
-            label = _direction_label_from_info(route_info, route_name, gb)
-            if any(destination in name or name in destination for name in stops):
+        for gb, stops in _stops_by_direction_with_seq(data).items():
+            downstream = _downstream_names(stops, kiosk_stop)
+            if downstream is None:
+                continue
+            if any(_name_matches(destination, n) for n in downstream):
+                label = _direction_label_from_info(route_info, route_name, gb)
                 hits.append((route_name, label))
         return hits
 
