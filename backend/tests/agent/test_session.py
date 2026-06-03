@@ -3,8 +3,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 from agent.error import summarize_error
-from agent.router import Intent
-from agent.session import AgentSession, _phrase_tool_result
+from agent.session import AgentSession
 
 
 def assistant_message(content="", tool_calls=None):
@@ -185,8 +184,6 @@ def test_session_records_llm_tool_latency_and_routing():
         tool_handlers={"bus": bus_handler},
     )
 
-    # Use a query that still reaches the LLM loop after Cut 2.3 migration.
-    # Off-topic inputs like "你好" fall through to UNKNOWN → LLM path.
     assert asyncio.run(session.respond("你好")) == "有車還在跑"
     assert [span.name for span in telemetry.spans] == [
         "agent.turn",
@@ -263,128 +260,3 @@ def test_router_fallthrough_still_calls_llm():
     assert len(session.client.chat.completions.calls) == 1
 
 
-def test_session_tool_call_decision_calls_tool_and_records_turn():
-    """Router-dispatched tool_call path: tool executes, turn is recorded."""
-    telemetry = RecordingTelemetry()
-
-    async def fake_find_routes(destination: str) -> str:
-        return "7120"
-
-    session = make_session(
-        [],  # no LLM calls needed for this path
-        telemetry=telemetry,
-        tool_handlers={"find_routes_to_destination": fake_find_routes},
-    )
-
-    reply = asyncio.run(session.respond("我想去虎尾科大"))
-
-    assert reply == "搭7120就可以到虎尾科大。"
-    assert session.messages == [
-        {"role": "user", "content": "我想去虎尾科大"},
-        {"role": "assistant", "content": reply},
-    ]
-    assert session.conv_state.last_destination == "虎尾科大"
-    assert [span.name for span in telemetry.spans] == [
-        "agent.turn",
-        "agent.tool.call",
-    ]
-    assert [(item[1], item[2]) for item in telemetry.tool_durations] == [
-        ("find_routes_to_destination", "ok")
-    ]
-    # No LLM call.
-    assert session.client.chat.completions.calls == []
-
-
-def test_session_tool_call_arrival_time_returns_raw_result():
-    async def fake_arrivals(route: str) -> str:
-        return "往高鐵雲林站：約3分鐘"
-
-    session = make_session(
-        [],
-        tool_handlers={"get_arrivals_here": fake_arrivals},
-    )
-
-    reply = asyncio.run(session.respond("201幾點到"))
-
-    assert reply == "往高鐵雲林站：約3分鐘"
-    assert session.conv_state.last_route == "201"
-    assert session.client.chat.completions.calls == []
-
-
-def test_session_other_routes_followup_uses_state_destination():
-    calls = []
-
-    async def fake_find_routes(destination: str) -> str:
-        calls.append(destination)
-        return "本站沒有直達虎尾科大的路線"
-
-    session = make_session(
-        [],
-        tool_handlers={"find_routes_to_destination": fake_find_routes},
-    )
-    from agent.router import ConvState
-    session.conv_state = ConvState(last_destination="虎尾科大")
-
-    reply = asyncio.run(session.respond("還有其他路線嗎"))
-
-    assert calls == ["虎尾科大"]
-    assert reply == "本站沒有直達虎尾科大的路線"
-
-
-# ── _phrase_tool_result unit tests ───────────────────────────────────────────
-
-
-def test_phrase_find_routes_single_with_direction():
-    """Single route+direction → natural split, no destination repetition."""
-    result = _phrase_tool_result(
-        Intent.FIND_ROUTES_TO_DEST,
-        "7120 往高鐵雲林站",
-        {"destination": "虎尾科大"},
-    )
-    assert result == "搭7120就可以，往高鐵雲林站那班。"
-
-
-def test_phrase_find_routes_single_no_direction():
-    """Single route, all directions serve dest → include destination in reply."""
-    result = _phrase_tool_result(
-        Intent.FIND_ROUTES_TO_DEST,
-        "7120",
-        {"destination": "虎尾科大"},
-    )
-    assert result == "搭7120就可以到虎尾科大。"
-
-
-def test_phrase_find_routes_multiple():
-    """Multiple routes → keep direction labels, prefix with destination."""
-    result = _phrase_tool_result(
-        Intent.FIND_ROUTES_TO_DEST,
-        "7120 往高鐵雲林站、7001 往斗六",
-        {"destination": "虎尾科大"},
-    )
-    assert result == "去虎尾科大可以搭7120 往高鐵雲林站、7001 往斗六。"
-
-
-def test_phrase_find_routes_passthrough_on_error():
-    for error_result in ("雲林公車查詢失敗：…", "找不到路線", "本站沒有直達虎尾科大的路線"):
-        assert _phrase_tool_result(
-            Intent.FIND_ROUTES_TO_DEST, error_result, {"destination": "虎尾科大"}
-        ) == error_result
-
-
-def test_phrase_other_routes_strips_direction():
-    """OTHER_ROUTES_FOLLOWUP strips direction labels — already in context."""
-    result = _phrase_tool_result(
-        Intent.OTHER_ROUTES_FOLLOWUP,
-        "7120 往高鐵雲林站",
-        {"destination": "虎尾科大"},
-    )
-    assert result == "就只有7120，沒有其他路線了。"
-
-
-def test_phrase_other_routes_multiple_strips_directions():
-    result = _phrase_tool_result(
-        Intent.OTHER_ROUTES_FOLLOWUP,
-        "7120 往高鐵雲林站、7001 往斗六",
-        {"destination": "虎尾科大"},
-    )
-    assert result == "就只有7120、7001，沒有其他路線了。"

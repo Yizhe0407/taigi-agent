@@ -1,9 +1,8 @@
 """Unit tests for `agent.router.IntentRouter`.
 
-The router is the single source of truth for which intent fires on which
-input. Tests cover the three currently-handled intents plus negative
-cases (the router must fall through to LLM, not misclassify) and state
-propagation semantics.
+Router now handles only canned-response intents (Rules 1-3); tool dispatch
+is handled by the LLM. Tests cover Rules 1-3, UNKNOWN fallthrough, and
+Decision/ConvState invariants.
 """
 
 from __future__ import annotations
@@ -167,11 +166,15 @@ def test_timetable_does_not_misfire_on_realtime_arrival_queries(
 @pytest.mark.parametrize(
     "user_input",
     [
-        "今天天氣很好",              # off-topic
-        "你好",                      # off-topic
+        "今天天氣很好",
+        "你好",
+        "我想去虎尾科大",       # tool dispatch → LLM
+        "201幾點到",             # tool dispatch → LLM
+        "還有車嗎",              # tool dispatch → LLM
+        "這站有哪些路線",        # tool dispatch → LLM
     ],
 )
-def test_unmigrated_intents_fall_back_to_llm(
+def test_non_canned_intents_fall_back_to_llm(
     router: IntentRouter, empty_state: ConvState, user_input: str
 ):
     decision = router.classify(user_input, empty_state)
@@ -179,278 +182,6 @@ def test_unmigrated_intents_fall_back_to_llm(
     assert decision.fallback_to_llm is True
     assert decision.canned_response is None
     assert decision.tool_call is None
-
-
-# ── Rule 7: ARRIVAL_TIME ─────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "user_input,expected_route",
-    [
-        ("201幾點到", "201"),
-        ("201路幾點到", "201"),
-        ("幾點有車201", "201"),
-        ("201幾點有車", "201"),
-        ("可以告訴我201幾點到嗎", "201"),
-        ("7120多久到", "7120"),
-        ("下一班201幾點來", "201"),
-    ],
-)
-def test_arrival_time_fires_with_explicit_route_number(
-    router: IntentRouter, empty_state: ConvState, user_input: str, expected_route: str
-):
-    decision = router.classify(user_input, empty_state)
-    assert decision.intent == Intent.ARRIVAL_TIME
-    assert decision.tool_call == ("get_arrivals_here", {"route": expected_route})
-    assert decision.next_state is not None
-    assert decision.next_state.last_route == expected_route
-    assert decision.next_state.last_intent == Intent.ARRIVAL_TIME
-
-
-@pytest.mark.parametrize(
-    "user_input",
-    [
-        "幾點有車",        # no route in text, no last_route → UNKNOWN
-        "幾點來",
-        "下一班幾點來",
-    ],
-)
-def test_arrival_time_does_not_fire_without_route_number_or_state(
-    router: IntentRouter, empty_state: ConvState, user_input: str
-):
-    decision = router.classify(user_input, empty_state)
-    assert decision.intent != Intent.ARRIVAL_TIME
-
-
-@pytest.mark.parametrize(
-    "user_input",
-    [
-        "幾點有車",
-        "幾點來",
-        "下一班幾點來",
-        "還有多久",
-    ],
-)
-def test_arrival_time_uses_last_route_from_state(
-    router: IntentRouter, user_input: str
-):
-    """Arrival question without explicit route → reuse state.last_route."""
-    state = ConvState(last_route="7120", last_intent=Intent.FIND_ROUTES_TO_DEST)
-    decision = router.classify(user_input, state)
-    assert decision.intent == Intent.ARRIVAL_TIME
-    assert decision.tool_call == ("get_arrivals_here", {"route": "7120"})
-    assert decision.next_state is not None
-    assert decision.next_state.last_route == "7120"
-
-
-# ── Rule 4: FIND_ROUTES_TO_DEST ──────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "user_input,expected_dest",
-    [
-        ("我想去虎尾科大", "虎尾科大"),
-        ("去斗六火車站怎麼搭", "斗六火車站"),
-        ("要去斗六", "斗六"),
-        ("前往虎尾科大", "虎尾科大"),
-        ("怎麼去斗六", "斗六"),
-        ("到斗六怎麼搭", "斗六"),
-        ("去北港廟有公車嗎", "北港廟"),
-        ("去虎尾的車怎麼搭", "虎尾"),         # greedy would capture "虎尾的車"
-        ("到高鐵站要搭什麼車", "高鐵站"),     # greedy would capture "高鐵站要"
-    ],
-)
-def test_find_routes_fires_for_local_destination(
-    router: IntentRouter, empty_state: ConvState, user_input: str, expected_dest: str
-):
-    decision = router.classify(user_input, empty_state)
-    assert decision.intent == Intent.FIND_ROUTES_TO_DEST
-    assert decision.tool_call == (
-        "find_routes_to_destination", {"destination": expected_dest}
-    )
-    assert decision.next_state is not None
-    assert decision.next_state.last_destination == expected_dest
-    assert decision.next_state.last_intent == Intent.FIND_ROUTES_TO_DEST
-
-
-def test_find_routes_preserves_last_route_in_state(router: IntentRouter):
-    state = ConvState(last_route="7120")
-    decision = router.classify("去斗六", state)
-    assert decision.intent == Intent.FIND_ROUTES_TO_DEST
-    assert decision.next_state is not None
-    assert decision.next_state.last_route == "7120"
-
-
-def test_find_routes_does_not_fire_for_remote_city(
-    router: IntentRouter, empty_state: ConvState
-):
-    """Rule 2 (REMOTE_DESTINATION) takes precedence over Rule 4."""
-    decision = router.classify("我想去台中", empty_state)
-    assert decision.intent == Intent.REMOTE_DESTINATION
-
-
-# ── Rule 4 follow-up: OTHER_ROUTES_FOLLOWUP ──────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "user_input",
-    [
-        "還有其他路線嗎",
-        "其他路線呢",
-        "有沒有其他路線",
-        "還有其他公車嗎",
-        "還有別的路線嗎",
-        "還有哪台車可以搭",   # no 其他/別的, but clearly asks to enumerate routes
-        "還有哪班車",
-        "還有哪路公車",
-    ],
-)
-def test_other_routes_followup_fires_with_last_destination(
-    router: IntentRouter, user_input: str
-):
-    state = ConvState(last_destination="虎尾科大")
-    decision = router.classify(user_input, state)
-    assert decision.intent == Intent.OTHER_ROUTES_FOLLOWUP
-    assert decision.tool_call == (
-        "find_routes_to_destination", {"destination": "虎尾科大"}
-    )
-    assert decision.next_state is not None
-    assert decision.next_state.last_destination == "虎尾科大"
-
-
-def test_other_routes_followup_falls_back_without_state(
-    router: IntentRouter, empty_state: ConvState
-):
-    """No last_destination → cannot resolve follow-up → fall back to LLM."""
-    decision = router.classify("還有其他路線嗎", empty_state)
-    assert decision.intent == Intent.UNKNOWN
-    assert decision.fallback_to_llm is True
-
-
-def test_plain_havent_there_more_buses_does_not_fire_followup(
-    router: IntentRouter,
-):
-    """'還有車嗎' with last_destination set → STOP_STATUS, not OTHER_ROUTES_FOLLOWUP."""
-    state = ConvState(last_destination="虎尾科大")
-    decision = router.classify("還有車嗎", state)
-    assert decision.intent == Intent.STOP_STATUS
-
-
-# ── Rule 6: STOP_STATUS ──────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "user_input",
-    [
-        "還有車嗎",
-        "末班車走了嗎",
-        "還有幾路在跑",
-        "現在還有哪些車",
-        "現在幾點還有車",
-        "還有幾路",
-        "末班車",
-    ],
-)
-def test_stop_status_fires_for_all_bus_status_queries(
-    router: IntentRouter, empty_state: ConvState, user_input: str
-):
-    decision = router.classify(user_input, empty_state)
-    assert decision.intent == Intent.STOP_STATUS
-    assert decision.tool_call == ("get_stop_arrival_statuses_here", {})
-    assert decision.next_state is not None
-    assert decision.next_state.last_intent == Intent.STOP_STATUS
-
-
-def test_stop_status_does_not_fire_when_route_number_present(
-    router: IntentRouter, empty_state: ConvState
-):
-    """'201幾點到' has route + arrival question → ARRIVAL_TIME takes precedence."""
-    decision = router.classify("201幾點到", empty_state)
-    assert decision.intent == Intent.ARRIVAL_TIME
-
-
-# ── Rule 5: ROUTES_AT_STOP ───────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "user_input",
-    [
-        "這站有哪些路線",
-        "這裡有幾路車",
-        "這個站牌有什麼公車",
-        "本站有哪些路線",
-        "在這搭哪幾路",
-    ],
-)
-def test_routes_at_stop_fires_for_stop_listing_queries(
-    router: IntentRouter, empty_state: ConvState, user_input: str
-):
-    decision = router.classify(user_input, empty_state)
-    assert decision.intent == Intent.ROUTES_AT_STOP
-    assert decision.tool_call == ("get_routes_at_stop_here", {})
-
-
-# ── Rule 9: CHECK_STOP_ON_ROUTE ──────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "user_input,expected_route,expected_stop",
-    [
-        ("201有沒有停斗六", "201", "斗六"),
-        ("201停斗六嗎", "201", "斗六"),
-        ("201有停斗六火車站嗎", "201", "斗六火車站"),
-        ("7120有到虎尾科大嗎", "7120", "虎尾科大"),
-        ("201到斗六嗎", "201", "斗六"),
-    ],
-)
-def test_check_stop_on_route_fires_with_route_and_stop(
-    router: IntentRouter,
-    empty_state: ConvState,
-    user_input: str,
-    expected_route: str,
-    expected_stop: str,
-):
-    decision = router.classify(user_input, empty_state)
-    assert decision.intent == Intent.CHECK_STOP_ON_ROUTE
-    assert decision.tool_call == (
-        "check_stop_on_route",
-        {"route": expected_route, "stop_name": expected_stop},
-    )
-    assert decision.next_state is not None
-    assert decision.next_state.last_route == expected_route
-
-
-def test_check_stop_on_route_does_not_fire_for_arrival_query(
-    router: IntentRouter, empty_state: ConvState
-):
-    """'201幾點到' has arrival question → ARRIVAL_TIME, not CHECK_STOP_ON_ROUTE."""
-    decision = router.classify("201幾點到", empty_state)
-    assert decision.intent == Intent.ARRIVAL_TIME
-
-
-# ── Rule 8: ROUTE_STOPS_CLARIFY ──────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "user_input,expected_route",
-    [
-        ("201停哪些站", "201"),
-        ("201有哪些站", "201"),
-        ("7120的站牌", "7120"),
-        ("201停哪裡", "201"),
-    ],
-)
-def test_route_stops_clarify_fires_for_stop_list_queries(
-    router: IntentRouter,
-    empty_state: ConvState,
-    user_input: str,
-    expected_route: str,
-):
-    decision = router.classify(user_input, empty_state)
-    assert decision.intent == Intent.ROUTE_STOPS_CLARIFY
-    assert decision.tool_call == ("get_route_stops", {"route": expected_route})
-    assert decision.next_state is not None
-    assert decision.next_state.last_route == expected_route
 
 
 def test_empty_input_falls_back(router: IntentRouter, empty_state: ConvState):
@@ -491,3 +222,6 @@ def test_conv_state_dataclass_is_frozen():
     state = ConvState(last_route="201")
     with pytest.raises(Exception):
         state.last_route = "999"  # type: ignore[misc]
+
+    # Confirm removed field is gone.
+    assert not hasattr(state, "pending_stops_clarify_route")

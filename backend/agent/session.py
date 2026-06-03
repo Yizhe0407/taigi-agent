@@ -38,37 +38,7 @@ _DEFAULT_MAX_TOOL_ROUNDS = 8
 _TOOL_ROUND_LIMIT_MESSAGE = "查詢逾時，請換個方式再問一次。"
 
 
-def _phrase_tool_result(intent: Intent, result: str, tool_kwargs: dict) -> str:
-    """Template a raw tool result into a kiosk-style reply."""
-    if intent == Intent.ARRIVAL_TIME:
-        return result
 
-    if intent == Intent.FIND_ROUTES_TO_DEST:
-        if any(kw in result for kw in ("失敗", "找不到", "沒有直達")):
-            return result
-        dest = tool_kwargs.get("destination", "")
-        if "、" in result:
-            # Multiple routes — keep direction labels so user can tell them apart.
-            return f"去{dest}可以搭{result}。"
-        parts = result.split(" ", 1)
-        route, direction = (parts[0], parts[1]) if len(parts) == 2 else (result, "")
-        if direction:
-            # "搭7120就可以，往高鐵雲林站那班。" reads more naturally than
-            # "搭7120 往高鐵雲林站就可以到虎尾科大。"
-            return f"搭{route}就可以，{direction}那班。"
-        return f"搭{route}就可以到{dest}。"
-
-    if intent == Intent.OTHER_ROUTES_FOLLOWUP:
-        if any(kw in result for kw in ("失敗", "找不到")):
-            return result
-        if "沒有直達" in result:
-            return result
-        # Direction labels are already in context from the first route query;
-        # strip them to avoid repetition ("就只有7120" not "就只有7120 往高鐵雲林站").
-        routes = "、".join(e.split(" ")[0] for e in result.split("、"))
-        return f"就只有{routes}，沒有其他路線了。"
-
-    return result
 
 
 class AgentSession:
@@ -148,52 +118,9 @@ class AgentSession:
         if decision.next_state is not None:
             self.conv_state = decision.next_state
 
-    async def _tool_respond(self, user_input: str, decision: Decision) -> str:
-        """Execute a router-dispatched tool call without an LLM round-trip."""
-        tool_name, tool_kwargs = decision.tool_call  # type: ignore[misc]
-        with self.telemetry.start_span(
-            "agent.turn",
-            {
-                "agent.router.intent": decision.intent.value,
-                "agent.router.path": "tool",
-            },
-        ):
-            handler = self.tool_handlers.get(tool_name)
-            if handler is None:
-                result = f"找不到工具 {tool_name}"
-            else:
-                with self.telemetry.start_span(
-                    "agent.tool.call", {"tool.name": tool_name}
-                ):
-                    t0 = time.monotonic()
-                    try:
-                        result = await handler(**tool_kwargs)
-                        self.telemetry.record_tool_duration(
-                            time.monotonic() - t0,
-                            tool_name=tool_name,
-                            outcome="ok",
-                        )
-                    except Exception as exc:
-                        self.telemetry.record_tool_duration(
-                            time.monotonic() - t0,
-                            tool_name=tool_name,
-                            outcome="error",
-                        )
-                        self.telemetry.record_tool_error(
-                            tool_name=tool_name,
-                            error_type=type(exc).__name__,
-                        )
-                        result = f"工具 {tool_name} 執行失敗"
-
-            reply = _phrase_tool_result(decision.intent, result, tool_kwargs)
-            self.messages.append({"role": "user", "content": user_input})
-            self._finish_with_assistant(reply)
-            if decision.next_state is not None:
-                self.conv_state = decision.next_state
-            return reply
-
     async def respond(self, user_input: str) -> str:
-        # Router gate: deterministic intents short-circuit before any LLM cost.
+        # Router gate: canned-response intents (Rules 1-3) short-circuit
+        # before any LLM cost. Everything else goes to the LLM loop.
         decision = self.router.classify(user_input, self.conv_state)
 
         if decision.canned_response is not None:
@@ -207,12 +134,6 @@ class AgentSession:
                 self._record_canned_turn(user_input, decision)
                 return decision.canned_response
 
-        if decision.tool_call is not None:
-            return await self._tool_respond(user_input, decision)
-
-        # Fall through to legacy LLM loop. As more intents migrate into the
-        # router, this branch shrinks. The intent label flows into telemetry
-        # so we can monitor migration progress.
         return await self._llm_respond(user_input, intent=decision.intent)
 
     async def _llm_respond(
