@@ -14,8 +14,12 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+import opencc
+
 # Strip <think>…</think> blocks that reasoning models may include in content.
 _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+# Convert any simplified Chinese that leaks from model reasoning to traditional.
+_S2TWP = opencc.OpenCC("s2twp")
 
 from agent.context import (
     LONG_TOOL_RESULT_CHARS,
@@ -205,7 +209,8 @@ class AgentSession:
                 self.messages.append(assistant_message(message, tool_calls))
                 if not tool_calls:
                     self.messages = trim_history(self.messages, self.max_history_tokens)
-                    return _THINK_RE.sub("", message.content or "").strip()
+                    text = _THINK_RE.sub("", message.content or "").strip()
+                    return _S2TWP.convert(text)
 
                 tool_rounds += 1
                 self.messages.extend(

@@ -18,6 +18,7 @@ dependencies = [
     "taigi-converter",
     "tiktoken>=0.13.0",
     "uvicorn>=0.47.0",
+    "opencc-python-reimplemented>=0.1.7",
 ]
 
 [tool.uv.sources]

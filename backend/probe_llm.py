@@ -21,6 +21,8 @@ from openai import AsyncOpenAI
 
 load_dotenv()
 
+from agent.prompt import build_system_prompt
+
 # ── Tool schemas (minimal subset for probe) ───────────────────────────────────
 
 TOOLS = [
@@ -62,11 +64,7 @@ TOOLS = [
     },
 ]
 
-SYSTEM = (
-    "你是雲林科技大學站牌的公車資訊助理。"
-    "用繁體中文回答，語氣自然口語。"
-    "查到站時間或路線時呼叫工具，不要自己猜測資料。"
-)
+SYSTEM = build_system_prompt()
 
 CASES = [
     ("基本問候（不需工具）", "你好"),
