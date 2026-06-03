@@ -10,10 +10,10 @@
 ```
 使用者輸入
     ↓
-AgentSession（harness 核心）
-    ├─ LLM 決定要呼叫哪個工具
-    ├─ 執行工具（雲林公車動態資料）
-    └─ LLM 組成自然語言回答
+IntentRouter（Python regex，deterministic）
+    ├─ canned response（直接回，無 LLM）
+    ├─ tool call → 執行工具 → LLM phrasing
+    └─ UNKNOWN → LLM loop（呼叫工具或直接回）
     ↓
 使用者看到答案
 ```
@@ -22,9 +22,8 @@ AgentSession（harness 核心）
 產品定位詳見 `docs/product-positioning.md`，架構與目錄細節見 `docs/architecture.md`。
 
 CLI 目前只是 I/O 層；`AgentSession` 保持輸入輸出為文字，後續 ASR/TTS
-可沿用同一個 session runtime。Kiosk 路線號預取由入口注入，不寫死在 harness 核心。
-Context 過長時會把 compact 前 transcript 與完整長工具輸出保存到 `.agent_state/`，
-active context 只保留摘要或預覽。
+可沿用同一個 session runtime。Context 以輪為單位硬上限（預設 5 輪），
+長工具輸出落盤到 `.agent_state/tool-results/`，active context 只保留路徑與預覽。
 
 ## 場域
 
@@ -211,7 +210,9 @@ prompt 或 tool result 放進 span attributes。
 | 「7126 下一班幾分鐘到」 | `get_arrivals_here` | ebus.yunlin.gov.tw |
 | 「201 停哪些站」 | `get_route_stops` | ebus（從到站資料重組） |
 | 「7126 停哪些站」 | `get_route_stops` | ebus（限本站停靠路線） |
-| 「這站有哪些路線」 | `get_routes_at_stop` | ebus.yunlin.gov.tw |
+| 「這站有哪些路線」 | `get_routes_at_stop_here` | ebus.yunlin.gov.tw |
+| 「我要去虎尾」 | `find_routes_to_destination` | ebus（geo-aware 路線篩選） |
+| 「201 有沒有停斗六火車站」 | `check_stop_on_route` | ebus |
 
 路線規劃不是聊天文字 tool。產品主流程是前端地圖讓使用者選目的地座標，
 後端 `plan_route_to_coordinate(latitude, longitude)` 從 Kiosk 起點做 OTP

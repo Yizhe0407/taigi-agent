@@ -19,11 +19,15 @@ from dataclasses import dataclass
 
 from openai import AsyncOpenAI
 
+_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+_GROQ_DEFAULT_MODEL = "qwen/qwen3-32b"
+# vLLM (Qwen3) requires this to suppress chain-of-thought tokens.
+_VLLM_EXTRA_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
+
 from agent.prompt import build_system_prompt
 from agent.session import AgentSession, InputEnricher
 from agent.telemetry import configure_telemetry
 from agent.tools import TOOL_HANDLERS, TOOL_SCHEMAS
-from tools.kiosk_bus import prefetch_route_arrival_context
 
 
 def parse_cors_origins() -> list[str]:
@@ -36,10 +40,13 @@ def parse_cors_origins() -> list[str]:
 class Settings:
     """Parsed and validated environment-variable configuration."""
 
-    # ── LLM (required) ────────────────────────────────────────────────────────
+    # ── LLM ───────────────────────────────────────────────────────────────────
+    # Set GROQ_API_KEY to route through Groq (preferred).
+    # Otherwise set LLM_BASE_URL + LLM_MODEL for a local/vLLM endpoint.
     llm_base_url: str
     llm_model: str
-    llm_api_key: str                    # default "ollama" for local deployments
+    llm_api_key: str
+    llm_extra_body: dict
 
     # ── ASR (optional — service is disabled when asr_base_url is None) ────────
     asr_base_url: str | None
@@ -62,22 +69,32 @@ class Settings:
         Raises RuntimeError if any *required* variables are absent.
         Optional variables fall back to documented defaults.
         """
-        llm_base_url = os.getenv("LLM_BASE_URL", "")
-        llm_model = os.getenv("LLM_MODEL", "")
-        missing = [
-            name
-            for name, val in [("LLM_BASE_URL", llm_base_url), ("LLM_MODEL", llm_model)]
-            if not val
-        ]
-        if missing:
-            raise RuntimeError(
-                f"Required env vars not set: {', '.join(missing)}"
-            )
+        groq_api_key = os.getenv("GROQ_API_KEY", "")
+        if groq_api_key:
+            llm_base_url = _GROQ_BASE_URL
+            llm_model = os.getenv("GROQ_MODEL", _GROQ_DEFAULT_MODEL)
+            llm_api_key = groq_api_key
+            llm_extra_body: dict = {}
+        else:
+            llm_base_url = os.getenv("LLM_BASE_URL", "")
+            llm_model = os.getenv("LLM_MODEL", "")
+            missing = [
+                name
+                for name, val in [("LLM_BASE_URL", llm_base_url), ("LLM_MODEL", llm_model)]
+                if not val
+            ]
+            if missing:
+                raise RuntimeError(
+                    f"Required env vars not set: GROQ_API_KEY or {', '.join(missing)}"
+                )
+            llm_api_key = os.getenv("LLM_API_KEY", "ollama")
+            llm_extra_body = _VLLM_EXTRA_BODY
 
         return cls(
             llm_base_url=llm_base_url,
             llm_model=llm_model,
-            llm_api_key=os.getenv("LLM_API_KEY", "ollama"),
+            llm_api_key=llm_api_key,
+            llm_extra_body=llm_extra_body,
             asr_base_url=os.getenv("ASR_BASE_URL") or None,
             asr_model=os.getenv("ASR_MODEL") or None,
             asr_api_key=os.getenv("ASR_API_KEY", ""),
@@ -97,13 +114,7 @@ def make_agent_session(
 
     Shared factory used by the HTTP API (api/chat.py) and the CLI (agent/loop.py)
     to avoid duplicating the OpenAI client + session wiring.
-
-    *input_enricher* defaults to ``prefetch_route_arrival_context`` so callers
-    that don't need to customise it can omit the argument.
     """
-    if input_enricher is None:
-        input_enricher = prefetch_route_arrival_context
-
     return AgentSession(
         client=AsyncOpenAI(
             base_url=settings.llm_base_url,
@@ -114,5 +125,6 @@ def make_agent_session(
         tool_schemas=TOOL_SCHEMAS,
         tool_handlers=TOOL_HANDLERS,
         input_enricher=input_enricher,
+        extra_body=settings.llm_extra_body,
         telemetry=configure_telemetry(),
     )

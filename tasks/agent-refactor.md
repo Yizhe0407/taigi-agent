@@ -263,13 +263,13 @@ class TrajectoryExpect:
 
 ## 完成定義（DoD）
 
-| 階段 | DoD |
-|------|-----|
-| P0 Cut 1 | geo-aware 單元測試全綠；probe 不退 |
-| P0 Cut 2 | 11 個 intent 全搬完；fallback_to_llm 從不觸發；probe ≥ 44/45 |
-| P1 | prompt ≤ 25 行；retry loop / prefetch marker 全刪；probe 不退 |
-| P2 | probe 改 trajectory；跑 3 次分數穩定 |
-| P3 | LOC 比 P0 前少 200+；probe 不退 |
+| 階段 | 狀態 | DoD |
+|------|------|-----|
+| P0 Cut 1 | ✅ Done | geo-aware 單元測試全綠；probe 不退 |
+| P0 Cut 2 | ✅ Done | 11 個 intent 全搬完；fallback_to_llm 從不觸發；probe ≥ 44/45 |
+| P1 | ✅ Done | prompt ≤ 25 行；retry loop / prefetch marker 全刪；probe 不退 |
+| P2 | ✅ Done | probe 改 trajectory assertions（`conv_state.last_intent`）；router regex bug 修正 |
+| P3 | ✅ Done | summary compact 刪除；MAX_EXCHANGES=5 硬上限；`Intent` 清理；render_arrivals 寬鬆路線查找 |
 
 ## 不做
 

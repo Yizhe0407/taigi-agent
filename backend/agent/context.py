@@ -12,6 +12,10 @@ from agent.diagnostics import log_diagnostic
 # 估算：system prompt ~400 + tools schema ~500 + response buffer ~1000 = ~1900
 # 剩餘 budget 留給歷史，設 4000 讓短對話多保留、長回應快被截
 MAX_HISTORY_TOKENS = 4000
+
+# Kiosk sessions are short by design; hard-cap at this many user exchanges
+# so we never need an LLM-based summary compact.
+MAX_EXCHANGES = 5
 LONG_TOOL_RESULT_CHARS = 12_000
 TOOL_RESULT_PREVIEW_CHARS = 1_500
 _TOOL_RESULT_COMPACT_MARKER = "[長工具結果已壓縮]"
@@ -32,13 +36,6 @@ class ContextStore:
         filename = f"{timestamp}-{safe_hint or 'context'}-{uuid4().hex[:8]}{suffix}"
         path = self.root / directory / filename
         path.parent.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def save_transcript(self, messages: list[dict]) -> Path:
-        """保存 compact 前的完整 message transcript。"""
-        path = self._new_path("transcripts", ".jsonl", "session")
-        lines = [json.dumps(msg, ensure_ascii=False) for msg in messages]
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
 
     def save_tool_result(self, call_id: str, content: str) -> Path:
@@ -82,15 +79,6 @@ def group_exchanges(messages: list) -> list[list]:
     return exchanges
 
 
-def split_latest_exchange(messages: list) -> tuple[list[dict], list[dict]]:
-    """回傳較舊歷史與最新 exchange，summary compact 只取代前者。"""
-    exchanges = group_exchanges(messages)
-    if len(exchanges) <= 1:
-        return [], messages
-    older = [msg for exchange in exchanges[:-1] for msg in exchange]
-    return older, exchanges[-1]
-
-
 def compact_long_tool_results(
     messages: list[dict],
     store: ContextStore,
@@ -123,31 +111,26 @@ def compact_long_tool_results(
     return compacted
 
 
-def compacted_history_message(summary: str, transcript_path: Path) -> dict:
-    """建立可放回 conversation history 的摘要 message。"""
-    return {
-        "role": "user",
-        "content": (
-            "[先前對話已壓縮]\n"
-            f"完整 transcript：{transcript_path}\n"
-            f"摘要：\n{summary}"
-        ),
-    }
-
-
 def trim_history(
-    messages: list[dict], max_history_tokens: int = MAX_HISTORY_TOKENS
+    messages: list[dict],
+    max_history_tokens: int = MAX_HISTORY_TOKENS,
+    max_exchanges: int = MAX_EXCHANGES,
 ) -> list:
-    """截斷過長的對話歷史，使 token 估算值維持在 MAX_HISTORY_TOKENS 以內
+    """截斷過長的對話歷史，使 token 估算值維持在 max_history_tokens 以內，
+    且輪數不超過 max_exchanges。
 
     仍以「輪」為單位截斷（user msg 起頭到下一個 user msg 前），
     確保 tool_call_id 配對完整，避免 API 報錯。
-
-    token budget 相較於 exchange count 的好處：
-    - 短對話（「好」「謝謝」）不浪費配額
-    - 含大量站牌的長回應較快被淘汰，不佔用過多 context
     """
     exchanges = group_exchanges(messages)
+
+    # Exchange-count cap — apply before token budget so the bound is hard.
+    if len(exchanges) > max_exchanges:
+        dropped_count = len(exchanges) - max_exchanges
+        log_diagnostic(
+            "context", f"截掉 {dropped_count} 輪舊對話（上限 {max_exchanges} 輪）"
+        )
+        exchanges = exchanges[-max_exchanges:]
 
     # 從最新輪往前累加，超過 budget 就停
     kept: list[list] = []
@@ -164,7 +147,7 @@ def trim_history(
     if dropped > 0:
         log_diagnostic(
             "context",
-            f"截掉 {dropped} 輪舊對話，保留約 {tokens_used} tokens",
+            f"截掉 {dropped} 輪舊對話（token 超限），保留約 {tokens_used} tokens",
         )
 
     return [msg for exchange in kept for msg in exchange]

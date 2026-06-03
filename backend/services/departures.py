@@ -30,6 +30,22 @@ TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 _PAREN_RE = re.compile(r"\s*[（(][^）)]{0,40}[）)]\s*")
 _ONES_ZH = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"]
+_FULLWIDTH_RE = re.compile(r"[！-～]")
+
+
+def _normalize_route_key(s: str) -> str:
+    """Halfwidth + strip trailing 路 + uppercase for loose route lookup."""
+    s = _FULLWIDTH_RE.sub(lambda m: chr(ord(m.group()) - 0xFEE0), s)
+    return s.rstrip("路").upper()
+
+
+def _lookup_route(route_info: dict, route: str) -> dict | None:
+    """Case-insensitive route lookup that ignores trailing 路 and fullwidth."""
+    key = _normalize_route_key(route)
+    for name, info in route_info.items():
+        if _normalize_route_key(name) == key:
+            return info
+    return None
 
 
 def _strip_paren(name: str) -> str:
@@ -544,7 +560,7 @@ async def render_arrivals(
     except Exception as error:
         return f"雲林公車查詢失敗：{error}"
 
-    info = route_info.get(route)
+    info = _lookup_route(route_info, route)
     route_id = _as_int(info.get("id")) if info is not None else None
     if route_id is None:
         return f"在 {stop_name} 找不到停靠路線 {route}"
@@ -566,9 +582,14 @@ async def render_arrivals(
     results = []
     for stop in matches:
         stop_go_back = stop.get("GoBack", 1)
-        label = _direction_label_from_info(route_info, route, stop_go_back)
         _, _, status_text, _, _, _, _, _ = _classify_stop(stop, now)
-        results.append(f"{label}：{status_text}")
+        # Single-direction query: direction is already implied by kiosk config;
+        # label only adds noise for TTS and short-response constraints.
+        if go_back is None:
+            label = _direction_label_from_info(route_info, route, stop_go_back)
+            results.append(f"{label}：{status_text}")
+        else:
+            results.append(status_text)
 
     return "\n".join(results)
 

@@ -5,9 +5,10 @@
 ## 核心邊界
 
 - `AgentSession` 是 harness orchestration，不放公車領域邏輯。
+- `IntentRouter` 用 Python regex 決定意圖與工具派送；LLM 只負責 UNKNOWN 的 phrasing。`ConvState` 追蹤對話狀態，不靠 LLM 從 messages 推斷。
 - 公車資料來源集中在 provider，分類與決策集中在 service，Agent 看到的是 tool facade 回傳的字串。
 - 路線規劃不是聊天文字 tool；前端確認目的地座標後呼叫 `POST /api/route-plans`。
-- Context compact 會把 transcript 與完整長 tool result 保存到 `.agent_state/`，active context 只保留摘要、路徑與預覽。
+- Context 以輪為單位硬上限（`MAX_EXCHANGES=5`）加 token budget trim；長 tool result 落盤到 `.agent_state/tool-results/`，active context 只留路徑與預覽。
 - Telemetry 只記 model、tool name、outcome、error type、latency 等 metadata，預設不記內容。
 
 ## 後端
@@ -40,12 +41,13 @@ backend/
 
 ### Agent
 
-- `agent/session.py`：messages、tool-call loop、context recovery。
+- `agent/session.py`：messages、router gate、tool-call loop、context recovery。
+- `agent/router.py`：`IntentRouter`、`ConvState`、`Decision` — regex-based intent classification。
 - `agent/loop.py`：CLI I/O，呼叫 `AgentSession`。
 - `agent/llm_client.py`：OpenAI-compatible LLM call、retry/backoff、context overflow。
 - `agent/tool_dispatch.py`：tool call parse 與 dispatch。
 - `agent/tools.py`：`TOOL_SCHEMAS` 與 `TOOL_HANDLERS`。
-- `agent/context.py`：token budget、ContextStore、transcript / 長 tool result compact。
+- `agent/context.py`：token budget、exchange-count cap、ContextStore、長 tool result compact。
 - `agent/telemetry.py`：OpenTelemetry spans / metrics。
 
 ### 領域層
@@ -60,7 +62,7 @@ backend/
 - `services/moovo.py`：公共自行車站 dataclass、解析、cache、距離查詢。
 - `services/stop_catalog.py`：TDX / GTFS 更新流程產生的雲林 stop index。
 - `services/yunlin_boundary.py`：雲林縣 GeoJSON point-in-polygon。
-- `tools/kiosk_bus.py`：Agent str facade、站名縮寫（僅用於 LLM 工具輸入）、prefetch。
+- `tools/kiosk_bus.py`：Agent str facade、站名縮寫。
 
 ## 前端
 
@@ -84,6 +86,5 @@ frontend/
 ## 已知技術債
 
 - ebus 後端介面不是本專題控制的公開契約；若 payload 改版，主要修補點是 `backend/providers/yunlin_ebus.py`。
-- Compact 後的完整內容暫無 retrieval tool；若要讓 agent 主動回讀壓縮資料，需要明確 retrieval tool 與資料保留策略。
 - Chat session 持久化在 `.agent_state/sessions.db`，目前仍綁單機檔案；scale out 需改外部 KV / Redis。
 - Backend runtime 採 async 單一路徑；HTTP-facing providers、services、AgentSession tool dispatch 與 LLM client 都是 async。GTFS 更新腳本可用同步 requests，不屬於線上 API 路徑。

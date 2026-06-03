@@ -2,8 +2,11 @@
 Comprehensive LLM behavior probe for the Taigi Bus Agent.
 
 Tests two independent dimensions per case:
-  [B] Behavior  — did the agent follow the correct decision rule?
-  [F] Format    — is the response human-like (no AI artifacts)?
+  [D] Dispatch — did the router fire the right intent / tool?
+  [F] Format   — is the response human-like (no AI artifacts)?
+
+Behavior text checks (Expect.*) apply on top for LLM-path cases where the
+response wording matters.
 
 Run: uv run python scripts/probe_llm.py
 """
@@ -11,7 +14,7 @@ Run: uv run python scripts/probe_llm.py
 import asyncio
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
@@ -20,11 +23,38 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv()
 
+from agent.router import Intent
 from agent.session import AgentSession
 from config import Settings, make_agent_session
 
 
-# ── Behavior expectations ─────────────────────────────────────────────────────
+# ── Intent → tool name (for display) ─────────────────────────────────────────
+
+_INTENT_TO_TOOL: dict[Intent, str] = {
+    Intent.ARRIVAL_TIME:          "get_arrivals_here",
+    Intent.FIND_ROUTES_TO_DEST:   "find_routes_to_destination",
+    Intent.OTHER_ROUTES_FOLLOWUP: "find_routes_to_destination",
+    Intent.ROUTES_AT_STOP:        "get_routes_at_stop_here",
+    Intent.STOP_STATUS:           "get_stop_arrival_statuses_here",
+    Intent.ROUTE_STOPS_CLARIFY:   "get_route_stops",
+    Intent.CHECK_STOP_ON_ROUTE:   "check_stop_on_route",
+}
+
+_INTENT_LABEL: dict[Intent, str] = {
+    Intent.ROUTE_ONLY:            "R1",
+    Intent.REMOTE_DESTINATION:    "R2",
+    Intent.TIMETABLE_UNSUPPORTED: "R3",
+    Intent.FIND_ROUTES_TO_DEST:   "R4",
+    Intent.OTHER_ROUTES_FOLLOWUP: "R4b",
+    Intent.ROUTES_AT_STOP:        "R5",
+    Intent.STOP_STATUS:           "R6",
+    Intent.ARRIVAL_TIME:          "R7",
+    Intent.ROUTE_STOPS_CLARIFY:   "R8",
+    Intent.CHECK_STOP_ON_ROUTE:   "R9",
+}
+
+
+# ── Behavior expectations (response text checks) ──────────────────────────────
 
 class Expect(Enum):
     ASK_CLARIFY_ROUTE_INFO = "詢問想查路線什麼資訊"
@@ -41,81 +71,84 @@ class TestCase:
     description: str
     reset: bool = True
     expect: Expect = Expect.FREE
-    expect_tool: str | None = None   # tool name that MUST be called
-    expect_no_tool: bool = False     # no tool should be called at all
+    # expected Intent from conv_state.last_intent after this turn.
+    # None = UNKNOWN / LLM-handled; no dispatch assertion made.
+    expect_intent: Intent | None = None
 
 
 # ── Test suite ────────────────────────────────────────────────────────────────
 
 CASES: list[TestCase] = [
-    # ── Rule 1: pure route number → ask clarification ─────────────────────────
-    TestCase("201",    "只說號碼，無問句",           True, Expect.ASK_CLARIFY_ROUTE_INFO, expect_no_tool=True),
-    TestCase("201路",  "號碼含路字，仍無問句",       True, Expect.ASK_CLARIFY_ROUTE_INFO, expect_no_tool=True),
-    TestCase("7000b",  "後綴字母路線，只說號碼",     True, Expect.ASK_CLARIFY_ROUTE_INFO, expect_no_tool=True),
-    TestCase("Y01",    "前綴字母路線，只說號碼",     True, Expect.ASK_CLARIFY_ROUTE_INFO, expect_no_tool=True),
-    TestCase("7126",   "四位數路線，只說號碼",       True, Expect.ASK_CLARIFY_ROUTE_INFO, expect_no_tool=True),
+    # ── Rule 1: pure route number → canned clarification ask ─────────────────
+    TestCase("201",    "只說號碼，無問句",           True, Expect.ASK_CLARIFY_ROUTE_INFO, Intent.ROUTE_ONLY),
+    TestCase("201路",  "號碼含路字，仍無問句",       True, Expect.ASK_CLARIFY_ROUTE_INFO, Intent.ROUTE_ONLY),
+    TestCase("7000b",  "後綴字母路線，只說號碼",     True, Expect.ASK_CLARIFY_ROUTE_INFO, Intent.ROUTE_ONLY),
+    TestCase("Y01",    "前綴字母路線，只說號碼",     True, Expect.ASK_CLARIFY_ROUTE_INFO, Intent.ROUTE_ONLY),
+    TestCase("7126",   "四位數路線，只說號碼",       True, Expect.ASK_CLARIFY_ROUTE_INFO, Intent.ROUTE_ONLY),
 
-    # ── Rule 2: cross-city / transfer → single-sentence map redirect ────────
-    TestCase("我要去台中怎麼搭",   "遠距城市→redirect",        True, Expect.DECLINE_PLANNING, expect_no_tool=True),
-    TestCase("到台北要怎麼轉乘",   "跨縣市轉乘→redirect",      True, Expect.DECLINE_PLANNING, expect_no_tool=True),
-    TestCase("要不要轉乘才能到嘉義", "明確問轉乘→redirect",    True, Expect.DECLINE_PLANNING, expect_no_tool=True),
+    # ── Rule 2: cross-city / transfer → canned map redirect ──────────────────
+    TestCase("我要去台中怎麼搭",   "遠距城市→redirect",        True, Expect.DECLINE_PLANNING, Intent.REMOTE_DESTINATION),
+    TestCase("到台北要怎麼轉乘",   "跨縣市轉乘→redirect",      True, Expect.DECLINE_PLANNING, Intent.REMOTE_DESTINATION),
+    TestCase("要不要轉乘才能到嘉義", "明確問轉乘→redirect",    True, Expect.DECLINE_PLANNING, Intent.REMOTE_DESTINATION),
+    TestCase("台北的車呢",         "跨縣市口語→redirect",      True, Expect.DECLINE_PLANNING, Intent.REMOTE_DESTINATION),
 
-    # ── Rule 3: local destination query → use find_routes_to_destination ───────
-    TestCase("要搭哪台去斗六",        "本地目的地→查路線",       True, Expect.FREE, expect_tool="find_routes_to_destination"),
-    TestCase("去虎尾的車怎麼搭",      "去...的車怎麼搭",         True, Expect.FREE, expect_tool="find_routes_to_destination"),
-    TestCase("到高鐵站要搭什麼車",    "到某站要搭什麼車",        True, Expect.FREE, expect_tool="find_routes_to_destination"),
-    TestCase("我想去斗六火車站",      "想去+本地站名",           True, Expect.FREE, expect_tool="find_routes_to_destination"),
+    # ── Rule 3: timetable / inter-stop ETA → canned unsupported ──────────────
+    TestCase("201路完整時刻表",        "完整時刻表",         True, Expect.DECLINE_UNSUPPORTED, Intent.TIMETABLE_UNSUPPORTED),
+    TestCase("從這到斗六大概要幾分鐘", "站間行駛時間估算",   True, Expect.DECLINE_UNSUPPORTED, Intent.TIMETABLE_UNSUPPORTED),
 
-    # ── Rule 4: unsupported features ─────────────────────────────────────────
-    TestCase("201路完整時刻表",        "完整時刻表",         True, Expect.DECLINE_UNSUPPORTED, expect_no_tool=True),
-    TestCase("從這到斗六大概要幾分鐘", "站間行駛時間估算",   True, Expect.DECLINE_UNSUPPORTED, expect_no_tool=True),
+    # ── Rule 4: local destination → router dispatches find_routes_to_destination
+    TestCase("要搭哪台去斗六",        "本地目的地→查路線",       True, Expect.FREE, Intent.FIND_ROUTES_TO_DEST),
+    TestCase("去虎尾的車怎麼搭",      "去...的車怎麼搭",         True, Expect.FREE, Intent.FIND_ROUTES_TO_DEST),
+    TestCase("到高鐵站要搭什麼車",    "到某站要搭什麼車",        True, Expect.FREE, Intent.FIND_ROUTES_TO_DEST),
+    TestCase("我想去斗六火車站",      "想去+本地站名",           True, Expect.FREE, Intent.FIND_ROUTES_TO_DEST),
 
-    # ── Rule 4: routes at this stop ───────────────────────────────────────────
-    TestCase("這站有哪些路線",     "標準本站路線問法", True, Expect.FREE, expect_tool="get_routes_at_stop"),
-    TestCase("這裡有幾路車",       "口語問法",         True, Expect.FREE, expect_tool="get_routes_at_stop"),
-    TestCase("這個站牌有什麼公車", "另一口語問法",     True, Expect.FREE, expect_tool="get_routes_at_stop"),
-    TestCase("我可以在這搭哪幾路", "主動問可搭路線",   True, Expect.FREE, expect_tool="get_routes_at_stop"),
+    # ── Rule 5: routes at this stop → router dispatches get_routes_at_stop_here
+    TestCase("這站有哪些路線",     "標準本站路線問法", True, Expect.FREE, Intent.ROUTES_AT_STOP),
+    TestCase("這裡有幾路車",       "口語問法",         True, Expect.FREE, Intent.ROUTES_AT_STOP),
+    TestCase("這個站牌有什麼公車", "另一口語問法",     True, Expect.FREE, Intent.ROUTES_AT_STOP),
+    TestCase("我可以在這搭哪幾路", "主動問可搭路線",   True, Expect.FREE, Intent.ROUTES_AT_STOP),
 
-    # ── Rule 5: all arrivals status ──────────────────────────────────────────
-    TestCase("現在還有哪些車", "標準全站狀態問法",     True, Expect.FREE, expect_tool="get_stop_arrival_statuses_here"),
-    TestCase("還有幾路在跑",   "口語問法",             True, Expect.FREE, expect_tool="get_stop_arrival_statuses_here"),
-    TestCase("末班車走了嗎",   "末班車查詢",           True, Expect.FREE, expect_tool="get_stop_arrival_statuses_here"),
-    TestCase("還有車嗎",       "最短問法",             True, Expect.FREE, expect_tool="get_stop_arrival_statuses_here"),
-    TestCase("現在幾點還有車", "包含時間語境的狀態問", True, Expect.FREE, expect_tool="get_stop_arrival_statuses_here"),
+    # ── Rule 6: all-bus status → router dispatches get_stop_arrival_statuses_here
+    TestCase("現在還有哪些車", "標準全站狀態問法",     True, Expect.FREE, Intent.STOP_STATUS),
+    TestCase("還有幾路在跑",   "口語問法",             True, Expect.FREE, Intent.STOP_STATUS),
+    TestCase("末班車走了嗎",   "末班車查詢",           True, Expect.FREE, Intent.STOP_STATUS),
+    TestCase("還有車嗎",       "最短問法",             True, Expect.FREE, Intent.STOP_STATUS),
+    TestCase("現在幾點還有車", "包含時間語境的狀態問", True, Expect.FREE, Intent.STOP_STATUS),
 
-    # ── Rule 6: specific route arrival ───────────────────────────────────────
-    TestCase("201路幾點到",           "路線+時間，標準",        True, Expect.FREE, expect_tool="get_arrivals_here"),
-    TestCase("201還要等多久",         "等多久問法",             True, Expect.FREE, expect_tool="get_arrivals_here"),
-    TestCase("下一班201什麼時候來",   "下一班...何時",          True, Expect.FREE, expect_tool="get_arrivals_here"),
-    TestCase("201快到了嗎",           "快到了嗎",               True, Expect.FREE, expect_tool="get_arrivals_here"),
-    TestCase("請問201多久會到",       "敬語問法",               True, Expect.FREE, expect_tool="get_arrivals_here"),
-    TestCase("欸201到了沒",           "非正式口語",             True, Expect.FREE, expect_tool="get_arrivals_here"),
-    TestCase("可以告訴我201幾點到嗎", "較長口語問句",           True, Expect.FREE, expect_tool="get_arrivals_here"),
-    TestCase("7001路還要等多久",      "不存在路線→查無資料，不補推斷", True, Expect.FREE, expect_tool="get_arrivals_here"),
+    # ── Rule 7: specific route arrival → router dispatches get_arrivals_here ──
+    TestCase("201路幾點到",           "路線+時間，標準",        True, Expect.FREE, Intent.ARRIVAL_TIME),
+    TestCase("201還要等多久",         "等多久問法",             True, Expect.FREE, Intent.ARRIVAL_TIME),
+    TestCase("下一班201什麼時候來",   "下一班...何時",          True, Expect.FREE, Intent.ARRIVAL_TIME),
+    TestCase("201快到了嗎",           "快到了嗎",               True, Expect.FREE, Intent.ARRIVAL_TIME),
+    TestCase("請問201多久會到",       "敬語問法",               True, Expect.FREE, Intent.ARRIVAL_TIME),
+    TestCase("欸201到了沒",           "非正式口語",             True, Expect.FREE, Intent.ARRIVAL_TIME),
+    TestCase("可以告訴我201幾點到嗎", "較長口語問句",           True, Expect.FREE, Intent.ARRIVAL_TIME),
+    TestCase("7001路還要等多久",      "不存在路線→查無資料，不補推斷", True, Expect.FREE, Intent.ARRIVAL_TIME),
 
-    # ── Rule 7: route stops list ──────────────────────────────────────────────
-    TestCase("201路停哪些站",         "站牌清單，標準",  True, Expect.FREE, expect_tool="get_route_stops"),
-    TestCase("201路沿途有哪些站牌",   "沿途站牌問法",    True, Expect.FREE, expect_tool="get_route_stops"),
-    TestCase("201去程怎麼走",         "去程站牌→Rule8先問澄清", True, Expect.FREE, expect_no_tool=False),
-    TestCase("201回程的站牌",         "回程站牌",        True, Expect.FREE, expect_tool="get_route_stops"),
+    # ── Rule 8: route stop list → router dispatches get_route_stops ──────────
+    TestCase("201路停哪些站",       "站牌清單，標準",  True, Expect.FREE, Intent.ROUTE_STOPS_CLARIFY),
+    # Below fall through to LLM (phrasing not covered by _ROUTE_STOPS_RE):
+    TestCase("201路沿途有哪些站牌", "沿途問法→LLM",   True, Expect.FREE, None),
+    TestCase("201去程怎麼走",       "去程問法→LLM",   True, Expect.FREE, None),
+    TestCase("201回程的站牌",       "回程問法→LLM",   True, Expect.FREE, None),
 
-    # ── Rule 8: has stop check → yes/no only, via check_stop_on_route ──────────
-    TestCase("201路有停斗六火車站嗎", "查有無停站，直問",     True, Expect.ANSWER_YES_NO_ONLY, expect_tool="check_stop_on_route"),
-    TestCase("搭201可以到高鐵站嗎",   "到某站嗎→有無",        True, Expect.ANSWER_YES_NO_ONLY, expect_tool="check_stop_on_route"),
-    TestCase("201有沒有停雲科大",     "口語問有無停站",       True, Expect.ANSWER_YES_NO_ONLY, expect_tool="check_stop_on_route"),
-    TestCase("201能到斗六嗎",         "能到...嗎",            True, Expect.ANSWER_YES_NO_ONLY, expect_tool="check_stop_on_route"),
+    # ── Rule 9: has stop check → router dispatches check_stop_on_route ───────
+    TestCase("201路有停斗六火車站嗎", "查有無停站，直問",   True, Expect.ANSWER_YES_NO_ONLY, Intent.CHECK_STOP_ON_ROUTE),
+    TestCase("201有沒有停雲科大",     "口語問有無停站",     True, Expect.ANSWER_YES_NO_ONLY, Intent.CHECK_STOP_ON_ROUTE),
+    # Below fall through to LLM (pattern not matched by _CHECK_STOP_RE):
+    TestCase("搭201可以到高鐵站嗎",   "可以到→LLM",         True, Expect.ANSWER_YES_NO_ONLY, None),
+    TestCase("201能到斗六嗎",         "能到→LLM",           True, Expect.ANSWER_YES_NO_ONLY, None),
 
-    # ── Rule 9: route-related, no number ─────────────────────────────────────
-    TestCase("往斗六的車幾分鐘後到", "有目的地但無號碼→問路線", True, Expect.ASK_ROUTE_NUMBER, expect_no_tool=True),
-    TestCase("台北的車呢",           "跨縣市口語→redirect",     True, Expect.DECLINE_PLANNING, expect_no_tool=True),
+    # ── LLM path: no route number, ask for it ────────────────────────────────
+    TestCase("往斗六的車幾分鐘後到", "有目的地但無號碼→LLM問路線", True, Expect.ASK_ROUTE_NUMBER, None),
 
     # ── Multi-turn: context isolation ─────────────────────────────────────────
-    TestCase("307路幾點到",   "多輪第一輪：查307",                   True,  Expect.FREE, expect_tool="get_arrivals_here"),
-    TestCase("201路呢",       "多輪第二輪：問201，不可用307歷史資料", False, Expect.FREE, expect_tool="get_arrivals_here"),
+    TestCase("307路幾點到", "多輪第一輪：查307", True,  Expect.FREE, Intent.ARRIVAL_TIME),
+    TestCase("201路呢",     "多輪第二輪：不可用307歷史", False, Expect.FREE, None),
 
     # ── Multi-turn: route context carry ───────────────────────────────────────
-    TestCase("201路停哪些站",         "多輪：先查站牌",            True,  Expect.FREE, expect_tool="get_route_stops"),
-    TestCase("那有停斗六火車站嗎",    "多輪：追問，不應呼叫工具", False, Expect.ANSWER_YES_NO_ONLY),
+    TestCase("201路停哪些站",      "多輪：先查站牌",   True,  Expect.FREE, Intent.ROUTE_STOPS_CLARIFY),
+    TestCase("那有停斗六火車站嗎", "多輪：追問→LLM",  False, Expect.ANSWER_YES_NO_ONLY, None),
 ]
 
 
@@ -177,22 +210,26 @@ def check_behavior(text: str, expect: Expect) -> list[str]:
     return issues
 
 
-def check_tool_usage(
-    called: list[str],
-    expect_tool: str | None,
-    expect_no_tool: bool,
-) -> list[str]:
-    issues = []
-    if expect_no_tool and called:
-        issues.append(f"不應呼叫工具，但呼叫了 {called}")
-    if expect_tool and expect_tool not in called:
-        issues.append(f"應呼叫 {expect_tool}，實際 {called or '（無）'}")
-    return issues
+# ── Dispatch check ────────────────────────────────────────────────────────────
+
+def check_dispatch(session: AgentSession, expect_intent: Intent | None) -> list[str]:
+    """Assert conv_state.last_intent matches expected intent (router-dispatched cases)."""
+    if expect_intent is None:
+        return []
+    actual = session.conv_state.last_intent
+    if actual != expect_intent:
+        actual_str = actual.value if actual else "None"
+        return [f"期望 intent={expect_intent.value}，實際={actual_str}"]
+    return []
 
 
-def get_called_tools(session: AgentSession) -> list[str]:
-    """Extract tool names called in the most recent turn."""
-    tools: list[str] = []
+def get_dispatch_display(session: AgentSession) -> str:
+    """Human-readable dispatch info: router intent → tool, or LLM tool from messages."""
+    intent = session.conv_state.last_intent
+    if intent is not None:
+        tool = _INTENT_TO_TOOL.get(intent, "（無，canned）")
+        return f"{intent.value} → {tool}"
+    # UNKNOWN / LLM path: scan messages for LLM-dispatched tool calls
     for msg in reversed(session.messages):
         if msg["role"] == "user":
             break
@@ -200,21 +237,11 @@ def get_called_tools(session: AgentSession) -> list[str]:
             for tc in msg.get("tool_calls") or []:
                 name = tc["function"]["name"]
                 if name:
-                    tools.append(name)
-    return tools
+                    return f"llm → {name}"
+    return "llm → （無）"
 
 
 # ── Runner ─────────────────────────────────────────────────────────────────────
-
-_RULE_LABELS: dict[Expect, str] = {
-    Expect.ASK_CLARIFY_ROUTE_INFO: "R1",
-    Expect.DECLINE_PLANNING:       "R2",
-    Expect.FREE:                   "R3-8",
-    Expect.DECLINE_UNSUPPORTED:    "R4",
-    Expect.ANSWER_YES_NO_ONLY:     "R9",
-    Expect.ASK_ROUTE_NUMBER:       "R10",
-}
-
 
 async def main() -> None:
     settings = Settings.from_env()
@@ -230,8 +257,8 @@ async def main() -> None:
         if case.reset:
             session = make_agent_session(settings)
 
-        rule_tag = _RULE_LABELS.get(case.expect, "??")
-        print(f"\n[{rule_tag}] {case.description}")
+        intent_label = _INTENT_LABEL.get(case.expect_intent, "LLM") if case.expect_intent else "LLM"
+        print(f"\n[{intent_label}] {case.description}")
         print(f"  輸入：{case.user_input}")
 
         try:
@@ -240,65 +267,60 @@ async def main() -> None:
             response = f"[ERROR] {e}"
             results.append({
                 "case": case, "response": response,
-                "b_issues": [f"exception: {e}"], "f_issues": [], "tools": [],
+                "d_issues": [f"exception: {e}"], "f_issues": [],
             })
             print(f"  ✗ ERROR: {e}")
             continue
 
-        called_tools = get_called_tools(session)
-
-        b_issues = (
-            check_behavior(response, case.expect)
-            + check_tool_usage(called_tools, case.expect_tool, case.expect_no_tool)
-        )
+        dispatch_str = get_dispatch_display(session)
+        d_issues = check_dispatch(session, case.expect_intent) + check_behavior(response, case.expect)
         f_issues = check_format(response)
 
-        b_ok = "✓" if not b_issues else "✗"
+        d_ok = "✓" if not d_issues else "✗"
         f_ok = "✓" if not f_issues else "✗"
 
-        tool_str = ", ".join(called_tools) if called_tools else "（無）"
-        print(f"  工具：{tool_str}")
+        print(f"  派發：{dispatch_str}")
         print(f"  回覆：{response}")
-        for i in b_issues:
-            print(f"  [B]⚠ {i}")
+        for i in d_issues:
+            print(f"  [D]⚠ {i}")
         for i in f_issues:
             print(f"  [F]⚠ {i}")
-        print(f"  行為 {b_ok}  格式 {f_ok}")
+        print(f"  派發 {d_ok}  格式 {f_ok}")
 
         results.append({
             "case": case, "response": response,
-            "b_issues": b_issues, "f_issues": f_issues, "tools": called_tools,
+            "d_issues": d_issues, "f_issues": f_issues,
         })
 
     # ── Summary ──────────────────────────────────────────────────────────────
     total = len(results)
-    b_pass = sum(1 for r in results if not r["b_issues"])
+    d_pass = sum(1 for r in results if not r["d_issues"])
     f_pass = sum(1 for r in results if not r["f_issues"])
-    both_pass = sum(1 for r in results if not r["b_issues"] and not r["f_issues"])
+    both_pass = sum(1 for r in results if not r["d_issues"] and not r["f_issues"])
 
     print("\n" + "=" * 72)
     print("總結")
-    print(f"  行為正確：{b_pass}/{total}")
+    print(f"  派發正確：{d_pass}/{total}")
     print(f"  格式正確：{f_pass}/{total}")
     print(f"  全部通過：{both_pass}/{total}")
 
-    # Group failures by rule
-    by_rule: dict[str, list[dict]] = {}
+    by_label: dict[str, list[dict]] = {}
     for r in results:
-        if r["b_issues"] or r["f_issues"]:
-            tag = _RULE_LABELS.get(r["case"].expect, "??")
-            by_rule.setdefault(tag, []).append(r)
+        if r["d_issues"] or r["f_issues"]:
+            intent = r["case"].expect_intent
+            tag = _INTENT_LABEL.get(intent, "LLM") if intent else "LLM"
+            by_label.setdefault(tag, []).append(r)
 
-    if by_rule:
+    if by_label:
         print("\n失敗分布：")
-        for tag in sorted(by_rule):
-            cases = by_rule[tag]
+        for tag in sorted(by_label):
+            cases = by_label[tag]
             print(f"  {tag}: {len(cases)} 案例失敗")
             for r in cases:
                 short = r["response"][:55].replace("\n", " ")
                 print(f"    [{r['case'].description}] → {short}")
-                for i in r["b_issues"]:
-                    print(f"      [B] {i}")
+                for i in r["d_issues"]:
+                    print(f"      [D] {i}")
                 for i in r["f_issues"]:
                     print(f"      [F] {i}")
 

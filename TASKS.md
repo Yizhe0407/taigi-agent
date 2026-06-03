@@ -52,7 +52,7 @@
 
 ## 已完成基礎
 
-- Agent harness：`AgentSession`、LLM client、tool dispatcher、prompt grounding、context compact、tool round limit、telemetry。
+- Agent harness：`AgentSession`、`IntentRouter`（Python regex 意圖分類）、`ConvState`（顯式對話狀態）、LLM client、tool dispatcher、prompt grounding、context cap（MAX_EXCHANGES=5）、tool round limit、telemetry。
 - ebus 工具：本站到站狀態、停靠路線、路線站序、stop-scoped route lookup、站名縮寫。
 - 離站決策：資料模型、決策分類、`/api/departures/here`、route detail API、首頁 dashboard。
 - 前端基礎：Vue、Tailwind、shadcn-vue、Lucide、Kiosk shell、PIP overlay、route planner full-page flow。

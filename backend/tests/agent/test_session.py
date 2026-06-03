@@ -2,9 +2,9 @@ import asyncio
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from agent.context import ContextStore
 from agent.error import summarize_error
-from agent.session import AgentSession
+from agent.router import Intent
+from agent.session import AgentSession, _phrase_tool_result
 
 
 def assistant_message(content="", tool_calls=None):
@@ -213,87 +213,6 @@ def test_summarize_error_collapses_cloudflare_tunnel_html():
     )
 
 
-def test_session_retries_when_tool_call_violates_injected_rule():
-    async def enricher(_):
-        return "\n[規則1：使用者只輸入路線號碼，禁止呼叫任何工具]"
-
-    executed = []
-
-    async def fake_tool():
-        executed.append(True)
-        return "不該被執行"
-
-    session = make_session(
-        [
-            llm_response(assistant_message(tool_calls=[tool_call("bus", "{}", "t1")])),
-            llm_response(assistant_message("請問您想查什麼資訊？")),
-        ],
-        input_enricher=enricher,
-        tool_handlers={"bus": fake_tool},
-    )
-
-    # Off-topic "你好" falls through to UNKNOWN → LLM path, exercising the
-    # enricher → forbidden-tool retry under test.
-    result = asyncio.run(session.respond("你好"))
-
-    assert result == "請問您想查什麼資訊？"
-    assert executed == []  # tool never ran
-    tool_msgs = [m for m in session.messages if m["role"] == "tool"]
-    assert len(tool_msgs) == 1
-    assert tool_msgs[0]["tool_call_id"] == "t1"
-    assert "禁止呼叫" in tool_msgs[0]["content"]
-
-
-def test_session_rule_retry_falls_through_after_max_retries():
-    async def enricher(_):
-        return "\n禁止呼叫任何工具"
-
-    executed = []
-
-    async def fake_tool():
-        executed.append(True)
-        return "執行了"
-
-    session = make_session(
-        [
-            llm_response(assistant_message(tool_calls=[tool_call("bus", "{}", "t1")])),
-            llm_response(assistant_message(tool_calls=[tool_call("bus", "{}", "t2")])),
-            llm_response(assistant_message(tool_calls=[tool_call("bus", "{}", "t3")])),
-            llm_response(assistant_message("最終回答")),
-        ],
-        input_enricher=enricher,
-        tool_handlers={"bus": fake_tool},
-    )
-
-    # Off-topic "你好" falls through to UNKNOWN → LLM path, exercising the
-    # enricher → forbidden-tool retry path under test.
-    result = asyncio.run(session.respond("你好"))
-
-    assert result == "最終回答"
-    assert executed == [True]  # exactly one real tool execution after retries exhausted
-
-
-def test_session_compacts_old_history_with_transcript_and_summary(tmp_path):
-    session = make_session(
-        [
-            llm_response(assistant_message("- 舊問題摘要")),
-            llm_response(assistant_message("新回答")),
-        ],
-        context_store=ContextStore(tmp_path),
-        max_history_tokens=120,
-    )
-    session.messages = [
-        {"role": "user", "content": "舊問題 " * 200},
-        {"role": "assistant", "content": "舊回答"},
-    ]
-
-    assert asyncio.run(session.respond("新問題")) == "新回答"
-    assert session.client.chat.completions.calls[0]["tools"] is None
-    assert session.messages[0]["content"].startswith("[先前對話已壓縮]")
-    transcripts = list((tmp_path / "transcripts").glob("*.jsonl"))
-    assert len(transcripts) == 1
-    assert "舊問題" in transcripts[0].read_text(encoding="utf-8")
-
 
 # ── Router integration ───────────────────────────────────────────────────────
 
@@ -410,3 +329,62 @@ def test_session_other_routes_followup_uses_state_destination():
 
     assert calls == ["虎尾科大"]
     assert reply == "本站沒有直達虎尾科大的路線"
+
+
+# ── _phrase_tool_result unit tests ───────────────────────────────────────────
+
+
+def test_phrase_find_routes_single_with_direction():
+    """Single route+direction → natural split, no destination repetition."""
+    result = _phrase_tool_result(
+        Intent.FIND_ROUTES_TO_DEST,
+        "7120 往高鐵雲林站",
+        {"destination": "虎尾科大"},
+    )
+    assert result == "搭7120就可以，往高鐵雲林站那班。"
+
+
+def test_phrase_find_routes_single_no_direction():
+    """Single route, all directions serve dest → include destination in reply."""
+    result = _phrase_tool_result(
+        Intent.FIND_ROUTES_TO_DEST,
+        "7120",
+        {"destination": "虎尾科大"},
+    )
+    assert result == "搭7120就可以到虎尾科大。"
+
+
+def test_phrase_find_routes_multiple():
+    """Multiple routes → keep direction labels, prefix with destination."""
+    result = _phrase_tool_result(
+        Intent.FIND_ROUTES_TO_DEST,
+        "7120 往高鐵雲林站、7001 往斗六",
+        {"destination": "虎尾科大"},
+    )
+    assert result == "去虎尾科大可以搭7120 往高鐵雲林站、7001 往斗六。"
+
+
+def test_phrase_find_routes_passthrough_on_error():
+    for error_result in ("雲林公車查詢失敗：…", "找不到路線", "本站沒有直達虎尾科大的路線"):
+        assert _phrase_tool_result(
+            Intent.FIND_ROUTES_TO_DEST, error_result, {"destination": "虎尾科大"}
+        ) == error_result
+
+
+def test_phrase_other_routes_strips_direction():
+    """OTHER_ROUTES_FOLLOWUP strips direction labels — already in context."""
+    result = _phrase_tool_result(
+        Intent.OTHER_ROUTES_FOLLOWUP,
+        "7120 往高鐵雲林站",
+        {"destination": "虎尾科大"},
+    )
+    assert result == "就只有7120，沒有其他路線了。"
+
+
+def test_phrase_other_routes_multiple_strips_directions():
+    result = _phrase_tool_result(
+        Intent.OTHER_ROUTES_FOLLOWUP,
+        "7120 往高鐵雲林站、7001 往斗六",
+        {"destination": "虎尾科大"},
+    )
+    assert result == "就只有7120、7001，沒有其他路線了。"

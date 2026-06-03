@@ -210,16 +210,37 @@ def test_arrival_time_fires_with_explicit_route_number(
 @pytest.mark.parametrize(
     "user_input",
     [
-        "幾點有車",        # no route number → still UNKNOWN
-        "幾點來",          # no route number
-        "下一班幾點來",    # no route number
+        "幾點有車",        # no route in text, no last_route → UNKNOWN
+        "幾點來",
+        "下一班幾點來",
     ],
 )
-def test_arrival_time_does_not_fire_without_route_number(
+def test_arrival_time_does_not_fire_without_route_number_or_state(
     router: IntentRouter, empty_state: ConvState, user_input: str
 ):
     decision = router.classify(user_input, empty_state)
     assert decision.intent != Intent.ARRIVAL_TIME
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "幾點有車",
+        "幾點來",
+        "下一班幾點來",
+        "還有多久",
+    ],
+)
+def test_arrival_time_uses_last_route_from_state(
+    router: IntentRouter, user_input: str
+):
+    """Arrival question without explicit route → reuse state.last_route."""
+    state = ConvState(last_route="7120", last_intent=Intent.FIND_ROUTES_TO_DEST)
+    decision = router.classify(user_input, state)
+    assert decision.intent == Intent.ARRIVAL_TIME
+    assert decision.tool_call == ("get_arrivals_here", {"route": "7120"})
+    assert decision.next_state is not None
+    assert decision.next_state.last_route == "7120"
 
 
 # ── Rule 4: FIND_ROUTES_TO_DEST ──────────────────────────────────────────────
@@ -235,6 +256,8 @@ def test_arrival_time_does_not_fire_without_route_number(
         ("怎麼去斗六", "斗六"),
         ("到斗六怎麼搭", "斗六"),
         ("去北港廟有公車嗎", "北港廟"),
+        ("去虎尾的車怎麼搭", "虎尾"),         # greedy would capture "虎尾的車"
+        ("到高鐵站要搭什麼車", "高鐵站"),     # greedy would capture "高鐵站要"
     ],
 )
 def test_find_routes_fires_for_local_destination(
@@ -277,6 +300,9 @@ def test_find_routes_does_not_fire_for_remote_city(
         "有沒有其他路線",
         "還有其他公車嗎",
         "還有別的路線嗎",
+        "還有哪台車可以搭",   # no 其他/別的, but clearly asks to enumerate routes
+        "還有哪班車",
+        "還有哪路公車",
     ],
 )
 def test_other_routes_followup_fires_with_last_destination(
