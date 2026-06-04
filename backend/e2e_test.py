@@ -23,7 +23,7 @@ TURNS = [
     ("我要去台中", "Rule 2: 遠程城市 → 地圖提示"),
     ("201路完整時刻表", "Rule 3: 時刻表 → 不支援"),
     # ── Tool call path ──────────────────────────────────────────────────
-    ("我想去虎尾科大怎麼搭", "Rule 4: 查路線 → find_routes_to_destination"),
+    ("我想去虎尾科大怎麼搭", "Rule 4: 查路線 → get_arrivals_to_destination"),
     ("還有其他路線嗎", "Rule 4 follow-up: 用 last_destination 再查"),
     ("7120幾分鐘後到", "Rule 7: 查到站 → get_arrivals_here"),
     ("還有車嗎", "Rule 6: 全站狀態 → get_stop_arrival_statuses_here"),

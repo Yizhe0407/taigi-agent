@@ -43,8 +43,8 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "find_routes_to_destination",
-            "description": "查詢本站有哪些路線能到達指定目的地。",
+            "name": "get_arrivals_to_destination",
+            "description": "查詢本站哪些路線能到達目的地，並列出各路線下一班到站時間，依到站時間排序。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -68,7 +68,7 @@ SYSTEM = build_system_prompt()
 
 CASES = [
     ("基本問候（不需工具）", "你好"),
-    ("查路線（應呼叫 find_routes_to_destination）", "我想去虎尾科大怎麼搭"),
+    ("查路線（應呼叫 get_arrivals_to_destination）", "我想去虎尾科大怎麼搭"),
     ("查到站（應呼叫 get_arrivals_here）", "201幾分鐘後到"),
     ("末班查詢（應呼叫 get_stop_arrival_statuses_here）", "還有車嗎"),
     ("無關查詢（不需工具）", "明天天氣怎樣"),

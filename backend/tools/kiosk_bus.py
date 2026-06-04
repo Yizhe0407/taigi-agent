@@ -27,11 +27,6 @@ async def check_stop_on_route(route: str, stop_name: str) -> str:
     return await departures.render_stop_on_route(route, stop_name, _kiosk_stop())
 
 
-async def find_routes_to_destination(destination: str) -> str:
-    """查詢本站哪些路線能到達目的地（Python 平行查全部路線）。"""
-    return await departures.render_routes_to_destination(destination, _kiosk_stop())
-
-
 async def get_routes_at_stop(stop_name: str) -> str:
     """查詢指定站牌停靠路線。"""
     return await departures.render_routes_at_stop(stop_name)
