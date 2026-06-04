@@ -199,6 +199,18 @@ class DepartureRouteDetail:
 # ── classification ────────────────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class StopClassification:
+    section: DepartureSection
+    decision: DepartureDecision
+    status_text: str
+    decision_text: str
+    minutes: int | None
+    scheduled_time: str | None
+    sort_priority: int
+    sort_minutes: int
+
+
 def _scheduled_minutes_from_now(scheduled_time: str, now: datetime) -> int:
     """Convert a HH:MM scheduled time to minutes from *now*, handling midnight wrap.
 
@@ -227,23 +239,8 @@ def _as_int(value: object) -> int | None:
     return None
 
 
-def _classify_stop(
-    stop: dict,
-    now: datetime,
-) -> tuple[
-    DepartureSection,
-    DepartureDecision,
-    str,
-    str,
-    int | None,
-    str | None,
-    int,
-    int,
-]:
+def _classify_stop(stop: dict, now: datetime) -> StopClassification:
     """Classify a bus ETA row into a user-facing departure decision.
-
-    Returns (section, decision, status_text, decision_text, minutes,
-             scheduled_time, sort_priority, sort_minutes).
 
     ``minutes`` is the real-time ETA shown to the user (None when unavailable).
     ``sort_minutes`` is always an int (minutes-from-now) used only for sorting;
@@ -255,96 +252,48 @@ def _classify_stop(
     scheduled_time = str(stop.get("ComeTime") or "").strip() or None
 
     if raw_value is not None and value is None:
-        return (
-            DepartureSection.UNKNOWN,
-            DepartureDecision.UNKNOWN,
-            "狀態不明",
-            "資料異常",
-            None,
-            scheduled_time,
-            400,
-            9999,
+        return StopClassification(
+            DepartureSection.UNKNOWN, DepartureDecision.UNKNOWN,
+            "狀態不明", "資料異常", None, scheduled_time, 400, 9999,
         )
 
     if value == -3:
-        return (
-            DepartureSection.LAST_DEPARTED,
-            DepartureDecision.LAST_DEPARTED,
-            "末班駛離",
-            "末班已過",
-            None,
-            scheduled_time,
-            300,
-            9999,
+        return StopClassification(
+            DepartureSection.LAST_DEPARTED, DepartureDecision.LAST_DEPARTED,
+            "末班駛離", "末班已過", None, scheduled_time, 300, 9999,
         )
 
     if value is not None:
         if value < 0:
-            return (
-                DepartureSection.UNKNOWN,
-                DepartureDecision.UNKNOWN,
-                "狀態不明",
-                "資料異常",
-                None,
-                scheduled_time,
-                400,
-                9999,
+            return StopClassification(
+                DepartureSection.UNKNOWN, DepartureDecision.UNKNOWN,
+                "狀態不明", "資料異常", None, scheduled_time, 400, 9999,
             )
         if value <= 3:
-            return (
-                DepartureSection.AVAILABLE,
-                DepartureDecision.ARRIVING_SOON,
-                "即將到站",
-                "即將到站",
-                max(0, value),
-                scheduled_time,
-                0,
-                max(0, value),
+            return StopClassification(
+                DepartureSection.AVAILABLE, DepartureDecision.ARRIVING_SOON,
+                "即將到站", "即將到站", max(0, value), scheduled_time, 0, max(0, value),
             )
         if value <= 20:
-            return (
-                DepartureSection.AVAILABLE,
-                DepartureDecision.CAN_WAIT,
-                f"約{_mins_zh(value)}分鐘後",
-                "可以等",
-                value,
-                scheduled_time,
-                10,
-                value,
+            return StopClassification(
+                DepartureSection.AVAILABLE, DepartureDecision.CAN_WAIT,
+                f"約{_mins_zh(value)}分鐘後", "可以等", value, scheduled_time, 10, value,
             )
-        return (
-            DepartureSection.AVAILABLE,
-            DepartureDecision.LONG_WAIT,
-            f"約{_mins_zh(value)}分鐘後",
-            "等待較久",
-            value,
-            scheduled_time,
-            20,
-            value,
+        return StopClassification(
+            DepartureSection.AVAILABLE, DepartureDecision.LONG_WAIT,
+            f"約{_mins_zh(value)}分鐘後", "等待較久", value, scheduled_time, 20, value,
         )
 
     if scheduled_time:
-        sort_minutes = _scheduled_minutes_from_now(scheduled_time, now)
-        return (
-            DepartureSection.AVAILABLE,
-            DepartureDecision.SCHEDULED,
-            f"{_fmt_time_12h(scheduled_time)}發車",
-            "尚未發車",
-            None,
-            scheduled_time,
-            30,
-            sort_minutes,
+        return StopClassification(
+            DepartureSection.AVAILABLE, DepartureDecision.SCHEDULED,
+            f"{_fmt_time_12h(scheduled_time)}發車", "尚未發車", None, scheduled_time,
+            30, _scheduled_minutes_from_now(scheduled_time, now),
         )
 
-    return (
-        DepartureSection.NOT_DEPARTED,
-        DepartureDecision.NOT_DEPARTED,
-        "未發車",
-        "尚未發車",
-        None,
-        None,
-        200,
-        9999,
+    return StopClassification(
+        DepartureSection.NOT_DEPARTED, DepartureDecision.NOT_DEPARTED,
+        "未發車", "尚未發車", None, None, 200, 9999,
     )
 
 
@@ -412,16 +361,14 @@ def _stop_detail_from_row(stop: dict, kiosk_stop_name: str) -> RouteStopDetail |
     if seq is None or not name:
         return None
 
-    _, _, status_text, _, minutes, scheduled_time, _, _ = _classify_stop(
-        stop, datetime.now(TAIPEI_TZ)
-    )
+    c = _classify_stop(stop, datetime.now(TAIPEI_TZ))
     return RouteStopDetail(
         seq=seq,
         name=name,
         is_current_stop=kiosk_stop_name in name,
-        status_text=status_text,
-        minutes=minutes,
-        scheduled_time=scheduled_time,
+        status_text=c.status_text,
+        minutes=c.minutes,
+        scheduled_time=c.scheduled_time,
     )
 
 
@@ -471,18 +418,9 @@ async def build_departure_snapshot(
             if _is_terminal_direction(stop_name, route_info, route, stop_go_back):
                 continue
 
-        (
-            section,
-            decision,
-            status_text,
-            decision_text,
-            minutes,
-            scheduled_time,
-            priority,
-            sort_minutes,
-        ) = _classify_stop(stop, now)
+        c = _classify_stop(stop, now)
         direction = _direction_label_from_info(route_info, route, stop_go_back)
-        dedupe_key = (route, stop_go_back, status_text)
+        dedupe_key = (route, stop_go_back, c.status_text)
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
@@ -494,14 +432,14 @@ async def build_departure_snapshot(
                 route_id=route_id,
                 direction=direction,
                 go_back=stop_go_back,
-                section=section,
-                decision=decision,
-                status_text=status_text,
-                decision_text=decision_text,
-                minutes=minutes,
-                scheduled_time=scheduled_time,
-                sort_priority=priority,
-                sort_minutes=sort_minutes,
+                section=c.section,
+                decision=c.decision,
+                status_text=c.status_text,
+                decision_text=c.decision_text,
+                minutes=c.minutes,
+                scheduled_time=c.scheduled_time,
+                sort_priority=c.sort_priority,
+                sort_minutes=c.sort_minutes,
             )
         )
 
@@ -621,7 +559,7 @@ async def render_arrivals(
     results = []
     for stop in matches:
         stop_go_back = stop.get("GoBack", 1)
-        _, _, status_text, _, _, _, _, _ = _classify_stop(stop, now)
+        status_text = _classify_stop(stop, now).status_text
         if status_text.endswith("後"):
             status_text = status_text + "來車"
         # Single-direction query: direction is already implied by kiosk config;
@@ -677,15 +615,15 @@ async def render_stop_arrival_statuses(
             if _is_terminal_direction(stop_name, route_info, route, stop_go_back):
                 continue
 
-        section, _, status_text, _, _, _, _, _ = _classify_stop(stop, now)
+        c = _classify_stop(stop, now)
         # UNKNOWN rows are skipped — the agent's kiosk-style output only
         # surfaces the three actionable groups (matches the legacy renderer).
-        group = _SECTION_GROUP_LABEL.get(section)
+        group = _SECTION_GROUP_LABEL.get(c.section)
         if group is None:
             continue
 
         label = _direction_label_from_info(route_info, route, stop_go_back)
-        line = f"{route} {label}：{status_text}"
+        line = f"{route} {label}：{c.status_text}"
         if line in seen:
             continue
         seen.add(line)
@@ -910,13 +848,13 @@ async def render_arrivals_to_destination(
                 and row.get("GoBack", 1) == gb
             ]
             if kiosk_rows:
-                classified = _classify_stop(kiosk_rows[0], now)
-                status_text, sort_minutes = classified[2], classified[7]
+                c = _classify_stop(kiosk_rows[0], now)
+                status_text = c.status_text
                 # Append "來車" to relative-time texts so LLM knows this is the bus
                 # arriving at the kiosk, not the travel time to the destination.
                 if status_text.endswith("後"):
                     status_text = status_text + "來車"
-                hits.append((f"{route_name} {direction}：{status_text}", sort_minutes))
+                hits.append((f"{route_name} {direction}：{status_text}", c.sort_minutes))
             else:
                 hits.append((f"{route_name} {direction}：無即時資料", 9999))
 

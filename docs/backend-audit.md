@@ -40,7 +40,7 @@
   - [ ] 拆 `services/departures/normalize.py` (~80 行)：`_strip_paren`、`_name_matches`、`_normalize_route_key`、`_lookup_route`、`_stop_similarity`、`_fuzzy_candidates`、`_downstream_names`、`_stops_by_direction_with_seq`、`_direction_label_from_info`、`_is_terminal_direction`、`_mins_zh`、`_fmt_time_12h`
   - [ ] 拆 `services/departures/provider.py` (~30 行)：`get_provider`、`set_provider`、`provider_override`
 
-- [ ] **`_classify_stop` 回 8-tuple anti-pattern** (`departures.py:230-348`)
+- [x] **`_classify_stop` 回 8-tuple anti-pattern** (`departures.py:230-348`)
   - 19 處 `_, _, status_text, _, _, _, _, _ = _classify_stop(stop, now)` 散布全檔，改動即斷
   - 修：return `@dataclass(frozen=True) StopClassification(section, decision, status_text, decision_text, minutes, scheduled_time, sort_priority, sort_minutes)`
 
@@ -141,7 +141,7 @@
 ## 優先 Quick Wins（由高到低）
 
 - [x] **#1 刪 dead code** (`tools/kiosk_bus.py:30-32`, `departures.py:854-915`)：`find_routes_to_destination` + `render_routes_to_destination` + inner `_check`，-65 行，無 prod caller
-- [ ] **#2 `_classify_stop` 改 dataclass return**：一次 refactor 解 19 處 8-tuple unpack，全在 `departures.py`
+- [x] **#2 `_classify_stop` 改 dataclass return**：一次 refactor 解 19 處 8-tuple unpack，全在 `departures.py`
 - [ ] **#3 Cache AsyncOpenAI + Settings**：per-request rebuild → process singleton（`api/chat.py`、`api/tts.py`、`config.py`）
 - [ ] **#4 `fetch_route_estimate` 10s TTL cache**：解 destination query 30× HTTP fan-out（`yunlin_ebus.py`）
 - [ ] **#5 拆 `services/departures.py`**：1039 → 4-5 個 200-400 行檔案
