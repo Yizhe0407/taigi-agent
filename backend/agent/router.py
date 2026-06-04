@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from pipeline.normalize import to_halfwidth
 from tools.intent_rules import TIMETABLE_CANNED_RESPONSE, TIMETABLE_RE
 
 
@@ -68,16 +69,6 @@ _REMOTE_CITIES = (
 )
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
-
-
-def _to_halfwidth(s: str) -> str:
-    """Convert full-width ASCII to half-width so regex matches consistently."""
-    return "".join(
-        chr(ord(c) - 0xFEE0) if 0xFF01 <= ord(c) <= 0xFF5E else c
-        for c in s
-    )
-
 
 def _is_remote_destination(text: str) -> bool:
     """True when input names a remote city or asks about 轉乘.
@@ -97,7 +88,7 @@ class IntentRouter:
     """Deterministic classifier: user_input + ConvState -> Decision."""
 
     def classify(self, user_input: str, state: ConvState) -> Decision:
-        text = _to_halfwidth(user_input).strip()
+        text = to_halfwidth(user_input).strip()
         if not text:
             return Decision(intent=Intent.UNKNOWN, fallback_to_llm=True)
 

@@ -3,11 +3,12 @@ from __future__ import annotations
 import re
 from zoneinfo import ZoneInfo
 
+from pipeline.normalize import to_halfwidth
+
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 _PAREN_RE = re.compile(r"\s*[（(][^）)]{0,40}[）)]\s*")
 _ONES_ZH = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"]
-_FULLWIDTH_RE = re.compile(r"[！-～]")
 _STOP_SUFFIX = frozenset("站路街號市區鄉鎮村里")
 
 
@@ -39,8 +40,7 @@ def _fmt_time_12h(hhmm: str) -> str:
 
 def _normalize_route_key(s: str) -> str:
     """Halfwidth + strip trailing 路 + uppercase for loose route lookup."""
-    s = _FULLWIDTH_RE.sub(lambda m: chr(ord(m.group()) - 0xFEE0), s)
-    return s.rstrip("路").upper()
+    return to_halfwidth(s).rstrip("路").upper()
 
 
 def _lookup_route(route_info: dict, route: str) -> dict | None:

@@ -11,7 +11,7 @@
   - CLAUDE.md 明文：session 只做 messages/LLM/dispatch/context recovery；LLM output post-processing 屬 pipeline
   - 修：搬 normalize 到 `pipeline/llm_output.py`，session 改吐 raw str
 
-- [ ] **P1 — 文字 normalize 散三處**
+- [x] **P1 — 文字 normalize 散三處**
   - `router._to_halfwidth` (`router.py:83-88`) fullwidth → halfwidth
   - `departures._normalize_route_key` + `_FULLWIDTH_RE` (`departures.py:33, 36-39`) 同 transform 再實作一次
   - `session._S2TWP` (`session.py:21`) s2twp
@@ -146,6 +146,6 @@
 - [x] **#5 拆 `services/departures.py`**：1039 → 5 個 40-340 行檔案 + `__init__.py` re-export
 - [x] **#6 `telemetry.py` 砍 noop + endpoint gate**：-30 行（`telemetry.py:39-41, 50-51, 100-112`）
 - [x] **#7 `_TIMETABLE_RE` 搬出 router**：router 回 generic（`router.py:71-76`）
-- [ ] **#8 集中 normalize**：`_to_halfwidth`、`_FULLWIDTH_RE`、`_S2TWP`、`_THINK_RE` 合入 `pipeline/normalize.py`
+- [x] **#8 集中 normalize**：`_to_halfwidth`、`_FULLWIDTH_RE`、`_S2TWP`、`_THINK_RE` 合入 `pipeline/normalize.py`
 - [ ] **#9 `compact_long_tool_results` 改 shallow copy**：每 turn 省 deepcopy 全 history（`context.py:89`）
 - [ ] **#10 tiktoken token count cache**：解 long-session O(N²)（`context.py:48`）

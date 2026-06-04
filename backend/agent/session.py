@@ -9,16 +9,8 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
-
-import opencc
-
-# Strip <think>…</think> blocks that reasoning models may include in content.
-_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
-# Convert any simplified Chinese that leaks from model reasoning to traditional.
-_S2TWP = opencc.OpenCC("s2twp")
 
 from agent.context import (
     LONG_TOOL_RESULT_CHARS,
@@ -37,6 +29,7 @@ from agent.tool_dispatch import (
     execute_tool_calls,
     function_tool_calls,
 )
+from pipeline.normalize import normalize_llm_output
 
 InputEnricher = Callable[[str], Awaitable[str]]
 
@@ -231,8 +224,7 @@ class AgentSession:
                 self.messages.append(assistant_message(message, tool_calls))
                 if not tool_calls:
                     self.messages = trim_history(self.messages, self.max_history_tokens)
-                    text = _THINK_RE.sub("", message.content or "").strip()
-                    return _S2TWP.convert(text)
+                    return normalize_llm_output(message.content or "")
 
                 tool_rounds += 1
                 tool_results = await execute_tool_calls(
@@ -246,4 +238,4 @@ class AgentSession:
                 direct = _find_direct_response(tool_calls, tool_results)
                 if direct is not None:
                     self.messages = trim_history(self.messages, self.max_history_tokens)
-                    return _S2TWP.convert(direct)
+                    return normalize_llm_output(direct)
