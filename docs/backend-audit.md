@@ -17,7 +17,7 @@
   - `session._S2TWP` (`session.py:21`) s2twp
   - 修：集中 `pipeline/normalize.py`，entry 跑一次
 
-- [ ] **P2 — `_TIMETABLE_RE` 污染 router** (`router.py:71-76`)
+- [x] **P2 — `_TIMETABLE_RE` 污染 router** (`router.py:71-76`)
   - bus-specific 措辭 hard-code 進 generic router，違反「router 應 generic」精神
   - 修：交回 LLM tools/prompt 處理，或抽 `tools/intent_rules.py`
 
@@ -145,7 +145,7 @@
 - [x] **#4 `fetch_route_estimate` 10s TTL cache**：解 destination query 30× HTTP fan-out（`yunlin_ebus.py`）
 - [x] **#5 拆 `services/departures.py`**：1039 → 5 個 40-340 行檔案 + `__init__.py` re-export
 - [x] **#6 `telemetry.py` 砍 noop + endpoint gate**：-30 行（`telemetry.py:39-41, 50-51, 100-112`）
-- [ ] **#7 `_TIMETABLE_RE` 搬出 router**：router 回 generic（`router.py:71-76`）
+- [x] **#7 `_TIMETABLE_RE` 搬出 router**：router 回 generic（`router.py:71-76`）
 - [ ] **#8 集中 normalize**：`_to_halfwidth`、`_FULLWIDTH_RE`、`_S2TWP`、`_THINK_RE` 合入 `pipeline/normalize.py`
 - [ ] **#9 `compact_long_tool_results` 改 shallow copy**：每 turn 省 deepcopy 全 history（`context.py:89`）
 - [ ] **#10 tiktoken token count cache**：解 long-session O(N²)（`context.py:48`）

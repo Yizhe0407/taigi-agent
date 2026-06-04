@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from tools.intent_rules import TIMETABLE_CANNED_RESPONSE, TIMETABLE_RE
+
 
 class Intent(Enum):
     """Each enum value names a kiosk-bus decision-rule outcome."""
@@ -64,17 +66,6 @@ _REMOTE_CITIES = (
     "台北", "臺北", "台中", "臺中", "高雄", "嘉義", "彰化", "南投",
     "新北", "桃園", "新竹", "宜蘭", "花蓮", "台東", "臺東", "屏東",
 )
-
-# Timetable / inter-stop travel-time queries the kiosk doesn't support.
-# Carefully avoids matching real-time arrival phrasings like
-# 「幾點有車」「幾點來」「下一班幾點」which belong to ARRIVAL_TIME.
-_TIMETABLE_RE = re.compile(
-    r"(完整時刻表|全天時刻表|時刻表|班次表"
-    r"|幾點幾分發車|發車時刻"
-    r"|站間.{0,10}幾分鐘"
-    r"|從.{1,20}到.{1,20}(要|大概|大約)?.{0,5}幾分鐘?)"
-)
-
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -142,10 +133,10 @@ class IntentRouter:
             )
 
         # Rule 3: timetable / inter-stop ETA → unsupported, offer alternative.
-        if _TIMETABLE_RE.search(text):
+        if TIMETABLE_RE.search(text):
             return Decision(
                 intent=Intent.TIMETABLE_UNSUPPORTED,
-                canned_response="時刻表查不了，要查到站時間嗎？",
+                canned_response=TIMETABLE_CANNED_RESPONSE,
                 next_state=ConvState(
                     last_route=state.last_route,
                     last_destination=state.last_destination,
