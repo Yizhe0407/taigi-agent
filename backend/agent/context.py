@@ -1,5 +1,4 @@
 import json
-from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -86,8 +85,8 @@ def compact_long_tool_results(
     preview_chars: int = TOOL_RESULT_PREVIEW_CHARS,
 ) -> list[dict]:
     """長 tool result 落盤，history 只留路徑與預覽。"""
-    compacted = deepcopy(messages)
-    for msg in compacted:
+    compacted = list(messages)
+    for i, msg in enumerate(compacted):
         if msg.get("role") != "tool":
             continue
 
@@ -99,6 +98,8 @@ def compact_long_tool_results(
         ):
             continue
 
+        msg = dict(msg)
+        compacted[i] = msg
         path = store.save_tool_result(str(msg.get("tool_call_id", "tool")), content)
         preview = content[:preview_chars]
         suffix = "\n..." if len(content) > preview_chars else ""

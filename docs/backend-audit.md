@@ -102,7 +102,7 @@
   - 每 request 重 parse 所有 env vars + cors split
   - 修：`@lru_cache` 或 module-level singleton
 
-- [ ] **`compact_long_tool_results` 每 turn deepcopy 全 history** (`context.py:89`)
+- [x] **`compact_long_tool_results` 每 turn deepcopy 全 history** (`context.py:89`)
   - 每 LLM round 走 `_prepare_context` → `deepcopy(messages)`；長 tool result 很貴
   - 修：shallow copy list，只 deep copy 需 rewrite 的 dict
 
@@ -147,5 +147,5 @@
 - [x] **#6 `telemetry.py` 砍 noop + endpoint gate**：-30 行（`telemetry.py:39-41, 50-51, 100-112`）
 - [x] **#7 `_TIMETABLE_RE` 搬出 router**：router 回 generic（`router.py:71-76`）
 - [x] **#8 集中 normalize**：`_to_halfwidth`、`_FULLWIDTH_RE`、`_S2TWP`、`_THINK_RE` 合入 `pipeline/normalize.py`
-- [ ] **#9 `compact_long_tool_results` 改 shallow copy**：每 turn 省 deepcopy 全 history（`context.py:89`）
+- [x] **#9 `compact_long_tool_results` 改 shallow copy**：每 turn 省 deepcopy 全 history（`context.py:89`）
 - [ ] **#10 tiktoken token count cache**：解 long-session O(N²)（`context.py:48`）
