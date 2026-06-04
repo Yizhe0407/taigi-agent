@@ -362,6 +362,27 @@ def _sort_key(route: DepartureRouteStatus) -> tuple[int, int, str, int]:
     return (route.sort_priority, route.sort_minutes, route.route, route.go_back)
 
 
+def _is_terminal_direction(
+    stop_name: str,
+    route_info: dict[str, dict],
+    route: str,
+    go_back: int,
+) -> bool:
+    """True when this stop is the non-circular terminus for this direction.
+
+    Circular routes (go_dest == back_dest == stop) always return False so
+    they are shown — the bus departs from here even though it also returns here.
+    """
+    info = route_info.get(route, {})
+    go_dest = info.get("go_dest", "")
+    back_dest = info.get("back_dest", "")
+    is_circular = _name_matches(stop_name, go_dest) and _name_matches(stop_name, back_dest)
+    if is_circular:
+        return False
+    terminus = go_dest if go_back == 1 else back_dest
+    return _name_matches(stop_name, terminus)
+
+
 def _direction_label_from_info(
     route_info: dict[str, dict],
     route: str,
@@ -421,8 +442,6 @@ async def build_departure_snapshot(
 
     for stop in eta_data:
         stop_go_back = _as_int(stop.get("GoBack")) or 1
-        if go_back is not None and stop_go_back != go_back:
-            continue
 
         route_id = _as_int(stop.get("xno"))
         if route_id is None:
@@ -431,6 +450,16 @@ async def build_departure_snapshot(
         route = route_by_id.get(route_id)
         if route is None:
             continue
+
+        if go_back is not None:
+            # Admin set an explicit direction — honour it without auto-detect.
+            if stop_go_back != go_back:
+                continue
+        else:
+            # Auto-detect: skip directions where this stop is the non-circular
+            # terminus (bus is arriving/terminating here, not departing).
+            if _is_terminal_direction(stop_name, route_info, route, stop_go_back):
+                continue
 
         (
             section,
@@ -619,8 +648,6 @@ async def render_stop_arrival_statuses(
 
     for stop in eta_data:
         stop_go_back = stop.get("GoBack", 1)
-        if go_back is not None and stop_go_back != go_back:
-            continue
 
         try:
             route_id = int(stop["xno"])
@@ -630,6 +657,13 @@ async def render_stop_arrival_statuses(
         route = route_by_id.get(route_id)
         if route is None:
             continue
+
+        if go_back is not None:
+            if stop_go_back != go_back:
+                continue
+        else:
+            if _is_terminal_direction(stop_name, route_info, route, stop_go_back):
+                continue
 
         section, _, status_text, _, _, _, _, _ = _classify_stop(stop, now)
         # UNKNOWN rows are skipped — the agent's kiosk-style output only
@@ -776,11 +810,13 @@ async def render_stop_on_route(
 async def render_routes_to_destination(
     destination: str,
     kiosk_stop: str,
+    go_back: int | None = None,
 ) -> str:
     """Find all routes at kiosk_stop that pass through destination.
 
     Queries all routes in parallel; matching is substring-based. Returns at
     most two matching route+direction strings so LLM output stays concise.
+    go_back=1 or 2 restricts to that direction only; None checks all directions.
     """
     provider = get_provider()
     try:
@@ -798,11 +834,16 @@ async def render_routes_to_destination(
             return []
         hits: list[tuple[str, str]] = []
         for gb, stops in _stops_by_direction_with_seq(data).items():
+            if go_back is not None and gb != go_back:
+                continue
             downstream = _downstream_names(stops, kiosk_stop)
             if downstream is None:
                 continue
             if any(_name_matches(destination, n) for n in downstream):
                 label = _direction_label_from_info(route_info, route_name, gb)
+                # Circular route: terminus is the kiosk itself — direction label misleads.
+                if _name_matches(kiosk_stop, label.removeprefix("往")):
+                    label = "（循環）"
                 hits.append((route_name, label))
         return hits
 
@@ -816,13 +857,18 @@ async def render_routes_to_destination(
     for route_name, label in raw_hits:
         by_route.setdefault(route_name, []).append(label)
     all_hits = [
-        route_name if len(labels) > 1 else f"{route_name} {labels[0]}"
+        route_name if len(labels) > 1
+        else f"{route_name}{labels[0]}" if labels[0].startswith("（")
+        else f"{route_name} {labels[0]}"
         for route_name, labels in by_route.items()
     ]
 
     if not all_hits:
         return f"本站沒有直達{destination}的路線"
-    return "、".join(all_hits[:2])
+    hits = all_hits[:2]
+    if len(hits) == 1:
+        return f"搭 {hits[0]}"
+    return f"搭 {hits[0]}，或 {hits[1]}"
 
 
 async def render_routes_at_stop(stop_name: str) -> str:

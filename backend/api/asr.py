@@ -99,7 +99,7 @@ async def transcribe_audio(request: Request, file: UploadFile) -> object:
         ) from error
     except httpx.RequestError as error:
         raise HTTPException(
-            status_code=503, detail=f"無法連線到語音辨識服務：{error}"
+            status_code=503, detail="無法連線到語音辨識服務，請稍後再試"
         ) from error
 
     if response.status_code != 200:

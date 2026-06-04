@@ -516,8 +516,8 @@ def test_render_routes_to_destination_collapses_when_both_downstream(use_provide
     result = asyncio.run(
         departures.render_routes_to_destination("虎尾科大", "雲林科技大學")
     )
-    # Both directions reach 虎尾科大 → collapse to bare route number
-    assert result == "7120"
+    # Both directions reach 虎尾科大 → collapse to bare route number with 搭 prefix
+    assert result == "搭 7120"
 
 
 def test_render_stop_on_route_rejects_upstream_destination(use_provider):
