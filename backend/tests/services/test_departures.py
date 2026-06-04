@@ -299,7 +299,7 @@ def test_render_stop_arrival_statuses_groups_by_section(use_provider):
     assert statuses == (
         "雲林科技大學 目前到站狀態：\n"
         "尚有到站資訊：\n"
-        "201 往高鐵雲林站：預定 21:35\n"
+        "201 往高鐵雲林站：下午9點35分發車\n"
         "未發車：\n"
         "7000B 往梅山站：未發車\n"
         "末班駛離：\n"
@@ -351,8 +351,8 @@ def test_render_route_stops_lists_both_directions(use_provider):
     )
 
     assert asyncio.run(departures.render_route_stops("201", "雲林科技大學")) == (
-        "往雲林科技大學：高鐵雲林站→雲林科技大學\n"
-        "往高鐵雲林站：雲林科技大學→高鐵雲林站"
+        "往雲林科技大學：高鐵雲林站、雲林科技大學\n"
+        "往高鐵雲林站：雲林科技大學、高鐵雲林站"
     )
 
 
@@ -430,6 +430,66 @@ def test_render_routes_to_destination_not_found(use_provider):
     )
     result = asyncio.run(departures.render_routes_to_destination("台北101", "雲林科技大學"))
     assert "沒有" in result
+
+
+# ── render_arrivals_to_destination ───────────────────────────────────────────
+
+
+def test_render_arrivals_to_destination_returns_all_sorted(use_provider):
+    """All routes with real-time data are returned sorted by ETA for LLM to reason over."""
+    use_provider(
+        FakeBusProvider(
+            route_info={
+                "201": {"id": 1, "go_dest": "斗六火車站", "back_dest": "雲林科技大學"},
+                "301": {"id": 2, "go_dest": "斗六火車站", "back_dest": "雲林科技大學"},
+            },
+            route_estimate=[
+                {"GoBack": 1, "SeqNo": 1, "StopName": "雲林科技大學", "Value": 8},
+                {"GoBack": 1, "SeqNo": 2, "StopName": "斗六火車站", "Value": 20},
+            ],
+        )
+    )
+    result = asyncio.run(
+        departures.render_arrivals_to_destination("斗六火車站", "雲林科技大學")
+    )
+    assert "201" in result
+    assert "301" in result
+    assert "八分" in result
+
+
+def test_render_arrivals_to_destination_no_routes(use_provider):
+    """Returns 本站沒有直達 when destination not served."""
+    use_provider(
+        FakeBusProvider(
+            route_info={"201": {"id": 1, "go_dest": "高鐵雲林站", "back_dest": "雲林科技大學"}},
+            route_estimate=[
+                {"GoBack": 1, "SeqNo": 1, "StopName": "雲林科技大學", "Value": 10},
+            ],
+        )
+    )
+    result = asyncio.run(
+        departures.render_arrivals_to_destination("台北101", "雲林科技大學")
+    )
+    assert result == "本站沒有直達台北101的路線"
+
+
+def test_render_arrivals_to_destination_no_eta_row(use_provider):
+    """Route serves destination but kiosk row missing → 無即時資料, still listed."""
+    use_provider(
+        FakeBusProvider(
+            route_info={"7000H": {"id": 1, "go_dest": "西螺", "back_dest": "雲林科技大學"}},
+            route_estimate=[
+                # stop sequence has kiosk but no ETA row matching kiosk for GoBack=1
+                {"GoBack": 1, "SeqNo": 1, "StopName": "別的站", "Value": 5},
+                {"GoBack": 1, "SeqNo": 2, "StopName": "西螺", "Value": 15},
+            ],
+        )
+    )
+    result = asyncio.run(
+        departures.render_arrivals_to_destination("西螺", "雲林科技大學")
+    )
+    # 雲林科技大學 not in stop sequence → no downstream match → no hit
+    assert result == "本站沒有直達西螺的路線"
 
 
 # ── geo-awareness ────────────────────────────────────────────────────────────
@@ -516,8 +576,8 @@ def test_render_routes_to_destination_collapses_when_both_downstream(use_provide
     result = asyncio.run(
         departures.render_routes_to_destination("虎尾科大", "雲林科技大學")
     )
-    # Both directions reach 虎尾科大 → collapse to bare route number with 搭 prefix
-    assert result == "搭 7120"
+    # Both directions reach 虎尾科大 → collapse to bare route number, single route format
+    assert result == "搭 7120，就這一路"
 
 
 def test_render_stop_on_route_rejects_upstream_destination(use_provider):

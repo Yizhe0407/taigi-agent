@@ -1,14 +1,41 @@
 from tools.kiosk_bus import (
     check_stop_on_route,
-    find_routes_to_destination,
     get_arrivals_here,
+    get_arrivals_to_destination,
     get_route_stops,
     get_routes_at_stop,
     get_routes_at_stop_here,
     get_stop_arrival_statuses_here,
 )
 
+
+async def respond_directly(message: str) -> str:
+    return message
+
+
 TOOL_SCHEMAS: list = [
+    {
+        "type": "function",
+        "function": {
+            "name": "respond_directly",
+            "description": (
+                "直接回傳訊息給使用者。"
+                "以下情況使用此工具：非公車查詢、語意不清需追問、使用者表示不需要、"
+                "以及公車工具查詢完成後輸出最終答案。"
+                "公車相關查詢（到站時間、目的地路線等）必須先呼叫對應的公車工具，不得直接用此工具回答。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "要回傳給使用者的文字。",
+                    },
+                },
+                "required": ["message"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -40,14 +67,18 @@ TOOL_SCHEMAS: list = [
     {
         "type": "function",
         "function": {
-            "name": "find_routes_to_destination",
-            "description": "查詢本站有哪些路線能到達指定目的地，回傳路線與方向。",
+            "name": "get_arrivals_to_destination",
+            "description": (
+                "查詢本站哪些路線能到達目的地，並列出各路線下一班到站時間，依到站時間排序。"
+                "使用者問「想去X」「有車去X嗎」「哪台比較快到X」時使用此工具；"
+                "結果含時間，不需再呼叫 get_arrivals_here。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "destination": {
                         "type": "string",
-                        "description": "目的地名稱，例如 '斗六火車站'、'北港朝天宮'。",
+                        "description": "目的地名稱，例如 '斗六火車站'、'北港朝天宮'。常見縮寫：雲科大=雲林科技大學、斗火=斗六火車站、北港廟=北港朝天宮。",
                     },
                 },
                 "required": ["destination"],
@@ -68,7 +99,7 @@ TOOL_SCHEMAS: list = [
                     },
                     "stop_name": {
                         "type": "string",
-                        "description": "要查詢的站牌或地點名稱，例如 '斗六火車站'。",
+                        "description": "要查詢的站牌或地點名稱，例如 '斗六火車站'。常見縮寫：雲科大=雲林科技大學、斗火=斗六火車站、北港廟=北港朝天宮。",
                     },
                 },
                 "required": ["route", "stop_name"],
@@ -96,7 +127,7 @@ TOOL_SCHEMAS: list = [
                 "properties": {
                     "stop_name": {
                         "type": "string",
-                        "description": "站牌名稱，例如 '斗六火車站'、'北港朝天宮'。",
+                        "description": "站牌名稱，例如 '斗六火車站'、'北港朝天宮'。常見縮寫：雲科大=雲林科技大學、斗火=斗六火車站、北港廟=北港朝天宮。",
                     },
                 },
                 "required": ["stop_name"],
@@ -123,11 +154,12 @@ TOOL_SCHEMAS: list = [
 ]
 
 TOOL_HANDLERS: dict = {
+    "respond_directly": respond_directly,
     "get_arrivals_here": get_arrivals_here,
+    "get_arrivals_to_destination": get_arrivals_to_destination,
     "get_stop_arrival_statuses_here": get_stop_arrival_statuses_here,
     "get_route_stops": get_route_stops,
     "get_routes_at_stop": get_routes_at_stop,
     "get_routes_at_stop_here": get_routes_at_stop_here,
     "check_stop_on_route": check_stop_on_route,
-    "find_routes_to_destination": find_routes_to_destination,
 }

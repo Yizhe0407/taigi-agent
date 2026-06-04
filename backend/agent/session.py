@@ -40,6 +40,14 @@ from agent.tool_dispatch import (
 
 InputEnricher = Callable[[str], Awaitable[str]]
 
+
+def _find_direct_response(tool_calls: list, tool_results: list[dict]) -> str | None:
+    """Return the respond_directly message if the model called that tool, else None."""
+    for call, result in zip(tool_calls, tool_results):
+        if call.function.name == "respond_directly":
+            return result["content"]
+    return None
+
 _MAX_CONTEXT_RECOVERY_RETRIES = 1
 _DEFAULT_MAX_TOOL_ROUNDS = 8
 _TOOL_ROUND_LIMIT_MESSAGE = "查詢逾時，請換個方式再問一次。"
@@ -175,6 +183,10 @@ class AgentSession:
                         self.extra_body,
                         self.telemetry,
                         operation="respond",
+                        # First round: force a tool call (prevents free-text hallucinations).
+                        # Subsequent rounds: allow free text so the model can respond after
+                        # receiving tool results without being forced into respond_directly.
+                        tool_choice="required" if tool_rounds == 0 else "auto",
                     )
                 except ContextWindowExceeded:
                     if context_retries >= _MAX_CONTEXT_RECOVERY_RETRIES:
@@ -212,10 +224,15 @@ class AgentSession:
                     return _S2TWP.convert(text)
 
                 tool_rounds += 1
-                self.messages.extend(
-                    await execute_tool_calls(
-                        tool_calls,
-                        self.tool_handlers,
-                        self.telemetry,
-                    )
+                tool_results = await execute_tool_calls(
+                    tool_calls,
+                    self.tool_handlers,
+                    self.telemetry,
                 )
+                self.messages.extend(tool_results)
+
+                # respond_directly short-circuits the loop: no further LLM call needed.
+                direct = _find_direct_response(tool_calls, tool_results)
+                if direct is not None:
+                    self.messages = trim_history(self.messages, self.max_history_tokens)
+                    return _S2TWP.convert(direct)

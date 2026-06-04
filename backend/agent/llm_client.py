@@ -47,6 +47,7 @@ async def call_llm(
     telemetry: AgentTelemetry,
     *,
     operation: str,
+    tool_choice: str = "required",
 ):
     """呼叫 LLM，暫時性錯誤退避重試，context overflow 交回 session 修復。"""
     for attempt in range(_LLM_MAX_RETRIES):
@@ -65,6 +66,7 @@ async def call_llm(
                     model=model,
                     messages=messages,
                     tools=tools,
+                    tool_choice=tool_choice if tools else "none",
                     extra_body=extra_body,
                 )
             except Exception as e:
