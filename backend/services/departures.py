@@ -581,9 +581,9 @@ async def build_route_detail(
 # They share `_classify_stop` so wording never drifts from the API surface.
 
 _SECTION_GROUP_LABEL: dict[DepartureSection, str] = {
-    DepartureSection.AVAILABLE: "尚有到站資訊",
-    DepartureSection.NOT_DEPARTED: "未發車",
-    DepartureSection.LAST_DEPARTED: "末班駛離",
+    DepartureSection.AVAILABLE: "有車",
+    DepartureSection.NOT_DEPARTED: "尚未發車",
+    DepartureSection.LAST_DEPARTED: "末班已過",
 }
 
 
@@ -597,17 +597,17 @@ async def render_arrivals(
     try:
         route_info = await provider.load_route_info(stop_name)
     except Exception as error:
-        return f"雲林公車查詢失敗：{error}"
+        return "查詢失敗，請稍後再試。"
 
     info = _lookup_route(route_info, route)
     route_id = _as_int(info.get("id")) if info is not None else None
     if route_id is None:
-        return f"在 {stop_name} 找不到停靠路線 {route}"
+        return f"本站沒有路線 {route}。"
 
     try:
         data = await provider.fetch_route_estimate(route_id)
     except Exception as error:
-        return f"雲林公車查詢失敗：{error}"
+        return "查詢失敗，請稍後再試。"
 
     matches = [
         stop for stop in data
@@ -615,13 +615,15 @@ async def render_arrivals(
         and (go_back is None or stop.get("GoBack") == go_back)
     ]
     if not matches:
-        return f"路線 {route} 上找不到包含 {stop_name} 的站牌"
+        return f"路線 {route} 不停 {stop_name}。"
 
     now = datetime.now(TAIPEI_TZ)
     results = []
     for stop in matches:
         stop_go_back = stop.get("GoBack", 1)
         _, _, status_text, _, _, _, _, _ = _classify_stop(stop, now)
+        if status_text.endswith("後"):
+            status_text = status_text + "來車"
         # Single-direction query: direction is already implied by kiosk config;
         # label only adds noise for TTS and short-response constraints.
         if go_back is None:
@@ -645,13 +647,13 @@ async def render_stop_arrival_statuses(
             provider.load_route_info(stop_name),
         )
     except Exception as error:
-        return f"雲林公車查詢失敗：{error}"
+        return "查詢失敗，請稍後再試。"
 
     route_by_id = {info["id"]: name for name, info in route_info.items()}
     sections: dict[str, list[str]] = {
-        "尚有到站資訊": [],
-        "未發車": [],
-        "末班駛離": [],
+        "有車": [],
+        "尚未發車": [],
+        "末班已過": [],
     }
     seen: set[str] = set()
     now = datetime.now(TAIPEI_TZ)
@@ -707,17 +709,17 @@ async def render_route_stops(route: str, stop_name: str) -> str:
     try:
         route_info = await provider.load_route_info(stop_name)
     except Exception as error:
-        return f"雲林公車查詢失敗：{error}"
+        return "查詢失敗，請稍後再試。"
 
     info = route_info.get(route)
     route_id = _as_int(info.get("id")) if info is not None else None
     if route_id is None:
-        return f"在 {stop_name} 找不到停靠路線 {route}"
+        return f"本站沒有路線 {route}。"
 
     try:
         data = await provider.fetch_route_estimate(route_id)
     except Exception as error:
-        return f"雲林公車查詢失敗：{error}"
+        return "查詢失敗，請稍後再試。"
 
     by_direction: dict[int, list[tuple[int, str]]] = {}
     for stop in data:
@@ -727,7 +729,7 @@ async def render_route_stops(route: str, stop_name: str) -> str:
         by_direction.setdefault(go_back, []).append((seq, name))
 
     if not by_direction:
-        return f"路線 {route} 無站牌資料"
+        return f"查無路線 {route} 的站牌。"
 
     results = []
     for go_back, stops in sorted(by_direction.items()):
@@ -824,7 +826,7 @@ async def render_stop_on_route(
     try:
         route_info = await provider.load_route_info(kiosk_stop)
     except Exception as error:
-        return f"雲林公車查詢失敗：{error}"
+        return "查詢失敗，請稍後再試。"
 
     info = route_info.get(route)
     route_id = _as_int(info.get("id")) if info is not None else None
@@ -834,7 +836,7 @@ async def render_stop_on_route(
     try:
         data = await provider.fetch_route_estimate(route_id)
     except Exception as error:
-        return f"雲林公車查詢失敗：{error}"
+        return "查詢失敗，請稍後再試。"
 
     matched: list[str] = []
     for gb, stops in sorted(_stops_by_direction_with_seq(data).items()):
@@ -864,10 +866,10 @@ async def render_routes_to_destination(
     try:
         route_info = await provider.load_route_info(kiosk_stop)
     except Exception as error:
-        return f"雲林公車查詢失敗：{error}"
+        return "查詢失敗，請稍後再試。"
 
     if not route_info:
-        return f"找不到 {kiosk_stop} 的路線資訊"
+        return "查詢失敗，請稍後再試。"
 
     async def _check(route_name: str, route_id: int) -> list[tuple[str, str]]:
         try:
@@ -935,10 +937,10 @@ async def render_arrivals_to_destination(
     try:
         route_info = await provider.load_route_info(kiosk_stop)
     except Exception as error:
-        return f"雲林公車查詢失敗：{error}"
+        return "查詢失敗，請稍後再試。"
 
     if not route_info:
-        return f"找不到 {kiosk_stop} 的路線資訊"
+        return "查詢失敗，請稍後再試。"
 
     now = datetime.now(TAIPEI_TZ)
 
@@ -1021,10 +1023,10 @@ async def render_routes_at_stop(stop_name: str) -> str:
     try:
         data = await provider.fetch_routes_at_stop(stop_name)
     except Exception as error:
-        return f"站名查詢失敗：{error}"
+        return "查詢失敗，請稍後再試。"
 
     if not data:
-        return f"找不到 {stop_name} 這個站牌"
+        return f"查無 {stop_name} 站牌。"
 
     seen: set[str] = set()
     lines: list[str] = []

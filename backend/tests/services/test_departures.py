@@ -298,11 +298,11 @@ def test_render_stop_arrival_statuses_groups_by_section(use_provider):
     )
     assert statuses == (
         "雲林科技大學 目前到站狀態：\n"
-        "尚有到站資訊：\n"
+        "有車：\n"
         "201 往高鐵雲林站：下午9點35分發車\n"
-        "未發車：\n"
+        "尚未發車：\n"
         "7000B 往梅山站：未發車\n"
-        "末班駛離：\n"
+        "末班已過：\n"
         "101 往斗六棒球場：末班駛離"
     )
 
@@ -327,7 +327,7 @@ def test_render_arrivals_uses_classify(use_provider):
 
     assert asyncio.run(departures.render_arrivals("201", "雲林科技大學")) == (
         "往雲林科技大學：即將到站\n"
-        "往高鐵雲林站：約十二分鐘後"
+        "往高鐵雲林站：約十二分鐘後來車"
     )
 
 

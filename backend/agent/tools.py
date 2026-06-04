@@ -89,7 +89,7 @@ TOOL_SCHEMAS: list = [
         "type": "function",
         "function": {
             "name": "check_stop_on_route",
-            "description": "查詢某路線是否停靠指定站牌，回傳「有」或「沒有」。",
+            "description": "查詢某路線是否停靠指定站牌。回傳例如「有，201 往高鐵雲林站有停斗六火車站。」或「沒有，201 不停斗六火車站。」",
             "parameters": {
                 "type": "object",
                 "properties": {

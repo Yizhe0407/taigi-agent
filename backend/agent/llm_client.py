@@ -28,14 +28,28 @@ _CONTEXT_ERROR_MARKERS = (
     "too many tokens",
 )
 
+_TOOL_CALL_FAILED_MARKERS = (
+    "tool_use_failed",
+    "failed to call a function",
+)
+
 
 class ContextWindowExceeded(RuntimeError):
     """LLM 拒收目前 messages，需縮減歷史後重試。"""
 
 
+class ToolCallFailed(RuntimeError):
+    """Model 生成了無效的 tool call 格式；session 應改用 auto 模式重試。"""
+
+
 def _looks_like_context_error(error: Exception) -> bool:
     text = str(error).lower()
     return any(marker in text for marker in _CONTEXT_ERROR_MARKERS)
+
+
+def _looks_like_tool_call_failure(error: Exception) -> bool:
+    text = str(error).lower()
+    return any(marker in text for marker in _TOOL_CALL_FAILED_MARKERS)
 
 
 async def call_llm(
@@ -88,6 +102,8 @@ async def call_llm(
                 )
                 if _looks_like_context_error(e):
                     raise ContextWindowExceeded(str(e)) from e
+                if _looks_like_tool_call_failure(e):
+                    raise ToolCallFailed(str(e)) from e
                 if attempt == _LLM_MAX_RETRIES - 1:
                     raise
                 telemetry.record_llm_retry(

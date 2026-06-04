@@ -28,7 +28,7 @@ from agent.context import (
     trim_history,
 )
 from agent.diagnostics import log_diagnostic
-from agent.llm_client import ContextWindowExceeded, call_llm
+from agent.llm_client import ContextWindowExceeded, ToolCallFailed, call_llm
 from agent.router import ConvState, Decision, Intent, IntentRouter
 from agent.telemetry import AgentTelemetry
 from agent.tool_dispatch import (
@@ -172,6 +172,7 @@ class AgentSession:
 
             tool_rounds = 0
             context_retries = 0
+            force_required = True  # degraded to False on ToolCallFailed
             while True:
                 await self._prepare_context()
                 try:
@@ -186,7 +187,7 @@ class AgentSession:
                         # First round: force a tool call (prevents free-text hallucinations).
                         # Subsequent rounds: allow free text so the model can respond after
                         # receiving tool results without being forced into respond_directly.
-                        tool_choice="required" if tool_rounds == 0 else "auto",
+                        tool_choice="required" if (tool_rounds == 0 and force_required) else "auto",
                     )
                 except ContextWindowExceeded:
                     if context_retries >= _MAX_CONTEXT_RECOVERY_RETRIES:
@@ -198,6 +199,16 @@ class AgentSession:
                         error_type="context_window",
                     )
                     log_diagnostic("context", "LLM 拒收目前歷史，compact 後重試")
+                    continue
+                except ToolCallFailed:
+                    if not force_required:
+                        raise  # already fell back to auto, still failing
+                    force_required = False
+                    self.telemetry.record_llm_retry(
+                        operation="respond",
+                        error_type="tool_call_failed",
+                    )
+                    log_diagnostic("warn", "tool_call_failed，改用 auto 模式重試")
                     continue
 
                 message = response.choices[0].message
