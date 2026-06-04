@@ -9,7 +9,6 @@
 ```bash
 cd backend
 uv sync
-uv run python main.py
 uv run uvicorn api:app --reload --port 8000
 uv run pytest
 uv run ruff check .
@@ -23,7 +22,7 @@ pnpm dev
 
 - Python 套件管理用 `uv`，不要改用 pip / poetry / conda。
 - `backend/agent/session.py` 只處理 messages、LLM call、tool dispatch、context recovery；公車 prefetch、provider 規則與領域邏輯留在 `backend/tools/`、`backend/services/`、`backend/providers/`。
-- Tool handler 必須回傳 `str`；`loop.py` 會把 tool result 直接送回 LLM。
+- Tool handler 必須回傳 `str`；`session.py` 會把 tool result 直接送回 LLM。
 - 修改 code 後要說明「做了什麼、為什麼這樣寫、可能的坑」。
 - 修改 code 後自行判斷文件更新：使用方式改變更新 `README.md`；功能進度改變更新 `TASKS.md`；架構/邊界改變更新 `docs/architecture.md` 或相關 `docs/`。
 
@@ -38,7 +37,7 @@ pnpm dev
 ## 重要 Gotchas
 
 - Route lookup 是 stop-scoped：只查 `KIOSK_STOP` 停靠路線，避免同名 route 歧義。
-- Kiosk 方向設定語意：admin 設「去程」或「回程」→ 直接過濾，不 auto-detect；設「去回程都有」(go_back=None) → `_is_terminal_direction()` 自動過濾終點到站方向，循環路線不過濾。不要把 go_back filter 套用在 `render_routes_to_destination`，會遮掉正確路線。
+- Kiosk 方向設定語意：admin 設「去程」或「回程」→ 直接過濾，不 auto-detect；設「去回程都有」(go_back=None) → `_is_terminal_direction()` 自動過濾終點到站方向，循環路線不過濾。
 - 站名縮寫要人工處理；縮寫對照在 `backend/tools/kiosk_bus.py` 的 `_ALIASES`。
 - 截斷 messages 必須以 tool-call 輪次為單位，不能讓 `tool_call_id` 失去對應 tool result。
 - Tool round limit 達上限時，不可先把新的 assistant `tool_calls` append 進 history 再跳出。

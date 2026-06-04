@@ -33,12 +33,12 @@
 
 ## 過長代碼
 
-- [ ] **`services/departures.py` 1039 行——主犯，需拆分**
-  - [ ] 拆 `services/departures/classification.py` (~130 行)：`_classify_stop`、`DepartureSection`、`DepartureDecision`、`_scheduled_minutes_from_now`、`_as_int`、新增 `StopClassification` dataclass
-  - [ ] 拆 `services/departures/snapshot.py` (~180 行)：`build_departure_snapshot`、`build_route_detail`、dataclasses
-  - [ ] 拆 `services/departures/renderers.py` (~400 行)：全部 `render_*` functions
-  - [ ] 拆 `services/departures/normalize.py` (~80 行)：`_strip_paren`、`_name_matches`、`_normalize_route_key`、`_lookup_route`、`_stop_similarity`、`_fuzzy_candidates`、`_downstream_names`、`_stops_by_direction_with_seq`、`_direction_label_from_info`、`_is_terminal_direction`、`_mins_zh`、`_fmt_time_12h`
-  - [ ] 拆 `services/departures/provider.py` (~30 行)：`get_provider`、`set_provider`、`provider_override`
+- [x] **`services/departures.py` 1039 行——主犯，需拆分**
+  - [x] 拆 `services/departures/classification.py` (112 行)：`_classify_stop`、`DepartureSection`、`DepartureDecision`、`_scheduled_minutes_from_now`、`StopClassification` dataclass
+  - [x] 拆 `services/departures/snapshot.py` (270 行)：`build_departure_snapshot`、`build_route_detail`、dataclasses、exceptions
+  - [x] 拆 `services/departures/renderers.py` (339 行)：全部 `render_*` functions
+  - [x] 拆 `services/departures/normalize.py` (164 行)：`_strip_paren`、`_name_matches`、`_normalize_route_key`、`_lookup_route`、`_stop_similarity`、`_fuzzy_candidates`、`_downstream_names`、`_stops_by_direction_with_seq`、`_direction_label_from_info`、`_is_terminal_direction`、`_mins_zh`、`_fmt_time_12h`、`_as_int`
+  - [x] 拆 `services/departures/provider.py` (40 行)：`get_provider`、`set_provider`、`provider_override`
 
 - [x] **`_classify_stop` 回 8-tuple anti-pattern** (`departures.py:230-348`)
   - 19 處 `_, _, status_text, _, _, _, _, _ = _classify_stop(stop, now)` 散布全檔，改動即斷
@@ -89,7 +89,7 @@
 
 ## 效能問題
 
-- [ ] **N+1：`render_arrivals_to_destination` per-route HTTP fan-out** (`departures.py:947-991`)
+- [x] **N+1：`render_arrivals_to_destination` per-route HTTP fan-out** (`departures.py:947-991`)
   - kiosk 30 條路線各打一次 `fetch_route_estimate`，每 user query 觸發 30 req
   - `load_route_info` 有 10min TTL cache（`yunlin_ebus.py:19`），但 `fetch_route_estimate` 零 cache
   - 修：加 10s TTL per-route-id estimate cache；同 query 連發剩 1 round-trip
@@ -131,10 +131,9 @@
 
 ## CLI 風險
 
-- [ ] **`YunlinEbusProvider._http` 持久 client + 多 event loop** (`yunlin_ebus.py:46`, `agent/loop.py:30`)
-  - CLI mode 每 turn `asyncio.run(...)` 新 loop；`httpx.AsyncClient` 綁第一個 loop，第二 turn 會 hang
-  - 實際 prod HTTP-only OK，但 `e2e_test.py` / `probe_llm.py` 用 CLI pattern 有風險
-  - 修：CLI 改用單一 event loop；或每 turn 重建 provider
+- [x] **`YunlinEbusProvider._http` 持久 client + 多 event loop** (`yunlin_ebus.py:46`, `agent/loop.py:30`)
+  - ~~CLI mode 每 turn `asyncio.run(...)` 新 loop；`httpx.AsyncClient` 綁第一個 loop，第二 turn 會 hang~~
+  - 已刪除 `agent/loop.py` + `main.py`（前端已取代 CLI）；`e2e_test.py` / `probe_llm.py` 保留為 dev script
 
 ---
 
@@ -143,8 +142,8 @@
 - [x] **#1 刪 dead code** (`tools/kiosk_bus.py:30-32`, `departures.py:854-915`)：`find_routes_to_destination` + `render_routes_to_destination` + inner `_check`，-65 行，無 prod caller
 - [x] **#2 `_classify_stop` 改 dataclass return**：一次 refactor 解 19 處 8-tuple unpack，全在 `departures.py`
 - [x] **#3 Cache AsyncOpenAI + Settings**：per-request rebuild → process singleton（`api/chat.py`、`api/tts.py`、`config.py`）
-- [ ] **#4 `fetch_route_estimate` 10s TTL cache**：解 destination query 30× HTTP fan-out（`yunlin_ebus.py`）
-- [ ] **#5 拆 `services/departures.py`**：1039 → 4-5 個 200-400 行檔案
+- [x] **#4 `fetch_route_estimate` 10s TTL cache**：解 destination query 30× HTTP fan-out（`yunlin_ebus.py`）
+- [x] **#5 拆 `services/departures.py`**：1039 → 5 個 40-340 行檔案 + `__init__.py` re-export
 - [ ] **#6 `telemetry.py` 砍 noop + endpoint gate**：-30 行（`telemetry.py:39-41, 50-51, 100-112`）
 - [ ] **#7 `_TIMETABLE_RE` 搬出 router**：router 回 generic（`router.py:71-76`）
 - [ ] **#8 集中 normalize**：`_to_halfwidth`、`_FULLWIDTH_RE`、`_S2TWP`、`_THINK_RE` 合入 `pipeline/normalize.py`

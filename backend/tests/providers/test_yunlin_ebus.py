@@ -140,3 +140,43 @@ def test_route_info_rejects_ambiguous_names(monkeypatch):
     provider = YunlinEbusProvider()
 
     assert asyncio.run(provider.load_route_info("測試站")).get("201") is None
+
+
+# ── fetch_route_estimate cache ────────────────────────────────────────────────
+
+
+def test_route_estimate_caches_within_ttl(monkeypatch):
+    calls = []
+    _patch_get(monkeypatch, [{"GoBack": 1}], calls)
+
+    fake_now = [0.0]
+    provider = YunlinEbusProvider(route_estimate_ttl_seconds=10.0, clock=lambda: fake_now[0])
+
+    asyncio.run(provider.fetch_route_estimate(1))
+    fake_now[0] += 5  # within TTL
+    asyncio.run(provider.fetch_route_estimate(1))
+    assert len(calls) == 1  # second call served from cache
+
+
+def test_route_estimate_refetches_after_ttl(monkeypatch):
+    calls = []
+    _patch_get(monkeypatch, [{"GoBack": 1}], calls)
+
+    fake_now = [0.0]
+    provider = YunlinEbusProvider(route_estimate_ttl_seconds=10.0, clock=lambda: fake_now[0])
+
+    asyncio.run(provider.fetch_route_estimate(1))
+    fake_now[0] += 11  # past TTL
+    asyncio.run(provider.fetch_route_estimate(1))
+    assert len(calls) == 2
+
+
+def test_route_estimate_caches_per_route_id(monkeypatch):
+    calls = []
+    _patch_get(monkeypatch, [], calls)
+
+    provider = YunlinEbusProvider(route_estimate_ttl_seconds=60.0)
+    asyncio.run(provider.fetch_route_estimate(1))
+    asyncio.run(provider.fetch_route_estimate(2))
+    asyncio.run(provider.fetch_route_estimate(1))  # cache hit
+    assert len(calls) == 2

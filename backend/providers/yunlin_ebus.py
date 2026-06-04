@@ -16,7 +16,8 @@ from providers.bus import BusProvider
 
 _DEFAULT_BASE = "https://ebus.yunlin.gov.tw/api"
 _DEFAULT_TIMEOUT = 10.0
-_DEFAULT_ROUTE_INFO_TTL_SECONDS = 600.0  # 10 min — ebus stop catalog rarely changes
+_DEFAULT_ROUTE_INFO_TTL_SECONDS = 600.0     # 10 min — ebus stop catalog rarely changes
+_DEFAULT_ROUTE_ESTIMATE_TTL_SECONDS = 10.0  # 10 s  — real-time ETA changes every few seconds
 
 
 class YunlinEbusProvider(BusProvider):
@@ -35,13 +36,17 @@ class YunlinEbusProvider(BusProvider):
         timeout: float = _DEFAULT_TIMEOUT,
         *,
         route_info_ttl_seconds: float | None = _DEFAULT_ROUTE_INFO_TTL_SECONDS,
+        route_estimate_ttl_seconds: float | None = _DEFAULT_ROUTE_ESTIMATE_TTL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._base = base_url
-        self._ttl = route_info_ttl_seconds
+        self._route_info_ttl = route_info_ttl_seconds
+        self._route_estimate_ttl = route_estimate_ttl_seconds
         self._clock = clock
         # 站名 → (fetched_at, {路線名稱 → {id, go_dest, back_dest}})
         self._route_info_by_stop: dict[str, tuple[float, dict[str, dict]]] = {}
+        # route_id → (fetched_at, ETA rows)
+        self._route_estimate_by_id: dict[int, tuple[float, list[dict]]] = {}
         # Persistent client — reuses TCP connections across requests.
         self._http = httpx.AsyncClient(timeout=timeout)
 
@@ -64,9 +69,14 @@ class YunlinEbusProvider(BusProvider):
         return resp.json()
 
     async def fetch_route_estimate(self, route_id: int) -> list[dict]:
+        cached = self._route_estimate_by_id.get(route_id)
+        if cached is not None and not self._is_expired(cached[0], self._route_estimate_ttl):
+            return cached[1]
         resp = await self._http.get(f"{self._base}/route/{route_id}/estimate")
         resp.raise_for_status()
-        return resp.json()
+        data: list[dict] = resp.json()
+        self._route_estimate_by_id[route_id] = (self._clock(), data)
+        return data
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -111,14 +121,14 @@ class YunlinEbusProvider(BusProvider):
         跟真實站牌的標示方式一致。
         """
         cached = self._route_info_by_stop.get(stop_name)
-        if cached is not None and not self._is_expired(cached[0]):
+        if cached is not None and not self._is_expired(cached[0], self._route_info_ttl):
             return cached[1]
 
         route_info = self._build_route_info(await self.fetch_routes_at_stop(stop_name))
         self._route_info_by_stop[stop_name] = (self._clock(), route_info)
         return route_info
 
-    def _is_expired(self, fetched_at: float) -> bool:
-        if self._ttl is None or self._ttl <= 0:
+    def _is_expired(self, fetched_at: float, ttl: float | None) -> bool:
+        if ttl is None or ttl <= 0:
             return False
-        return (self._clock() - fetched_at) >= self._ttl
+        return (self._clock() - fetched_at) >= ttl

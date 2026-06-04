@@ -3,7 +3,7 @@
 雲林公車台語語音助理（大學專題）。
 
 以 **agent harness** 為架構核心，讓使用者用台語詢問雲林縣公車資訊。
-目前為打字 CLI 模式，後期接語音（ASR + TTS）。
+前端為 Vue Kiosk app（語音 ASR + TTS），後端為 FastAPI HTTP API。
 
 ## 架構概念
 
@@ -21,9 +21,9 @@ IntentRouter（Python regex，deterministic）
 參考架構：[learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)
 產品定位詳見 `docs/product-positioning.md`，架構與目錄細節見 `docs/architecture.md`。
 
-CLI 目前只是 I/O 層；`AgentSession` 保持輸入輸出為文字，後續 ASR/TTS
-可沿用同一個 session runtime。Context 以輪為單位硬上限（預設 5 輪），
-長工具輸出落盤到 `.agent_state/tool-results/`，active context 只保留路徑與預覽。
+`AgentSession` 輸入輸出為文字，ASR/TTS 在 API 層處理。Context 以輪為單位
+硬上限（預設 5 輪），長工具輸出落盤到 `.agent_state/tool-results/`，
+active context 只保留路徑與預覽。
 
 ## 場域
 
@@ -85,18 +85,11 @@ uv sync
 
 # 2. 設定環境變數
 cp .env.example .env
-# 必填：LLM_BASE_URL、LLM_MODEL
+# 必填：LLM_BASE_URL、LLM_MODEL（或 GROQ_API_KEY）
 # Kiosk 設定：KIOSK_STOP（這台機器在哪個站牌，預設「雲林科技大學」）
 # 選填：KIOSK_DIRECTION=去程 或 回程（不填 = 顯示兩個方向）
 
-# 3. 啟動
-uv run python main.py
-```
-
-Kiosk 前端走獨立 HTTP API：
-
-```bash
-cd backend
+# 3. 啟動後端
 uv run uvicorn api:app --reload --port 8000
 ```
 
@@ -211,7 +204,7 @@ prompt 或 tool result 放進 span attributes。
 | 「201 停哪些站」 | `get_route_stops` | ebus（從到站資料重組） |
 | 「7126 停哪些站」 | `get_route_stops` | ebus（限本站停靠路線） |
 | 「這站有哪些路線」 | `get_routes_at_stop_here` | ebus.yunlin.gov.tw |
-| 「我要去虎尾」 | `find_routes_to_destination` | ebus（geo-aware 路線篩選） |
+| 「我要去虎尾」 | `get_arrivals_to_destination` | ebus（geo-aware 路線篩選 + 到站時間） |
 | 「201 有沒有停斗六火車站」 | `check_stop_on_route` | ebus |
 
 路線規劃不是聊天文字 tool。產品主流程是前端地圖讓使用者選目的地座標，

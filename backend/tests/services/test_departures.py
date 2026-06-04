@@ -5,6 +5,7 @@ import pytest
 
 from providers.bus import BusProvider
 from services import departures
+from services.departures import provider as _departures_provider
 
 
 def _updated_at() -> datetime:
@@ -55,10 +56,10 @@ class FakeBusProvider(BusProvider):
 
 @pytest.fixture
 def use_provider(monkeypatch):
-    """Swap `services.departures._provider` for the duration of a test."""
+    """Swap `services.departures.provider._provider` for the duration of a test."""
 
     def _install(provider: BusProvider) -> BusProvider:
-        monkeypatch.setattr(departures, "_provider", provider)
+        monkeypatch.setattr(_departures_provider, "_provider", provider)
         return provider
 
     return _install
