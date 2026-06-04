@@ -44,39 +44,49 @@ def configure_telemetry(service_name: str = "taigi-bus-agent") -> "AgentTelemetr
     """Set up OTLP/HTTP exporters and return the singleton AgentTelemetry.
 
     Idempotent — subsequent calls return the same instance.
-    When no OTEL_EXPORTER_OTLP_ENDPOINT is set the SDK drops spans silently.
+    OTLP exporters are only registered when OTEL_EXPORTER_OTLP_ENDPOINT (or
+    the per-signal variants) is set; otherwise the OTel SDK's default NoOp
+    providers handle all spans and metrics silently.
     """
     global _telemetry
 
     if _telemetry is not None:
         return _telemetry
 
-    resource = Resource.create(
-        {"service.name": os.getenv("OTEL_SERVICE_NAME", service_name)}
-    )
-
-    tracer_provider = TracerProvider(resource=resource)
-    tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
-    trace.set_tracer_provider(tracer_provider)
-
-    # Wildcard covers auto-instrumented metrics (FastAPI/HTTPX) too.
-    duration_view = View(
-        instrument_name="*duration*",
-        aggregation=ExplicitBucketHistogramAggregation(boundaries=_DURATION_BOUNDARIES),
-    )
-    # Default OTel buckets top out at 10 000 — useless for MB-scale audio.
-    bytes_view = View(
-        instrument_name="*bytes*",
-        aggregation=ExplicitBucketHistogramAggregation(boundaries=_BYTES_BOUNDARIES),
-    )
-    metric_reader = PeriodicExportingMetricReader(OTLPMetricExporter())
-    metrics.set_meter_provider(
-        MeterProvider(
-            resource=resource,
-            metric_readers=[metric_reader],
-            views=[duration_view, bytes_view],
+    if any(
+        os.getenv(v)
+        for v in (
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
         )
-    )
+    ):
+        resource = Resource.create(
+            {"service.name": os.getenv("OTEL_SERVICE_NAME", service_name)}
+        )
+
+        tracer_provider = TracerProvider(resource=resource)
+        tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+        trace.set_tracer_provider(tracer_provider)
+
+        # Wildcard covers auto-instrumented metrics (FastAPI/HTTPX) too.
+        duration_view = View(
+            instrument_name="*duration*",
+            aggregation=ExplicitBucketHistogramAggregation(boundaries=_DURATION_BOUNDARIES),
+        )
+        # Default OTel buckets top out at 10 000 — useless for MB-scale audio.
+        bytes_view = View(
+            instrument_name="*bytes*",
+            aggregation=ExplicitBucketHistogramAggregation(boundaries=_BYTES_BOUNDARIES),
+        )
+        metric_reader = PeriodicExportingMetricReader(OTLPMetricExporter())
+        metrics.set_meter_provider(
+            MeterProvider(
+                resource=resource,
+                metric_readers=[metric_reader],
+                views=[duration_view, bytes_view],
+            )
+        )
 
     _telemetry = AgentTelemetry()
     return _telemetry

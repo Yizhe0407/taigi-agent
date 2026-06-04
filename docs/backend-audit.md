@@ -106,7 +106,7 @@
   - 每 LLM round 走 `_prepare_context` → `deepcopy(messages)`；長 tool result 很貴
   - 修：shallow copy list，只 deep copy 需 rewrite 的 dict
 
-- [ ] **`estimate_tokens` 每 turn 全 encode** (`context.py:48-64`)
+- [x] **`estimate_tokens` 每 turn 全 encode** (`context.py:48-64`)
   - 隨對話長度 O(N²) tiktoken encode；kiosk 短對話 OK，admin/debug 長 session 會慢
   - 修：cache per-message token count（key by `id(msg)` 或 content hash）
 
@@ -148,4 +148,4 @@
 - [x] **#7 `_TIMETABLE_RE` 搬出 router**：router 回 generic（`router.py:71-76`）
 - [x] **#8 集中 normalize**：`_to_halfwidth`、`_FULLWIDTH_RE`、`_S2TWP`、`_THINK_RE` 合入 `pipeline/normalize.py`
 - [x] **#9 `compact_long_tool_results` 改 shallow copy**：每 turn 省 deepcopy 全 history（`context.py:89`）
-- [ ] **#10 tiktoken token count cache**：解 long-session O(N²)（`context.py:48`）
+- [x] **#10 tiktoken token count cache**：解 long-session O(N²)（`context.py:48`）

@@ -22,6 +22,23 @@ _TOOL_RESULT_COMPACT_MARKER = "[長工具結果已壓縮]"
 # cl100k_base 詞表含常用中文字，1 字通常對應 1 token，對 Qwen 模型是合理近似
 _enc = tiktoken.get_encoding("cl100k_base")
 
+# Per-message token count cache keyed by id(msg). Avoids re-encoding the full
+# history on every LLM turn (O(N²) → O(N) amortised). id reuse after GC is
+# safe in practice: kiosk sessions are short and bounded by MAX_EXCHANGES.
+_TOKEN_CACHE: dict[int, int] = {}
+
+
+def _count_msg_tokens(msg: dict) -> int:
+    key = id(msg)
+    if key not in _TOKEN_CACHE:
+        content = msg.get("content") or ""
+        count = len(_enc.encode(content)) if isinstance(content, str) else 0
+        tool_calls = msg.get("tool_calls")
+        if tool_calls:
+            count += len(_enc.encode(json.dumps(tool_calls, ensure_ascii=False)))
+        _TOKEN_CACHE[key] = count + 4
+    return _TOKEN_CACHE[key]
+
 
 class ContextStore:
     """把 compact 後仍需保留的完整內容寫到 session 外。"""
@@ -51,16 +68,7 @@ def estimate_tokens(messages: list) -> int:
     目的是 context 管理而非計費，這個精度已足夠。
     每則訊息加 4 token 的固定 overhead（role / 格式符）。
     """
-    total = 0
-    for msg in messages:
-        content = msg.get("content") or ""
-        if isinstance(content, str):
-            total += len(_enc.encode(content))
-        tool_calls = msg.get("tool_calls")
-        if tool_calls:
-            total += len(_enc.encode(json.dumps(tool_calls, ensure_ascii=False)))
-        total += 4
-    return max(total, 1)
+    return max(sum(_count_msg_tokens(msg) for msg in messages), 1)
 
 
 def group_exchanges(messages: list) -> list[list]:
