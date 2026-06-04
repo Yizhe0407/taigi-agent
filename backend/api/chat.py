@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from agent.error import summarize_error
 from agent.session import AgentSession
 from api.session_store import ChatSessionStore
-from config import Settings, make_agent_session
+from config import get_settings, make_agent_session
 
 router = APIRouter()
 
@@ -73,7 +73,7 @@ class ChatMessageResponse(BaseModel):
 
 
 def _rehydrate_session(messages: list[dict]) -> AgentSession:
-    session = make_agent_session(Settings.from_env())
+    session = make_agent_session(get_settings())
     session.messages = messages
     return session
 
@@ -88,7 +88,7 @@ def create_chat_session() -> object:
     """Create a new agent chat session and return its session_id."""
     try:
         # Surface missing LLM config now rather than on first message.
-        make_agent_session(Settings.from_env())
+        get_settings()
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 

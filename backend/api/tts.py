@@ -20,7 +20,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from agent.telemetry import get_telemetry
-from config import Settings
+from config import get_settings
 from pipeline.text_processor import process as text_process
 from pipeline.tts_normalizer import normalize_for_tts
 
@@ -35,7 +35,7 @@ class TTSRequest(BaseModel):
 
 def _tts_config() -> tuple[str, str, str, str]:
     """Return (base_url, model, voice, api_key). Raise 503 if TTS_BASE_URL not set."""
-    settings = Settings.from_env()
+    settings = get_settings()
     if not settings.tts_base_url:
         raise HTTPException(
             status_code=503,

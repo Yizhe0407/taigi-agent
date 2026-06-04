@@ -14,6 +14,7 @@ Usage
 
 from __future__ import annotations
 
+import functools
 import os
 from dataclasses import dataclass
 
@@ -106,6 +107,17 @@ class Settings:
         )
 
 
+@functools.lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """Process-wide singleton. Re-call Settings.from_env() directly in tests."""
+    return Settings.from_env()
+
+
+@functools.lru_cache(maxsize=4)
+def _make_llm_client(base_url: str, api_key: str) -> AsyncOpenAI:
+    return AsyncOpenAI(base_url=base_url, api_key=api_key)
+
+
 def make_agent_session(
     settings: Settings,
     input_enricher: InputEnricher | None = None,
@@ -116,10 +128,7 @@ def make_agent_session(
     to avoid duplicating the OpenAI client + session wiring.
     """
     return AgentSession(
-        client=AsyncOpenAI(
-            base_url=settings.llm_base_url,
-            api_key=settings.llm_api_key,
-        ),
+        client=_make_llm_client(settings.llm_base_url, settings.llm_api_key),
         model=settings.llm_model,
         system_prompt=build_system_prompt(),
         tool_schemas=TOOL_SCHEMAS,

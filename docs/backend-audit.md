@@ -94,11 +94,11 @@
   - `load_route_info` 有 10min TTL cache（`yunlin_ebus.py:19`），但 `fetch_route_estimate` 零 cache
   - 修：加 10s TTL per-route-id estimate cache；同 query 連發剩 1 round-trip
 
-- [ ] **`AsyncOpenAI` per-request rebuild** (`api/chat.py:75-78` → `config.py:118-130`)
+- [x] **`AsyncOpenAI` per-request rebuild** (`api/chat.py:75-78` → `config.py:118-130`)
   - 每 chat message 新建 `AsyncOpenAI` → 新 `httpx.AsyncClient` → 新 TCP pool
   - 修：`lru_cache make_client(settings_hash)` 或 process singleton
 
-- [ ] **`Settings.from_env()` per request** (`api/tts.py:38`, `api/chat.py:76, 91`)
+- [x] **`Settings.from_env()` per request** (`api/tts.py:38`, `api/chat.py:76, 91`)
   - 每 request 重 parse 所有 env vars + cors split
   - 修：`@lru_cache` 或 module-level singleton
 
@@ -142,7 +142,7 @@
 
 - [x] **#1 刪 dead code** (`tools/kiosk_bus.py:30-32`, `departures.py:854-915`)：`find_routes_to_destination` + `render_routes_to_destination` + inner `_check`，-65 行，無 prod caller
 - [x] **#2 `_classify_stop` 改 dataclass return**：一次 refactor 解 19 處 8-tuple unpack，全在 `departures.py`
-- [ ] **#3 Cache AsyncOpenAI + Settings**：per-request rebuild → process singleton（`api/chat.py`、`api/tts.py`、`config.py`）
+- [x] **#3 Cache AsyncOpenAI + Settings**：per-request rebuild → process singleton（`api/chat.py`、`api/tts.py`、`config.py`）
 - [ ] **#4 `fetch_route_estimate` 10s TTL cache**：解 destination query 30× HTTP fan-out（`yunlin_ebus.py`）
 - [ ] **#5 拆 `services/departures.py`**：1039 → 4-5 個 200-400 行檔案
 - [ ] **#6 `telemetry.py` 砍 noop + endpoint gate**：-30 行（`telemetry.py:39-41, 50-51, 100-112`）
