@@ -16,11 +16,6 @@ from opentelemetry.trace import Status, StatusCode
 
 _AGENT_INSTRUMENTATION_NAME = "taigi_bus_agent.agent"
 _PIPELINE_INSTRUMENTATION_NAME = "taigi_bus_agent.pipeline"
-_OTLP_ENDPOINT_ENV_VARS = (
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
-)
 
 # Recommended bucket boundaries from OTel HTTP semantic conventions spec.
 # https://opentelemetry.io/docs/specs/semconv/http/http-metrics/
@@ -37,8 +32,6 @@ _BYTES_BOUNDARIES = [
 
 # Singleton — set once by configure_telemetry(), read by get_telemetry().
 _telemetry: "AgentTelemetry | None" = None
-# Cached noop instance for paths where configure_telemetry() hasn't run yet.
-_noop: "AgentTelemetry | None" = None
 
 
 def _clean_attributes(attributes: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -47,69 +40,51 @@ def _clean_attributes(attributes: Mapping[str, Any] | None) -> dict[str, Any]:
     return {key: value for key, value in attributes.items() if value is not None}
 
 
-def _has_otlp_endpoint() -> bool:
-    return any(os.getenv(name) for name in _OTLP_ENDPOINT_ENV_VARS)
-
-
 def configure_telemetry(service_name: str = "taigi-bus-agent") -> "AgentTelemetry":
-    """Enable OTLP/HTTP exporters when the deployment provides an endpoint.
+    """Set up OTLP/HTTP exporters and return the singleton AgentTelemetry.
 
-    Idempotent — subsequent calls return the same singleton instance.
-    Safe to call from both api/__init__.py (startup) and make_agent_session().
+    Idempotent — subsequent calls return the same instance.
+    When no OTEL_EXPORTER_OTLP_ENDPOINT is set the SDK drops spans silently.
     """
     global _telemetry
 
     if _telemetry is not None:
         return _telemetry
 
-    if _has_otlp_endpoint():
-        resource = Resource.create(
-            {"service.name": os.getenv("OTEL_SERVICE_NAME", service_name)}
-        )
+    resource = Resource.create(
+        {"service.name": os.getenv("OTEL_SERVICE_NAME", service_name)}
+    )
 
-        tracer_provider = TracerProvider(resource=resource)
-        tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
-        trace.set_tracer_provider(tracer_provider)
+    tracer_provider = TracerProvider(resource=resource)
+    tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+    trace.set_tracer_provider(tracer_provider)
 
-        # Apply explicit bucket boundaries to all duration histograms.
-        # Wildcard intentionally covers auto-instrumented metrics too:
-        # http.server.request.duration (FastAPI) and http.client.request.duration
-        # (HTTPX) use the same semconv-recommended boundaries as our custom ones.
-        duration_view = View(
-            instrument_name="*duration*",
-            aggregation=ExplicitBucketHistogramAggregation(boundaries=_DURATION_BOUNDARIES),
+    # Wildcard covers auto-instrumented metrics (FastAPI/HTTPX) too.
+    duration_view = View(
+        instrument_name="*duration*",
+        aggregation=ExplicitBucketHistogramAggregation(boundaries=_DURATION_BOUNDARIES),
+    )
+    # Default OTel buckets top out at 10 000 — useless for MB-scale audio.
+    bytes_view = View(
+        instrument_name="*bytes*",
+        aggregation=ExplicitBucketHistogramAggregation(boundaries=_BYTES_BOUNDARIES),
+    )
+    metric_reader = PeriodicExportingMetricReader(OTLPMetricExporter())
+    metrics.set_meter_provider(
+        MeterProvider(
+            resource=resource,
+            metric_readers=[metric_reader],
+            views=[duration_view, bytes_view],
         )
-        # Default OTel buckets top out at 10 000 — useless for MB-scale audio.
-        bytes_view = View(
-            instrument_name="*bytes*",
-            aggregation=ExplicitBucketHistogramAggregation(boundaries=_BYTES_BOUNDARIES),
-        )
-        metric_reader = PeriodicExportingMetricReader(OTLPMetricExporter())
-        metrics.set_meter_provider(
-            MeterProvider(
-                resource=resource,
-                metric_readers=[metric_reader],
-                views=[duration_view, bytes_view],
-            )
-        )
+    )
 
     _telemetry = AgentTelemetry()
     return _telemetry
 
 
 def get_telemetry() -> "AgentTelemetry":
-    """Return the singleton AgentTelemetry instance.
-
-    If configure_telemetry() has not yet been called (e.g. during unit tests
-    or isolated router imports), returns a cached noop-safe instance backed by
-    the OTel global NoOp providers. Spans / metrics are silently dropped.
-    """
-    global _noop
-    if _telemetry is not None:
-        return _telemetry
-    if _noop is None:
-        _noop = AgentTelemetry()
-    return _noop
+    """Return the singleton AgentTelemetry, calling configure_telemetry() if needed."""
+    return _telemetry if _telemetry is not None else configure_telemetry()
 
 
 class AgentTelemetry:
@@ -204,15 +179,14 @@ class AgentTelemetry:
         )
 
     def trace_tool_routing(self, tool_names: Sequence[str], *, accepted: bool) -> None:
-        with self.start_span(
+        trace.get_current_span().add_event(
             "agent.tool.routing",
             {
                 "agent.tool.count": len(tool_names),
                 "agent.tool.names": ",".join(tool_names),
                 "agent.tool.accepted": accepted,
             },
-        ):
-            pass
+        )
 
     def record_tool_duration(
         self, duration_s: float, *, tool_name: str, outcome: str

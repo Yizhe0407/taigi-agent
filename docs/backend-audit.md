@@ -64,12 +64,12 @@
   - 唯一 caller 是上面的 dead function
   - 修：刪除此函式 (-65 行合計)
 
-- [ ] **冗 noop dual singleton** (`telemetry.py:39-41, 100-112`)
+- [x] **冗 noop dual singleton** (`telemetry.py:39-41, 100-112`)
   - `_telemetry` + `_noop` 兩個 singleton；OTel SDK 預設 NoOp providers 已 noop 化
   - `_has_otlp_endpoint` gate (`telemetry.py:50-51, 65`) 多此一舉
   - 修：刪 noop 分支 + endpoint gate，省 ~30 行
 
-- [ ] **冗 `trace_tool_routing` empty span** (`telemetry.py:206-215`)
+- [x] **冗 `trace_tool_routing` empty span** (`telemetry.py:206-215`)
   - `with start_span(): pass` 只放 attribute，沒有 traced operation
   - 修：改 `add_event` 在 parent span，省 span overhead
 
@@ -144,7 +144,7 @@
 - [x] **#3 Cache AsyncOpenAI + Settings**：per-request rebuild → process singleton（`api/chat.py`、`api/tts.py`、`config.py`）
 - [x] **#4 `fetch_route_estimate` 10s TTL cache**：解 destination query 30× HTTP fan-out（`yunlin_ebus.py`）
 - [x] **#5 拆 `services/departures.py`**：1039 → 5 個 40-340 行檔案 + `__init__.py` re-export
-- [ ] **#6 `telemetry.py` 砍 noop + endpoint gate**：-30 行（`telemetry.py:39-41, 50-51, 100-112`）
+- [x] **#6 `telemetry.py` 砍 noop + endpoint gate**：-30 行（`telemetry.py:39-41, 50-51, 100-112`）
 - [ ] **#7 `_TIMETABLE_RE` 搬出 router**：router 回 generic（`router.py:71-76`）
 - [ ] **#8 集中 normalize**：`_to_halfwidth`、`_FULLWIDTH_RE`、`_S2TWP`、`_THINK_RE` 合入 `pipeline/normalize.py`
 - [ ] **#9 `compact_long_tool_results` 改 shallow copy**：每 turn 省 deepcopy 全 history（`context.py:89`）
