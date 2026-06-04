@@ -57,7 +57,7 @@ backend/
 - `providers/otp.py`：OpenTripPlanner GraphQL provider。
 - `providers/moovo.py`：TDX bike provider。
 - `services/kiosk_config.py`：Runtime kiosk 設定 singleton（stop_name、direction、lat/lon）；持久化至 `.agent_state/kiosk_config.json`，預設雲林科技大學／回程。所有需要站牌資訊的模組從此讀取，不用 env var。
-- `services/departures.py`：離站決策唯一分類來源，支援 provider override。
+- `services/departures.py`：離站決策唯一分類來源，支援 provider override。方向過濾分兩層：admin 設定「去程」或「回程」時直接照設定過濾（不做 auto-detect）；設定「去回程都有」（go_back=None）時啟動 `_is_terminal_direction()` 自動過濾「本站是該方向終點（即抵達非出發）」的方向，循環路線（go_dest == back_dest == 本站）不過濾。`render_routes_to_destination` 查詢目的地路線時不套用方向過濾，因為路線通常以 GoBack=1 出發，強制過濾會遮掉正確結果。
 - `services/route_plans.py`：OTP 路線規劃 facade、Kiosk 起點、雲林邊界、view model。
 - `services/moovo.py`：公共自行車站 dataclass、解析、cache、距離查詢。
 - `services/stop_catalog.py`：TDX / GTFS 更新流程產生的雲林 stop index。

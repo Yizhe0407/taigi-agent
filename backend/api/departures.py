@@ -18,7 +18,15 @@ from services.departures import (
     build_departure_snapshot,
     build_route_detail,
 )
-from tools.kiosk_bus import _kiosk_go_back_filter, _kiosk_stop
+from services.kiosk_config import get_kiosk_config
+
+
+def _kiosk_stop() -> str:
+    return get_kiosk_config().stop_name
+
+
+def _kiosk_go_back_filter() -> int | None:
+    return get_kiosk_config().go_back
 
 router = APIRouter()
 

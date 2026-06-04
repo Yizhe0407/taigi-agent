@@ -33,6 +33,15 @@ _DEFAULT_DIRECTION: str | None = "回程"
 class KioskConfig:
     stop_name: str = _DEFAULT_STOP_NAME
     direction: str | None = _DEFAULT_DIRECTION  # "去程" | "回程" | None (show both)
+
+    @property
+    def go_back(self) -> int | None:
+        """Translate direction label to ebus GoBack int (1=去程, 2=回程, None=both)."""
+        if self.direction == "去程":
+            return 1
+        if self.direction == "回程":
+            return 2
+        return None
     lat: float | None = None
     lon: float | None = None
 
@@ -75,8 +84,10 @@ def set_kiosk_config(cfg: KioskConfig) -> None:
     global _current
     with _lock:
         _current = cfg
-        _STATE_DIR.mkdir(parents=True, exist_ok=True)
-        _STATE_PATH.write_text(
-            json.dumps(asdict(cfg), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+    # Disk write outside the lock — readers can't see a partial state because
+    # _current is an immutable dataclass reference swapped atomically above.
+    _STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _STATE_PATH.write_text(
+        json.dumps(asdict(cfg), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )

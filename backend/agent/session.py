@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import re
-import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 

@@ -7,6 +7,7 @@ outcome to telemetry. Each tool result must reference the matching
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -46,95 +47,65 @@ def tool_error(call_id: str, message: str) -> dict:
     return {"role": "tool", "tool_call_id": call_id, "content": message}
 
 
+async def _execute_one(
+    call: Any,
+    handlers: Mapping[str, ToolHandler],
+    telemetry: AgentTelemetry,
+) -> dict:
+    tool_name = call.function.name
+    started = time.perf_counter()
+    outcome = "ok"
+    with telemetry.start_span(
+        "agent.tool.call",
+        {"agent.tool.name": tool_name, "agent.tool.call_id": call.id},
+    ) as span:
+        try:
+            try:
+                tool_args = json.loads(call.function.arguments or "{}")
+            except (TypeError, json.JSONDecodeError) as e:
+                outcome = "invalid_arguments"
+                telemetry.record_tool_error(tool_name=tool_name, error_type=outcome)
+                telemetry.mark_span_error(span, error_type=outcome, exception=e)
+                return tool_error(call.id, f"錯誤：工具參數格式有誤，無法執行 {tool_name}")
+
+            if not isinstance(tool_args, dict):
+                outcome = "invalid_arguments"
+                telemetry.record_tool_error(tool_name=tool_name, error_type=outcome)
+                telemetry.mark_span_error(span, error_type=outcome)
+                return tool_error(call.id, f"錯誤：工具參數必須是 JSON object，無法執行 {tool_name}")
+
+            handler = handlers.get(tool_name)
+            if handler is None:
+                outcome = "missing_handler"
+                telemetry.record_tool_error(tool_name=tool_name, error_type=outcome)
+                telemetry.mark_span_error(span, error_type=outcome)
+                return tool_error(call.id, f"錯誤：找不到工具 {tool_name}")
+
+            try:
+                result = await handler(**tool_args)
+            except Exception as e:
+                outcome = "handler_error"
+                telemetry.record_tool_error(tool_name=tool_name, error_type=type(e).__name__)
+                telemetry.mark_span_error(span, error_type=type(e).__name__, exception=e)
+                result = f"工具 {tool_name} 執行失敗：{e}"
+
+            # tool_call_id 必須對應 assistant message 裡同一個 call id。
+            return tool_error(call.id, str(result))
+        finally:
+            telemetry.record_tool_duration(
+                time.perf_counter() - started,
+                tool_name=tool_name,
+                outcome=outcome,
+            )
+
+
 async def execute_tool_calls(
     tool_calls: list[Any],
     handlers: Mapping[str, ToolHandler],
     telemetry: AgentTelemetry,
 ) -> list[dict]:
-    results = []
-    for call in tool_calls:
-        tool_name = call.function.name
-        started = time.perf_counter()
-        outcome = "ok"
-        with telemetry.start_span(
-            "agent.tool.call",
-            {
-                "agent.tool.name": tool_name,
-                "agent.tool.call_id": call.id,
-            },
-        ) as span:
-            try:
-                try:
-                    tool_args = json.loads(call.function.arguments or "{}")
-                except (TypeError, json.JSONDecodeError) as e:
-                    outcome = "invalid_arguments"
-                    telemetry.record_tool_error(
-                        tool_name=tool_name,
-                        error_type=outcome,
-                    )
-                    telemetry.mark_span_error(
-                        span,
-                        error_type=outcome,
-                        exception=e,
-                    )
-                    results.append(
-                        tool_error(
-                            call.id,
-                            f"錯誤：工具參數格式有誤，無法執行 {tool_name}",
-                        )
-                    )
-                    continue
-
-                if not isinstance(tool_args, dict):
-                    outcome = "invalid_arguments"
-                    telemetry.record_tool_error(
-                        tool_name=tool_name,
-                        error_type=outcome,
-                    )
-                    telemetry.mark_span_error(span, error_type=outcome)
-                    results.append(
-                        tool_error(
-                            call.id,
-                            f"錯誤：工具參數必須是 JSON object，無法執行 {tool_name}",
-                        )
-                    )
-                    continue
-
-                handler = handlers.get(tool_name)
-                if handler is None:
-                    outcome = "missing_handler"
-                    telemetry.record_tool_error(
-                        tool_name=tool_name,
-                        error_type=outcome,
-                    )
-                    telemetry.mark_span_error(span, error_type=outcome)
-                    results.append(
-                        tool_error(call.id, f"錯誤：找不到工具 {tool_name}")
-                    )
-                    continue
-
-                try:
-                    result = await handler(**tool_args)
-                except Exception as e:
-                    outcome = "handler_error"
-                    telemetry.record_tool_error(
-                        tool_name=tool_name,
-                        error_type=type(e).__name__,
-                    )
-                    telemetry.mark_span_error(
-                        span,
-                        error_type=type(e).__name__,
-                        exception=e,
-                    )
-                    result = f"工具 {tool_name} 執行失敗：{e}"
-
-                # tool_call_id 必須對應 assistant message 裡同一個 call id。
-                results.append(tool_error(call.id, str(result)))
-            finally:
-                telemetry.record_tool_duration(
-                    time.perf_counter() - started,
-                    tool_name=tool_name,
-                    outcome=outcome,
-                )
-
-    return results
+    return list(
+        await asyncio.gather(
+            *[_execute_one(call, handlers, telemetry) for call in tool_calls]
+        )
+    )

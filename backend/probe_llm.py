@@ -75,7 +75,9 @@ CASES = [
 ]
 
 
-async def probe_one(client: AsyncOpenAI, model: str, label: str, user_msg: str) -> None:
+async def probe_one(
+    client: AsyncOpenAI, model: str, user_msg: str, extra_body: dict
+) -> None:
     messages = [
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": user_msg},
@@ -86,6 +88,7 @@ async def probe_one(client: AsyncOpenAI, model: str, label: str, user_msg: str) 
             model=model,
             messages=messages,
             tools=TOOLS,
+            extra_body=extra_body or None,
         )
     except Exception as e:
         print(f"  ERROR: {e}")
@@ -139,7 +142,7 @@ async def main() -> None:
     for label, user_msg in CASES:
         print(f"[{label}]")
         print(f"  user: {user_msg}")
-        await probe_one(client, model, label, user_msg)
+        await probe_one(client, model, user_msg, extra_body)
         print()
 
 

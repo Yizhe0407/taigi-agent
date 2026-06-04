@@ -38,37 +38,38 @@ class YunlinEbusProvider(BusProvider):
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._base = base_url
-        self._timeout = timeout
         self._ttl = route_info_ttl_seconds
         self._clock = clock
         # 站名 → (fetched_at, {路線名稱 → {id, go_dest, back_dest}})
         self._route_info_by_stop: dict[str, tuple[float, dict[str, dict]]] = {}
+        # Persistent client — reuses TCP connections across requests.
+        self._http = httpx.AsyncClient(timeout=timeout)
 
     # ── HTTP ──────────────────────────────────────────────────────────────────
 
     async def fetch_routes_at_stop(self, stop_name: str) -> list[dict]:
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.get(
-                f"{self._base}/stop/route",
-                params={"stop_name": stop_name},
-            )
+        resp = await self._http.get(
+            f"{self._base}/stop/route",
+            params={"stop_name": stop_name},
+        )
         resp.raise_for_status()
         return resp.json()
 
     async def fetch_eta_at_stop(self, stop_name: str) -> list[dict]:
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.get(
-                f"{self._base}/stop/eta",
-                params={"stop_name": stop_name},
-            )
+        resp = await self._http.get(
+            f"{self._base}/stop/eta",
+            params={"stop_name": stop_name},
+        )
         resp.raise_for_status()
         return resp.json()
 
     async def fetch_route_estimate(self, route_id: int) -> list[dict]:
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.get(f"{self._base}/route/{route_id}/estimate")
+        resp = await self._http.get(f"{self._base}/route/{route_id}/estimate")
         resp.raise_for_status()
         return resp.json()
+
+    async def aclose(self) -> None:
+        await self._http.aclose()
 
     # ── derived ───────────────────────────────────────────────────────────────
 

@@ -30,25 +30,17 @@ def _patch_get(monkeypatch, payload, calls):
         def __init__(self, timeout):
             self.timeout = timeout
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
         async def get(self, url, params=None):
             calls.append((url, params, self.timeout))
             return Response(payload)
 
+        async def aclose(self):
+            pass
+
     monkeypatch.setattr(yunlin_ebus.httpx, "AsyncClient", FakeAsyncClient)
 
 
-@pytest.fixture
-def provider():
-    return YunlinEbusProvider()
-
-
-def test_route_info_uses_stop_lookup_endpoint(monkeypatch, provider):
+def test_route_info_uses_stop_lookup_endpoint(monkeypatch):
     payload = [
         {
             "xno": "65036",
@@ -68,6 +60,7 @@ def test_route_info_uses_stop_lookup_endpoint(monkeypatch, provider):
     calls = []
 
     _patch_get(monkeypatch, payload, calls)
+    provider = YunlinEbusProvider()
 
     route_info = asyncio.run(provider.load_route_info("雲林科技大學"))
     assert route_info["201"] == {
@@ -136,7 +129,7 @@ def test_route_info_disables_cache_when_ttl_none(monkeypatch):
     assert len(calls) == 1
 
 
-def test_route_info_rejects_ambiguous_names(monkeypatch, provider):
+def test_route_info_rejects_ambiguous_names(monkeypatch):
     payload = [
         {"xno": "1", "name": "201"},
         {"xno": "2", "name": "201"},
@@ -144,5 +137,6 @@ def test_route_info_rejects_ambiguous_names(monkeypatch, provider):
 
     calls = []
     _patch_get(monkeypatch, payload, calls)
+    provider = YunlinEbusProvider()
 
     assert asyncio.run(provider.load_route_info("測試站")).get("201") is None

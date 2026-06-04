@@ -34,12 +34,7 @@ def _kiosk_stop() -> str:
 
 
 def _kiosk_go_back_filter() -> int | None:
-    direction = get_kiosk_config().direction
-    if direction == "去程":
-        return 1
-    if direction == "回程":
-        return 2
-    return None
+    return get_kiosk_config().go_back
 
 
 async def check_stop_on_route(route: str, stop_name: str) -> str:

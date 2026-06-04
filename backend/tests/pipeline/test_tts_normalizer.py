@@ -1,4 +1,3 @@
-import pytest
 from pipeline.tts_normalizer import normalize_for_tts
 
 

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from dotenv import load_dotenv
 
 # Must precede all domain imports — modules read env vars at import time.
@@ -14,6 +17,7 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor  # noqa:
 
 from agent.telemetry import configure_telemetry  # noqa: E402
 from config import parse_cors_origins  # noqa: E402
+from services.departures import get_provider  # noqa: E402
 
 from .admin import router as admin_router  # noqa: E402
 from .asr import router as asr_router  # noqa: E402
@@ -23,7 +27,16 @@ from .moovo import router as moovo_router  # noqa: E402
 from .route_plans import router as route_plans_router  # noqa: E402
 from .tts import router as tts_router  # noqa: E402
 
-app = FastAPI(title="Taigi Bus Agent API")
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    yield
+    provider = get_provider()
+    if hasattr(provider, "aclose"):
+        await provider.aclose()
+
+
+app = FastAPI(title="Taigi Bus Agent API", lifespan=_lifespan)
 
 cors_origins = parse_cors_origins()
 if cors_origins:
