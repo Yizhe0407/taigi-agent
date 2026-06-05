@@ -57,11 +57,11 @@ def test_time_embedded():
 
 
 def test_route_numeric():
-    assert normalize_for_tts("201路") == "二○一路"
+    assert normalize_for_tts("201路") == "二零一路"
 
 
 def test_route_zero():
-    assert normalize_for_tts("307路") == "三○七路"
+    assert normalize_for_tts("307路") == "三零七路"
 
 
 def test_route_four_digit():
@@ -69,19 +69,19 @@ def test_route_four_digit():
 
 
 def test_route_suffix_letter():
-    assert normalize_for_tts("7000b路") == "七○○○逼路"
+    assert normalize_for_tts("7000b路") == "七零零零逼路"
 
 
 def test_route_suffix_letter_upper():
-    assert normalize_for_tts("7000B路") == "七○○○逼路"
+    assert normalize_for_tts("7000B路") == "七零零零逼路"
 
 
 def test_route_prefix_letter():
-    assert normalize_for_tts("Y01路") == "歪○一路"
+    assert normalize_for_tts("Y01路") == "歪零一路"
 
 
 def test_route_in_sentence():
-    assert normalize_for_tts("201路往高鐵") == "二○一路往高鐵"
+    assert normalize_for_tts("201路往高鐵") == "二零一路往高鐵"
 
 
 # ── minute/duration conversion ───────────────────────────────────────────────
@@ -123,11 +123,11 @@ def test_ordinal_two_digit():
 
 def test_remaining_digit_route_no_lu():
     # 沒有 路 後綴的路線代號 fallback 到 digit-by-digit
-    assert normalize_for_tts("201") == "二○一"
+    assert normalize_for_tts("201") == "二零一"
 
 
 def test_standalone_number():
-    assert normalize_for_tts("查不到 7001 路線") == "查不到 七○○一 路線"
+    assert normalize_for_tts("查不到 7001 路線") == "查不到 七零零一 路線"
 
 
 # ── letter conversion ────────────────────────────────────────────────────────
@@ -142,9 +142,9 @@ def test_letter_b():
 
 
 def test_letter_in_route_no_lu():
-    # Y01 沒有 路，先 digit fallback 01→○一，再 letter Y→歪
+    # Y01 沒有 路，先 digit fallback 01→零一，再 letter Y→歪
     result = normalize_for_tts("Y01")
-    assert result == "歪○一"
+    assert result == "歪零一"
 
 
 # ── combined / edge cases ────────────────────────────────────────────────────
@@ -155,7 +155,7 @@ def test_pure_chinese_unchanged():
 
 
 def test_already_chinese_numbers():
-    assert normalize_for_tts("二○一路預定十點到") == "二○一路預定十點到"
+    assert normalize_for_tts("二零一路預定十點到") == "二零一路預定十點到"
 
 
 def test_empty():
@@ -164,7 +164,7 @@ def test_empty():
 
 def test_complex_sentence():
     result = normalize_for_tts("201路往高鐵雲林站，預定16:35到，約5分鐘後。")
-    assert "二○一路" in result
+    assert "二零一路" in result
     assert "下午四點三十五分" in result
     assert "五分鐘後" in result
     assert "16" not in result

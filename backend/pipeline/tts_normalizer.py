@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 
 _DIGIT: dict[str, str] = {
-    "0": "○",
+    "0": "零",
     "1": "一",
     "2": "二",
     "3": "三",
@@ -76,16 +76,16 @@ _ONES = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"]
 
 
 def _count_to_chinese(n: int) -> str:
-    """Integer 1–99 → natural Chinese count (十二, 三十五…)."""
+    """Integer → natural Chinese count. >= 100 falls back to digit-by-digit."""
     if n <= 0:
         return "零"
     if n < 10:
         return _ONES[n]
     if n < 20:
         return "十" + _ONES[n % 10]
-    tens = _ONES[n // 10] + "十"
-    ones = _ONES[n % 10]
-    return tens + ones
+    if n < 100:
+        return _ONES[n // 10] + "十" + _ONES[n % 10]
+    return _digits_to_chinese(str(n))
 
 
 def _digits_to_chinese(s: str) -> str:
@@ -123,6 +123,9 @@ def normalize_for_tts(text: str) -> str:
     """Return a TTS-safe version of *text* with Arabic digits and ASCII letters converted."""
     if not text:
         return text
+
+    # 0. Collapse newlines — LLM may output multi-line; HanloFlow behavior unknown
+    text = re.sub(r"\n+", "，", text)
 
     # 1. Strip all bracket types, keep inner content
     text = re.sub(r"[「」『』【】《》〈〉]", "", text)

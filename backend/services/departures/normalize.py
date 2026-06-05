@@ -30,12 +30,26 @@ def _mins_zh(n: int) -> str:
     return str(n)
 
 
+_HOUR_ZH = {1: "一", 2: "兩", 3: "三", 4: "四", 5: "五", 6: "六", 7: "七", 8: "八", 9: "九", 10: "十", 11: "十一", 12: "十二"}
+
+
 def _fmt_time_12h(hhmm: str) -> str:
-    """'HH:MM' → '上午/下午X點Y分'（TTS 友善）。"""
+    """'HH:MM' → '上午/下午X點Y分'（全中文，TTS 友善）。"""
     h, m = map(int, hhmm.split(":"))
-    period = "上午" if h < 12 else "下午"
-    h12 = h % 12 or 12
-    return f"{period}{h12}點" if m == 0 else f"{period}{h12}點{m}分"
+    if h == 12:
+        period, h12 = "中午", 12
+    elif h > 12:
+        period, h12 = "下午", h - 12
+    elif h == 0:
+        period, h12 = "凌晨", 12
+    else:
+        period, h12 = "上午", h
+    h_zh = _HOUR_ZH[h12]
+    if m == 0:
+        return f"{period}{h_zh}點"
+    if m < 10:
+        return f"{period}{h_zh}點零{_mins_zh(m)}分"
+    return f"{period}{h_zh}點{_mins_zh(m)}分"
 
 
 def _normalize_route_key(s: str) -> str:

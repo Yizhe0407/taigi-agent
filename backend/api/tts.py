@@ -3,16 +3,21 @@
 Pipeline per request:
   1. HanloFlow  — Mandarin → 漢羅混合文字
   2. Taibun     — 漢羅 → Tailo 台羅拼音
-  3. TTS HTTP   — Tailo → audio（OpenAI /v1/audio/speech 格式）
+  3. Split      — Tailo 在 , 和 . 切段
+  4. TTS HTTP   — 各段並發送至 /v1/audio/speech，回傳 WAV
+  5. Concat     — WAV bytes 拼接，段間插靜音
 
-回傳原始音訊 bytes，Content-Type 沿用 TTS 服務的回應。
 X-Hanlo-Text / X-Tailo-Text header 帶 URL-encoded 轉換結果，供前端 debug 顯示。
 """
 
 from __future__ import annotations
 
+import asyncio
+import io
+import re
 import time
 import urllib.parse
+import wave
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -27,6 +32,8 @@ from pipeline.tts_normalizer import normalize_for_tts
 router = APIRouter()
 
 _TTS_TIMEOUT_SECONDS = 30
+_COMMA_SILENCE_MS = 150
+_PERIOD_SILENCE_MS = 350
 
 
 class TTSRequest(BaseModel):
@@ -49,6 +56,56 @@ def _tts_config() -> tuple[str, str, str, str]:
     )
 
 
+def _split_tailo(tailo: str) -> list[tuple[str, int]]:
+    """Split Tailo romanization into (segment, silence_ms_after) pairs.
+
+    Splits at ',' and '.'; trailing segment gets 0ms silence.
+    """
+    parts = re.split(r"([.,])", tailo.strip())
+    result: list[tuple[str, int]] = []
+    i = 0
+    while i < len(parts):
+        seg = parts[i].strip()
+        sep = parts[i + 1] if i + 1 < len(parts) else None
+        if seg:
+            if sep == ".":
+                silence_ms = _PERIOD_SILENCE_MS
+            elif sep == ",":
+                silence_ms = _COMMA_SILENCE_MS
+            else:
+                silence_ms = 0
+            result.append((seg, silence_ms))
+        i += 2
+    return result or [(tailo.strip(), 0)]
+
+
+def _make_silence(n_frames: int, n_channels: int, sampwidth: int) -> bytes:
+    return b"\x00" * (n_frames * n_channels * sampwidth)
+
+
+def _concat_wav(wav_bytes_list: list[bytes], silences_ms: list[int]) -> bytes:
+    """Concatenate WAV segments with silence between them."""
+    params = None
+    pcm_parts: list[bytes] = []
+
+    for i, wav_bytes in enumerate(wav_bytes_list):
+        with wave.open(io.BytesIO(wav_bytes)) as wf:
+            if params is None:
+                params = wf.getparams()
+            pcm_parts.append(wf.readframes(wf.getnframes()))
+        if i < len(silences_ms) and silences_ms[i] > 0 and params is not None:
+            n_frames = int(params.framerate * silences_ms[i] / 1000)
+            pcm_parts.append(_make_silence(n_frames, params.nchannels, params.sampwidth))
+
+    if params is None:
+        return b""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setparams(params)
+        wf.writeframes(b"".join(pcm_parts))
+    return buf.getvalue()
+
+
 @router.post("/api/tts")
 async def synthesize(body: TTSRequest) -> Response:
     """Synthesize Taiwanese Hokkien speech from Mandarin text.
@@ -56,7 +113,8 @@ async def synthesize(body: TTSRequest) -> Response:
     Steps:
       1. HanloFlow converts Mandarin to 漢羅 mixed script.
       2. Taibun converts 漢羅 to Tailo romanization (number-tone format).
-      3. Tailo is sent to an OpenAI-compatible /v1/audio/speech endpoint.
+      3. Tailo is split at punctuation; each segment is sent to TTS concurrently.
+      4. WAV responses are concatenated with silence between segments.
 
     Response headers:
       X-Hanlo-Text — URL-encoded 漢羅 intermediate (for frontend debug)
@@ -65,16 +123,12 @@ async def synthesize(body: TTSRequest) -> Response:
     base_url, model, voice, api_key = _tts_config()
 
     # ── Step 1 + 2: Mandarin → 漢羅 → Tailo ──────────────────────────────────
-    # Timed manually: pure Python, no HTTP — HTTPXClientInstrumentor won't cover it.
-    # The span appears as a child of the FastAPI request span.
     tel = get_telemetry()
     t0 = time.perf_counter()
     try:
         tts_text = normalize_for_tts(body.text)
         with tel.start_span("tts.text_process", {"tts.input_chars": len(tts_text)}):
             result = text_process(tts_text)
-        # Distinguish "ran but produced nothing" from true success so dashboards
-        # can surface empty-output events separately from exceptions.
         outcome = "ok" if result.tailo else "empty_output"
         tel.record_pipeline_stage(time.perf_counter() - t0, stage="tts.text_process", outcome=outcome)
     except Exception as err:
@@ -84,42 +138,48 @@ async def synthesize(body: TTSRequest) -> Response:
     if not result.tailo:
         raise HTTPException(status_code=422, detail="無法將輸入文字轉為台語發音")
 
-    # ── Step 3: Tailo → audio ─────────────────────────────────────────────────
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    # ── Step 3: split Tailo at punctuation ───────────────────────────────────
+    segments = _split_tailo(result.tailo)
 
-    payload = {
-        "model": model,
-        "input": result.tailo,
-        "voice": voice,
-    }
+    # ── Step 4: concurrent TTS requests ──────────────────────────────────────
+    req_headers: dict[str, str] = {"Content-Type": "application/json"}
+    if api_key:
+        req_headers["Authorization"] = f"Bearer {api_key}"
+
+    base_payload: dict = {"model": model, "voice": voice}
 
     try:
         async with httpx.AsyncClient(timeout=_TTS_TIMEOUT_SECONDS) as client:
-            tts_response = await client.post(
-                f"{base_url}/v1/audio/speech",
-                headers=headers,
-                json=payload,
+            responses = await asyncio.gather(
+                *[
+                    client.post(
+                        f"{base_url}/v1/audio/speech",
+                        headers=req_headers,
+                        json={**base_payload, "input": seg},
+                    )
+                    for seg, _ in segments
+                ]
             )
     except httpx.TimeoutException as err:
         raise HTTPException(status_code=504, detail="TTS 服務逾時") from err
     except httpx.RequestError as err:
         raise HTTPException(status_code=503, detail=f"無法連線到 TTS 服務：{err}") from err
 
-    if tts_response.status_code != 200:
-        raise HTTPException(
-            status_code=502,
-            detail=f"TTS 服務回應錯誤（{tts_response.status_code}）",
-        )
+    for resp in responses:
+        if resp.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"TTS 服務回應錯誤（{resp.status_code}）",
+            )
 
-    content_type = tts_response.headers.get("content-type", "audio/mpeg")
+    # ── Step 5: concatenate WAV with silence ──────────────────────────────────
+    silences_ms = [ms for _, ms in segments]
+    audio_bytes = _concat_wav([r.content for r in responses], silences_ms)
 
     return Response(
-        content=tts_response.content,
-        media_type=content_type,
+        content=audio_bytes,
+        media_type="audio/wav",
         headers={
-            # URL-encode so Chinese chars are ASCII-safe in HTTP headers
             "X-Hanlo-Text": urllib.parse.quote(result.hanlo[:400]),
             "X-Tailo-Text": urllib.parse.quote(result.tailo[:400]),
         },
