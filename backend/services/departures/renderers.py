@@ -5,6 +5,7 @@ from collections.abc import Awaitable
 from datetime import datetime
 from typing import TypeVar
 
+from providers.bus import BusProvider
 from services.departures.classification import DepartureSection, _classify_stop
 from services.departures.normalize import (
     TAIPEI_TZ,
@@ -15,7 +16,6 @@ from services.departures.normalize import (
     _is_terminal_direction,
     _lookup_route,
     _name_matches,
-    _stop_similarity,
     _stops_by_direction_with_seq,
     _strip_paren,
 )
@@ -227,6 +227,84 @@ async def render_stop_on_route(
     return f"沒有，{route} 不停{stop_name}。"
 
 
+async def _check_route_arrivals(
+    route_name: str,
+    route_id: int,
+    provider: BusProvider,
+    kiosk_stop: str,
+    go_back: int | None,
+    destination: str,
+    route_info: dict,
+    now: datetime,
+) -> tuple[list[tuple[str, int]], set[str]]:
+    """Fetch estimate for one route; return (hits, all_downstream_stop_names).
+
+    hits: list of (display_text, sort_minutes) for directions that serve destination.
+    all_downstream: union of all downstream stop names seen (used for fuzzy remap).
+    """
+    try:
+        data = await provider.fetch_route_estimate(route_id)
+    except Exception:
+        return [], set()
+
+    hits: list[tuple[str, int]] = []
+    all_downstream: set[str] = set()
+    for gb, stops in _stops_by_direction_with_seq(data).items():
+        if go_back is not None and gb != go_back:
+            continue
+        downstream = _downstream_names(stops, kiosk_stop)
+        if downstream is None:
+            continue
+        all_downstream.update(downstream)
+        if not any(_name_matches(destination, n) for n in downstream):
+            continue
+
+        direction = _direction_label_from_info(route_info, route_name, gb)
+        if _name_matches(kiosk_stop, direction.removeprefix("往")):
+            direction = "（循環）"
+
+        kiosk_rows = [
+            row for row in data
+            if kiosk_stop in row.get("StopName", "")
+            and row.get("GoBack", 1) == gb
+        ]
+        if kiosk_rows:
+            c = _classify_stop(kiosk_rows[0], now)
+            status_text = c.status_text
+            # Append "來車" to relative-time texts so LLM knows this is the bus
+            # arriving at the kiosk, not the travel time to the destination.
+            if status_text.endswith("後"):
+                status_text = status_text + "來車"
+            hits.append((f"{route_name} {direction}：{status_text}", c.sort_minutes))
+        else:
+            hits.append((f"{route_name} {direction}：無即時資料", 9999))
+
+    return hits, all_downstream
+
+
+async def _remap_destination_via_fuzzy(
+    destination: str,
+    all_stops: set[str],
+    kiosk_stop: str,
+    go_back: int | None,
+) -> str | None:
+    """Try fuzzy remap of destination; return result string or None if no candidate.
+
+    score >= 0.8: silent auto-remap (e.g. '雲林高鐵站' → '高鐵雲林站')
+    0.35 <= score < 0.8: return hint text for LLM to clarify
+    """
+    candidates = _fuzzy_candidates(destination, all_stops)
+    if not candidates:
+        return None
+    best_name, best_score = candidates[0]
+    if best_score >= 0.8:
+        return await render_arrivals_to_destination(
+            best_name, kiosk_stop, go_back, _allow_remap=False
+        )
+    top = "、".join(name for name, _ in candidates[:3])
+    return f"查無「{destination}」站名。本站路線鄰近站名：{top}。"
+
+
 async def render_arrivals_to_destination(
     destination: str,
     kiosk_stop: str,
@@ -240,84 +318,35 @@ async def render_arrivals_to_destination(
     fetch_route_estimate call). Results are sorted by arrival time so the LLM
     can directly answer "which is faster" without a follow-up tool call.
     Routes with no real-time data appear last with status_text from _classify_stop.
-
-    When destination matches nothing exactly, fuzzy similarity is applied:
-    - score >= 0.8: auto-remap silently (e.g. '雲林高鐵站' → '高鐵雲林站')
-    - 0.35 <= score < 0.8: return candidate hint so LLM can retry or clarify
     """
     provider = get_provider()
     route_info = await _safe_provider_call(provider.load_route_info(kiosk_stop))
-    if route_info is None:
-        return _QUERY_FAILED
-
     if not route_info:
         return _QUERY_FAILED
 
     now = datetime.now(TAIPEI_TZ)
-
-    async def _check(
-        route_name: str, route_id: int
-    ) -> tuple[list[tuple[str, int]], set[str]]:
-        try:
-            data = await provider.fetch_route_estimate(route_id)
-        except Exception:
-            return [], set()
-
-        hits: list[tuple[str, int]] = []
-        all_downstream: set[str] = set()
-        for gb, stops in _stops_by_direction_with_seq(data).items():
-            if go_back is not None and gb != go_back:
-                continue
-            downstream = _downstream_names(stops, kiosk_stop)
-            if downstream is None:
-                continue
-            all_downstream.update(downstream)
-            if not any(_name_matches(destination, n) for n in downstream):
-                continue
-
-            direction = _direction_label_from_info(route_info, route_name, gb)
-            if _name_matches(kiosk_stop, direction.removeprefix("往")):
-                direction = "（循環）"
-
-            kiosk_rows = [
-                row for row in data
-                if kiosk_stop in row.get("StopName", "")
-                and row.get("GoBack", 1) == gb
-            ]
-            if kiosk_rows:
-                c = _classify_stop(kiosk_rows[0], now)
-                status_text = c.status_text
-                # Append "來車" to relative-time texts so LLM knows this is the bus
-                # arriving at the kiosk, not the travel time to the destination.
-                if status_text.endswith("後"):
-                    status_text = status_text + "來車"
-                hits.append((f"{route_name} {direction}：{status_text}", c.sort_minutes))
-            else:
-                hits.append((f"{route_name} {direction}：無即時資料", 9999))
-
-        return hits, all_downstream
-
     valid = [(name, _as_int(info.get("id"))) for name, info in route_info.items()]
-    tasks = [_check(name, rid) for name, rid in valid if rid is not None]
+    tasks = [
+        _check_route_arrivals(
+            name, rid, provider, kiosk_stop, go_back, destination, route_info, now
+        )
+        for name, rid in valid
+        if rid is not None
+    ]
     results = await asyncio.gather(*tasks)
     raw = [item for hits, _ in results for item in hits]
     all_stops = {name for _, stops in results for name in stops}
 
     if not raw:
         if _allow_remap:
-            candidates = _fuzzy_candidates(destination, all_stops)
-            if candidates:
-                best_name, best_score = candidates[0]
-                if best_score >= 0.8:
-                    return await render_arrivals_to_destination(
-                        best_name, kiosk_stop, go_back, _allow_remap=False
-                    )
-                top = "、".join(name for name, _ in candidates[:3])
-                return f"查無「{destination}」站名。本站路線鄰近站名：{top}。"
+            remapped = await _remap_destination_via_fuzzy(
+                destination, all_stops, kiosk_stop, go_back
+            )
+            if remapped is not None:
+                return remapped
         return f"本站沒有直達{destination}的路線"
 
     raw.sort(key=lambda x: x[1])
-
     real_time = [(d, m) for d, m in raw if m < 9999]
     if real_time:
         return "\n".join(d for d, _ in real_time)
