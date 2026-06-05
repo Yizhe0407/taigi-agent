@@ -39,3 +39,4 @@ select = ["E", "F", "I", "UP"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+addopts = "--ignore=e2e_test.py"

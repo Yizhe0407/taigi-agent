@@ -29,6 +29,7 @@ def test_settings_requires_groq_or_llm_env(monkeypatch):
 def test_settings_groq_api_key_satisfies_requirement(monkeypatch):
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("GROQ_MODEL", raising=False)
     monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
 
     s = Settings.from_env()
