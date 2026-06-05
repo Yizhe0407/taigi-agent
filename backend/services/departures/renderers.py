@@ -25,7 +25,7 @@ _T = TypeVar("_T")
 _QUERY_FAILED = "查詢失敗，請稍後再試。"
 
 
-async def _safe_provider_call(coro: Awaitable[_T]) -> _T | None:
+async def _safe_provider_call[T](coro: Awaitable[_T]) -> _T | None:
     """Run a provider coroutine; return None on any exception."""
     try:
         return await coro
@@ -60,11 +60,7 @@ async def render_arrivals(
     if data is None:
         return _QUERY_FAILED
 
-    matches = [
-        stop for stop in data
-        if stop_name in stop.get("StopName", "")
-        and (go_back is None or stop.get("GoBack") == go_back)
-    ]
+    matches = [stop for stop in data if stop_name in stop.get("StopName", "") and (go_back is None or stop.get("GoBack") == go_back)]
     if not matches:
         return f"路線 {route} 不停 {stop_name}。"
 
@@ -263,11 +259,7 @@ async def _check_route_arrivals(
         if _name_matches(kiosk_stop, direction.removeprefix("往")):
             direction = "（循環）"
 
-        kiosk_rows = [
-            row for row in data
-            if kiosk_stop in row.get("StopName", "")
-            and row.get("GoBack", 1) == gb
-        ]
+        kiosk_rows = [row for row in data if kiosk_stop in row.get("StopName", "") and row.get("GoBack", 1) == gb]
         if kiosk_rows:
             c = _classify_stop(kiosk_rows[0], now)
             status_text = c.status_text
@@ -298,9 +290,7 @@ async def _remap_destination_via_fuzzy(
         return None
     best_name, best_score = candidates[0]
     if best_score >= 0.8:
-        return await render_arrivals_to_destination(
-            best_name, kiosk_stop, go_back, _allow_remap=False
-        )
+        return await render_arrivals_to_destination(best_name, kiosk_stop, go_back, _allow_remap=False)
     top = "、".join(name for name, _ in candidates[:3])
     return f"查無「{destination}」站名。本站路線鄰近站名：{top}。"
 
@@ -326,22 +316,14 @@ async def render_arrivals_to_destination(
 
     now = datetime.now(TAIPEI_TZ)
     valid = [(name, _as_int(info.get("id"))) for name, info in route_info.items()]
-    tasks = [
-        _check_route_arrivals(
-            name, rid, provider, kiosk_stop, go_back, destination, route_info, now
-        )
-        for name, rid in valid
-        if rid is not None
-    ]
+    tasks = [_check_route_arrivals(name, rid, provider, kiosk_stop, go_back, destination, route_info, now) for name, rid in valid if rid is not None]
     results = await asyncio.gather(*tasks)
     raw = [item for hits, _ in results for item in hits]
     all_stops = {name for _, stops in results for name in stops}
 
     if not raw:
         if _allow_remap:
-            remapped = await _remap_destination_via_fuzzy(
-                destination, all_stops, kiosk_stop, go_back
-            )
+            remapped = await _remap_destination_via_fuzzy(destination, all_stops, kiosk_stop, go_back)
             if remapped is not None:
                 return remapped
         return f"本站沒有直達{destination}的路線"

@@ -80,6 +80,7 @@ def test_plan_route_to_coordinate_formats_bus_itineraries(monkeypatch):
         monkeypatch,
         _stop("YUN-NYUST", "雲林科技大學", 23.69602, 120.533793),
     )
+
     async def fake_plan_bus_connections(*args):
         return [walking_only, itinerary]
 
@@ -130,6 +131,7 @@ def test_plan_route_to_coordinate_rejects_out_of_yunlin_destination(monkeypatch)
         monkeypatch,
         _stop("YUN-NYUST", "雲林科技大學", 23.69602, 120.533793),
     )
+
     async def fail_plan_bus_connections(*args):
         pytest.fail("OTP should not be called for out-of-area points")
 
@@ -139,9 +141,7 @@ def test_plan_route_to_coordinate_rejects_out_of_yunlin_destination(monkeypatch)
         kiosk_route_planner.RoutePlanningError,
         match="目前僅支援雲林縣內目的地",
     ):
-        asyncio.run(
-            kiosk_route_planner.plan_route_to_coordinate(23.480075, 120.449111)
-        )
+        asyncio.run(kiosk_route_planner.plan_route_to_coordinate(23.480075, 120.449111))
 
 
 def test_resolve_place_uses_exact_kiosk_stop_name(monkeypatch):

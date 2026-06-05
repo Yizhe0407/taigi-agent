@@ -111,11 +111,13 @@ def test_build_departure_snapshot_classifies_and_sorts_routes(use_provider):
         )
     )
 
-    snapshot = asyncio.run(departures.build_departure_snapshot(
-        "雲林科技大學",
-        go_back=2,
-        updated_at=_updated_at(),
-    ))
+    snapshot = asyncio.run(
+        departures.build_departure_snapshot(
+            "雲林科技大學",
+            go_back=2,
+            updated_at=_updated_at(),
+        )
+    )
 
     assert snapshot.stop_name == "雲林科技大學"
     assert snapshot.direction_filter == 2
@@ -164,11 +166,13 @@ def test_build_departure_snapshot_applies_direction_filter(use_provider):
         )
     )
 
-    snapshot = asyncio.run(departures.build_departure_snapshot(
-        "雲林科技大學",
-        go_back=1,
-        updated_at=_updated_at(),
-    ))
+    snapshot = asyncio.run(
+        departures.build_departure_snapshot(
+            "雲林科技大學",
+            go_back=1,
+            updated_at=_updated_at(),
+        )
+    )
 
     assert len(snapshot.routes) == 1
     assert snapshot.routes[0].go_back == 1
@@ -189,11 +193,13 @@ def test_build_departure_snapshot_marks_unexpected_values_unknown(use_provider):
         )
     )
 
-    snapshot = asyncio.run(departures.build_departure_snapshot(
-        "雲林科技大學",
-        go_back=2,
-        updated_at=_updated_at(),
-    ))
+    snapshot = asyncio.run(
+        departures.build_departure_snapshot(
+            "雲林科技大學",
+            go_back=2,
+            updated_at=_updated_at(),
+        )
+    )
 
     assert snapshot.summary.unknown_count == 1
     assert snapshot.routes[0].section == "unknown"
@@ -229,11 +235,13 @@ def test_build_route_detail_returns_structured_stop_order(use_provider):
         )
     )
 
-    detail = asyncio.run(departures.build_route_detail(
-        "201",
-        "雲林科技大學",
-        go_back=2,
-    ))
+    detail = asyncio.run(
+        departures.build_route_detail(
+            "201",
+            "雲林科技大學",
+            go_back=2,
+        )
+    )
 
     assert detail.route == "201"
     assert detail.route_id == 65036
@@ -294,17 +302,9 @@ def test_render_stop_arrival_statuses_groups_by_section(use_provider):
         )
     )
 
-    statuses = asyncio.run(
-        departures.render_stop_arrival_statuses("雲林科技大學", go_back=2)
-    )
+    statuses = asyncio.run(departures.render_stop_arrival_statuses("雲林科技大學", go_back=2))
     assert statuses == (
-        "雲林科技大學 目前到站狀態：\n"
-        "有車：\n"
-        "201 往高鐵雲林站：下午9點35分發車\n"
-        "尚未發車：\n"
-        "7000B 往梅山站：未發車\n"
-        "末班已過：\n"
-        "101 往斗六棒球場：末班駛離"
+        "雲林科技大學 目前到站狀態：\n有車：\n201 往高鐵雲林站：下午9點35分發車\n尚未發車：\n7000B 往梅山站：未發車\n末班已過：\n101 往斗六棒球場：末班駛離"
     )
 
 
@@ -326,10 +326,7 @@ def test_render_arrivals_uses_classify(use_provider):
         )
     )
 
-    assert asyncio.run(departures.render_arrivals("201", "雲林科技大學")) == (
-        "往雲林科技大學：即將到站\n"
-        "往高鐵雲林站：約十二分鐘後來車"
-    )
+    assert asyncio.run(departures.render_arrivals("201", "雲林科技大學")) == ("往雲林科技大學：即將到站\n往高鐵雲林站：約十二分鐘後來車")
 
 
 def test_render_route_stops_lists_both_directions(use_provider):
@@ -352,8 +349,7 @@ def test_render_route_stops_lists_both_directions(use_provider):
     )
 
     assert asyncio.run(departures.render_route_stops("201", "雲林科技大學")) == (
-        "往雲林科技大學：高鐵雲林站、雲林科技大學\n"
-        "往高鐵雲林站：雲林科技大學、高鐵雲林站"
+        "往雲林科技大學：高鐵雲林站、雲林科技大學\n往高鐵雲林站：雲林科技大學、高鐵雲林站"
     )
 
 
@@ -368,11 +364,7 @@ def test_render_routes_at_stop_lists_unique_routes(use_provider):
         )
     )
 
-    assert asyncio.run(departures.render_routes_at_stop("雲林科技大學")) == (
-        "雲林科技大學 停靠路線：\n"
-        "201\n"
-        "7126"
-    )
+    assert asyncio.run(departures.render_routes_at_stop("雲林科技大學")) == ("雲林科技大學 停靠路線：\n201\n7126")
 
 
 def test_render_stop_on_route_found(use_provider):
@@ -421,9 +413,7 @@ def test_render_arrivals_to_destination_returns_all_sorted(use_provider):
             ],
         )
     )
-    result = asyncio.run(
-        departures.render_arrivals_to_destination("斗六火車站", "雲林科技大學")
-    )
+    result = asyncio.run(departures.render_arrivals_to_destination("斗六火車站", "雲林科技大學"))
     assert "201" in result
     assert "301" in result
     assert "八分" in result
@@ -439,9 +429,7 @@ def test_render_arrivals_to_destination_no_routes(use_provider):
             ],
         )
     )
-    result = asyncio.run(
-        departures.render_arrivals_to_destination("台北101", "雲林科技大學")
-    )
+    result = asyncio.run(departures.render_arrivals_to_destination("台北101", "雲林科技大學"))
     assert result == "本站沒有直達台北101的路線"
 
 
@@ -457,9 +445,7 @@ def test_render_arrivals_to_destination_no_eta_row(use_provider):
             ],
         )
     )
-    result = asyncio.run(
-        departures.render_arrivals_to_destination("西螺", "雲林科技大學")
-    )
+    result = asyncio.run(departures.render_arrivals_to_destination("西螺", "雲林科技大學"))
     # 雲林科技大學 not in stop sequence → no downstream match → no hit
     assert result == "本站沒有直達西螺的路線"
 
@@ -503,7 +489,5 @@ def test_render_stop_on_route_allows_kiosk_itself(use_provider):
             ],
         )
     )
-    result = asyncio.run(departures.render_stop_on_route(
-        "201", "雲林科技大學", "雲林科技大學"
-    ))
+    result = asyncio.run(departures.render_stop_on_route("201", "雲林科技大學", "雲林科技大學"))
     assert result.startswith("有")

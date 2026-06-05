@@ -112,9 +112,7 @@ async def send_chat_message(session_id: str, body: ChatMessageRequest) -> object
         reply = await session.respond(body.message)
         store.save_messages(session_id, session.messages)
     except LookupError as error:
-        raise HTTPException(
-            status_code=404, detail="對話階段不存在或已過期，請重新開始"
-        ) from error
+        raise HTTPException(status_code=404, detail="對話階段不存在或已過期，請重新開始") from error
     except Exception as error:
         raise HTTPException(
             status_code=500,

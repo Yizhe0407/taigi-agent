@@ -60,8 +60,7 @@ class ChatSessionStore:
         now = time.time()
         with self._lock:
             self._conn.execute(
-                "INSERT INTO sessions(session_id, last_used, messages) "
-                "VALUES (?, ?, ?)",
+                "INSERT INTO sessions(session_id, last_used, messages) VALUES (?, ?, ?)",
                 (session_id, now, "[]"),
             )
         return session_id
@@ -93,8 +92,7 @@ class ChatSessionStore:
         payload = json.dumps(messages, ensure_ascii=False)
         with self._lock:
             self._conn.execute(
-                "UPDATE sessions SET messages = ?, last_used = ? "
-                "WHERE session_id = ?",
+                "UPDATE sessions SET messages = ?, last_used = ? WHERE session_id = ?",
                 (payload, time.time(), session_id),
             )
 

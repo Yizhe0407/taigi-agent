@@ -125,10 +125,7 @@ def test_catalog_path_defaults_when_env_unset(monkeypatch):
 def test_catalog_path_joins_relative_env_to_backend_root(monkeypatch):
     monkeypatch.setenv("YUNLIN_STOP_INDEX_PATH", "otp/data/custom.json")
 
-    assert (
-        stop_catalog._catalog_path()
-        == stop_catalog._BACKEND_ROOT / "otp/data/custom.json"
-    )
+    assert stop_catalog._catalog_path() == stop_catalog._BACKEND_ROOT / "otp/data/custom.json"
 
 
 def test_catalog_path_uses_absolute_env_as_is(tmp_path, monkeypatch):

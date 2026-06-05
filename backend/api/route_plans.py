@@ -10,8 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from services.kiosk_config import get_kiosk_config
 from services.route_plans import (
     InvalidRouteDestination,
-    RoutePlanNotFound,
     RoutePlanningUnavailable,
+    RoutePlanNotFound,
     kiosk_place,
     plan_route_to_coordinate,
     route_plan_to_view_model,

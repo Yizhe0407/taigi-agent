@@ -163,9 +163,7 @@ def _parse_station(
     station_uid = data.get("StationUID")
     position = data.get("StationPosition")
     name = _zh_name(data, "StationName")
-    if not isinstance(station_uid, str) or not station_uid or not isinstance(
-        position, dict
-    ):
+    if not isinstance(station_uid, str) or not station_uid or not isinstance(position, dict):
         return None
 
     latitude = _parse_float(position.get("PositionLat"))
@@ -184,12 +182,8 @@ def _parse_station(
         latitude=latitude,
         longitude=longitude,
         bike_capacity=_parse_non_negative_int(data.get("BikesCapacity")),
-        available_rent_bikes=_parse_non_negative_int(
-            availability.get("AvailableRentBikes")
-        ),
-        available_return_bikes=_parse_non_negative_int(
-            availability.get("AvailableReturnBikes")
-        ),
+        available_rent_bikes=_parse_non_negative_int(availability.get("AvailableRentBikes")),
+        available_return_bikes=_parse_non_negative_int(availability.get("AvailableReturnBikes")),
         service_status=_parse_non_negative_int(service_status),
         update_time=_parse_datetime(update_time),
     )
@@ -217,9 +211,7 @@ def _merge_station_payloads(
 # ── public service API ────────────────────────────────────────────────────────
 
 
-async def load_moovo_stations(
-    *, force_refresh: bool = False
-) -> tuple[MoovoStation, ...]:
+async def load_moovo_stations(*, force_refresh: bool = False) -> tuple[MoovoStation, ...]:
     """Load Yunlin MOOVO stations from TDX without blocking the event loop."""
     global _stations_cache
 
@@ -246,12 +238,7 @@ async def load_moovo_stations(
 
 
 def _validate_coordinate(latitude: float, longitude: float) -> None:
-    if (
-        not math.isfinite(latitude)
-        or not math.isfinite(longitude)
-        or not -90 <= latitude <= 90
-        or not -180 <= longitude <= 180
-    ):
+    if not math.isfinite(latitude) or not math.isfinite(longitude) or not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
         raise ValueError("invalid coordinate")
 
 
@@ -266,12 +253,7 @@ def _distance_meters(
     target_phi = math.radians(target_latitude)
     delta_phi = math.radians(target_latitude - origin_latitude)
     delta_lambda = math.radians(target_longitude - origin_longitude)
-    a = (
-        math.sin(delta_phi / 2) ** 2
-        + math.cos(origin_phi)
-        * math.cos(target_phi)
-        * math.sin(delta_lambda / 2) ** 2
-    )
+    a = math.sin(delta_phi / 2) ** 2 + math.cos(origin_phi) * math.cos(target_phi) * math.sin(delta_lambda / 2) ** 2
     return radius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 

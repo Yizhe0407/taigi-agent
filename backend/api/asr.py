@@ -25,9 +25,7 @@ def _asr_config() -> tuple[str, str, str]:
     base_url = os.getenv("ASR_BASE_URL") or ""
     model = os.getenv("ASR_MODEL") or ""
     if not base_url or not model:
-        raise HTTPException(
-            status_code=503, detail="ASR 服務尚未設定（ASR_BASE_URL / ASR_MODEL）"
-        )
+        raise HTTPException(status_code=503, detail="ASR 服務尚未設定（ASR_BASE_URL / ASR_MODEL）")
     return base_url.rstrip("/"), model, os.getenv("ASR_API_KEY", "")
 
 
@@ -94,13 +92,9 @@ async def transcribe_audio(request: Request, file: UploadFile) -> object:
             model,
         )
     except httpx.TimeoutException as error:
-        raise HTTPException(
-            status_code=504, detail="語音辨識逾時，請縮短錄音或稍後再試"
-        ) from error
+        raise HTTPException(status_code=504, detail="語音辨識逾時，請縮短錄音或稍後再試") from error
     except httpx.RequestError as error:
-        raise HTTPException(
-            status_code=503, detail="無法連線到語音辨識服務，請稍後再試"
-        ) from error
+        raise HTTPException(status_code=503, detail="無法連線到語音辨識服務，請稍後再試") from error
 
     if response.status_code != 200:
         raise HTTPException(
@@ -111,9 +105,7 @@ async def transcribe_audio(request: Request, file: UploadFile) -> object:
     try:
         text: str = response.json().get("text", "").strip()
     except Exception as error:
-        raise HTTPException(
-            status_code=502, detail="語音辨識服務回應格式錯誤"
-        ) from error
+        raise HTTPException(status_code=502, detail="語音辨識服務回應格式錯誤") from error
 
     if not text:
         raise HTTPException(status_code=422, detail="未聽清楚，請再說一次")

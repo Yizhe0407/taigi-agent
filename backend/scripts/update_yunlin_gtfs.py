@@ -17,10 +17,7 @@ from typing import Any
 import requests
 from dotenv import dotenv_values
 
-_TOKEN_URL = (
-    "https://tdx.transportdata.tw/auth/realms/TDXConnect/"
-    "protocol/openid-connect/token"
-)
+_TOKEN_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 _TDX_GTFS_URL = "https://tdx.transportdata.tw/api/gtfs/V3/Map/GTFS/Static"
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_OUTPUT = _BACKEND_ROOT / "otp/data/yunlin-gtfs.zip"
@@ -29,12 +26,8 @@ _YUNLIN_AGENCY_PREFIX = "YUN_"
 _YUNLIN_CITY = "YunlinCounty"
 _YUNLIN_CITY_CODE = "YUN"
 _GTFS_BUS_ROUTE_TYPE = "3"
-_TDX_CITY_STOP_URL = (
-    f"https://tdx.transportdata.tw/api/basic/v2/Bus/Stop/City/{_YUNLIN_CITY}"
-)
-_TDX_INTERCITY_STOP_URL = (
-    "https://tdx.transportdata.tw/api/basic/v2/Bus/Stop/InterCity"
-)
+_TDX_CITY_STOP_URL = f"https://tdx.transportdata.tw/api/basic/v2/Bus/Stop/City/{_YUNLIN_CITY}"
+_TDX_INTERCITY_STOP_URL = "https://tdx.transportdata.tw/api/basic/v2/Bus/Stop/InterCity"
 _REQUIRED_FILES = {
     "agency.txt",
     "routes.txt",
@@ -142,30 +135,16 @@ def filter_yunlin_gtfs(
     assert calendar is not None
 
     unique_trips = _dedupe_rows(trips, "trip_id")
-    yunlin_agency_ids = {
-        row["agency_id"]
-        for row in agencies.rows
-        if row.get("agency_id", "").startswith(_YUNLIN_AGENCY_PREFIX)
-    }
+    yunlin_agency_ids = {row["agency_id"] for row in agencies.rows if row.get("agency_id", "").startswith(_YUNLIN_AGENCY_PREFIX)}
     local_route_ids = {
-        row["route_id"]
-        for row in routes.rows
-        if row.get("agency_id", "") in yunlin_agency_ids
-        and row.get("route_type", "") == _GTFS_BUS_ROUTE_TYPE
+        row["route_id"] for row in routes.rows if row.get("agency_id", "") in yunlin_agency_ids and row.get("route_type", "") == _GTFS_BUS_ROUTE_TYPE
     }
-    planning_trip_ids = _ids(
-        _rows_with(stop_times, "stop_id", planning_stop_ids), "trip_id"
-    )
-    planning_route_ids = {
-        row["route_id"]
-        for row in unique_trips.rows
-        if row.get("trip_id", "") in planning_trip_ids
-    }
+    planning_trip_ids = _ids(_rows_with(stop_times, "stop_id", planning_stop_ids), "trip_id")
+    planning_route_ids = {row["route_id"] for row in unique_trips.rows if row.get("trip_id", "") in planning_trip_ids}
     route_ids = {
         row["route_id"]
         for row in routes.rows
-        if row.get("route_id", "") in local_route_ids | planning_route_ids
-        and row.get("route_type", "") == _GTFS_BUS_ROUTE_TYPE
+        if row.get("route_id", "") in local_route_ids | planning_route_ids and row.get("route_type", "") == _GTFS_BUS_ROUTE_TYPE
     }
 
     yunlin_trips = _rows_with(unique_trips, "route_id", route_ids)
@@ -191,15 +170,11 @@ def filter_yunlin_gtfs(
         "calendar.txt": yunlin_calendar,
     }
     if calendar_dates is not None:
-        output_tables["calendar_dates.txt"] = _rows_with(
-            calendar_dates, "service_id", service_ids
-        )
+        output_tables["calendar_dates.txt"] = _rows_with(calendar_dates, "service_id", service_ids)
     if shapes is not None:
         output_tables["shapes.txt"] = _rows_with(shapes, "shape_id", shape_ids)
     if frequencies is not None:
-        output_tables["frequencies.txt"] = _rows_with(
-            frequencies, "trip_id", trip_ids
-        )
+        output_tables["frequencies.txt"] = _rows_with(frequencies, "trip_id", trip_ids)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as output_zip:
@@ -267,19 +242,13 @@ def _tdx_credentials(env_file: Path) -> tuple[str, str]:
         env_values = dotenv_values(env_file)
 
     client_id = os.getenv("TDX_CLIENT_ID") or env_values.get("TDX_CLIENT_ID")
-    client_secret = os.getenv("TDX_CLIENT_SECRET") or env_values.get(
-        "TDX_CLIENT_SECRET"
-    )
+    client_secret = os.getenv("TDX_CLIENT_SECRET") or env_values.get("TDX_CLIENT_SECRET")
     if not client_id or not client_secret:
-        raise RuntimeError(
-            "TDX_CLIENT_ID and TDX_CLIENT_SECRET must be set in env or --env-file"
-        )
+        raise RuntimeError("TDX_CLIENT_ID and TDX_CLIENT_SECRET must be set in env or --env-file")
     return str(client_id), str(client_secret)
 
 
-def _get_tdx_token(
-    session: requests.Session, client_id: str, client_secret: str
-) -> str:
+def _get_tdx_token(session: requests.Session, client_id: str, client_secret: str) -> str:
     response = session.post(
         _TOKEN_URL,
         data={
@@ -296,9 +265,7 @@ def _get_tdx_token(
     return str(token)
 
 
-def _download_tdx_gtfs(
-    session: requests.Session, token: str, output: Path
-) -> None:
+def _download_tdx_gtfs(session: requests.Session, token: str, output: Path) -> None:
     with session.get(
         _TDX_GTFS_URL,
         headers={"Authorization": f"Bearer {token}"},
@@ -368,9 +335,7 @@ def _fetch_yunlin_stop_ids(session: requests.Session, token: str) -> set[str]:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Download TDX GTFS and filter it to Yunlin agencies."
-    )
+    parser = argparse.ArgumentParser(description="Download TDX GTFS and filter it to Yunlin agencies.")
     parser.add_argument(
         "--env-file",
         type=Path,
@@ -397,10 +362,7 @@ def _parse_args() -> argparse.Namespace:
         "--stop-index-output",
         type=Path,
         default=_DEFAULT_STOP_INDEX_OUTPUT,
-        help=(
-            "Yunlin stop index for plan_route "
-            f"(default: {_DEFAULT_STOP_INDEX_OUTPUT})"
-        ),
+        help=(f"Yunlin stop index for plan_route (default: {_DEFAULT_STOP_INDEX_OUTPUT})"),
     )
     return parser.parse_args()
 
@@ -436,10 +398,7 @@ def main() -> None:
         yunlin_stop_ids,
     )
     size_kb = args.output.stat().st_size // 1024
-    print(
-        f"Wrote {args.output} ({size_kb} KB, {stats.routes} routes, "
-        f"{stats.trips} trips, {stats.stops} stops, {stats.agencies} agencies)"
-    )
+    print(f"Wrote {args.output} ({size_kb} KB, {stats.routes} routes, {stats.trips} trips, {stats.stops} stops, {stats.agencies} agencies)")
     print(f"Wrote {args.stop_index_output} ({stop_index_entries} Yunlin stops)")
 
 

@@ -64,10 +64,23 @@ _ROUTE_ONLY_RE = re.compile(r"^([A-Za-z]?\d{2,4}[A-Za-z]?)路?$")
 # Remote (cross-county) destinations the kiosk cannot route to directly —
 # user must use a map planner instead.
 _REMOTE_CITIES = (
-    "台北", "臺北", "台中", "臺中", "高雄", "嘉義", "彰化", "南投",
-    "新北", "桃園", "新竹", "宜蘭", "花蓮", "台東", "臺東", "屏東",
+    "台北",
+    "臺北",
+    "台中",
+    "臺中",
+    "高雄",
+    "嘉義",
+    "彰化",
+    "南投",
+    "新北",
+    "桃園",
+    "新竹",
+    "宜蘭",
+    "花蓮",
+    "台東",
+    "臺東",
+    "屏東",
 )
-
 
 
 def _is_remote_destination(text: str) -> bool:
@@ -101,9 +114,7 @@ class IntentRouter:
             route = match.group(1)
             return Decision(
                 intent=Intent.ROUTE_ONLY,
-                canned_response=(
-                    f"{route}您想查什麼，到站時間還是有沒有停某個地方？"
-                ),
+                canned_response=(f"{route}您想查什麼，到站時間還是有沒有停某個地方？"),
                 next_state=ConvState(
                     last_route=route,
                     last_destination=state.last_destination,

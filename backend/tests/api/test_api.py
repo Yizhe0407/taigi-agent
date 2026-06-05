@@ -53,7 +53,7 @@ def _departure_snapshot() -> StopDepartureSnapshot:
             minutes=8,
             scheduled_time=None,
             sort_priority=10,
-                sort_minutes=15,
+            sort_minutes=15,
         ),
         DepartureRouteStatus(
             id="15121-2",
@@ -68,7 +68,7 @@ def _departure_snapshot() -> StopDepartureSnapshot:
             minutes=None,
             scheduled_time=None,
             sort_priority=300,
-                sort_minutes=9999,
+            sort_minutes=9999,
         ),
     )
     return StopDepartureSnapshot(
@@ -330,9 +330,7 @@ def test_create_route_plan_validates_destination_and_departure_time(monkeypatch)
     async def fake_plan(*args):
         return _route_plan()
 
-    monkeypatch.setattr(
-        api.route_plans, "plan_route_to_coordinate", fake_plan
-    )
+    monkeypatch.setattr(api.route_plans, "plan_route_to_coordinate", fake_plan)
     client = TestClient(api.app)
 
     invalid_destination = client.post(
@@ -375,9 +373,7 @@ def test_create_route_plan_maps_route_errors(monkeypatch):
     async def invalid_destination(*args):
         raise InvalidRouteDestination("目前僅支援雲林縣內目的地")
 
-    monkeypatch.setattr(
-        api.route_plans, "plan_route_to_coordinate", invalid_destination
-    )
+    monkeypatch.setattr(api.route_plans, "plan_route_to_coordinate", invalid_destination)
     invalid_response = client.post(
         "/api/route-plans",
         json={"destination": {"lat": 23.480075, "lng": 120.449111}},
@@ -424,10 +420,7 @@ def test_list_nearby_moovo_stations_passes_query(monkeypatch):
 
     monkeypatch.setattr(api.moovo, "nearby_moovo_stations", fake_nearby)
 
-    response = TestClient(api.app).get(
-        "/api/moovo/stations/nearby?lat=23.696147&lng=120.534823"
-        "&radius=800&limit=3"
-    )
+    response = TestClient(api.app).get("/api/moovo/stations/nearby?lat=23.696147&lng=120.534823&radius=800&limit=3")
 
     assert response.status_code == 200
     assert response.json()["stations"][0]["distanceMeters"] == 17.5

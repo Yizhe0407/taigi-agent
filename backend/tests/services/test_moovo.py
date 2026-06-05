@@ -80,9 +80,7 @@ def test_merge_station_payloads_combines_tdx_station_and_availability() -> None:
     assert merged[0].available_rent_bikes == 6
     assert merged[0].available_return_bikes == 4
     assert merged[0].service_status == 1
-    assert merged[0].update_time == datetime.fromisoformat(
-        "2026-05-22T08:30:00+08:00"
-    )
+    assert merged[0].update_time == datetime.fromisoformat("2026-05-22T08:30:00+08:00")
     assert merged[1].available_rent_bikes == 0
     assert merged[1].service_status == 2
 
@@ -114,6 +112,7 @@ def test_nearby_moovo_stations_filters_and_sorts(monkeypatch) -> None:
             update_time=None,
         ),
     )
+
     async def fake_load_stations():
         return stations
 

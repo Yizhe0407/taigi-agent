@@ -16,7 +16,7 @@ from providers.bus import BusProvider
 
 _DEFAULT_BASE = "https://ebus.yunlin.gov.tw/api"
 _DEFAULT_TIMEOUT = 10.0
-_DEFAULT_ROUTE_INFO_TTL_SECONDS = 600.0     # 10 min — ebus stop catalog rarely changes
+_DEFAULT_ROUTE_INFO_TTL_SECONDS = 600.0  # 10 min — ebus stop catalog rarely changes
 _DEFAULT_ROUTE_ESTIMATE_TTL_SECONDS = 10.0  # 10 s  — real-time ETA changes every few seconds
 
 

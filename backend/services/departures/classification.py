@@ -68,45 +68,92 @@ def _classify_stop(stop: dict, now: datetime) -> StopClassification:
 
     if raw_value is not None and value is None:
         return StopClassification(
-            DepartureSection.UNKNOWN, DepartureDecision.UNKNOWN,
-            "狀態不明", "資料異常", None, scheduled_time, 400, 9999,
+            DepartureSection.UNKNOWN,
+            DepartureDecision.UNKNOWN,
+            "狀態不明",
+            "資料異常",
+            None,
+            scheduled_time,
+            400,
+            9999,
         )
 
     if value == -3:
         return StopClassification(
-            DepartureSection.LAST_DEPARTED, DepartureDecision.LAST_DEPARTED,
-            "末班駛離", "末班已過", None, scheduled_time, 300, 9999,
+            DepartureSection.LAST_DEPARTED,
+            DepartureDecision.LAST_DEPARTED,
+            "末班駛離",
+            "末班已過",
+            None,
+            scheduled_time,
+            300,
+            9999,
         )
 
     if value is not None:
         if value < 0:
             return StopClassification(
-                DepartureSection.UNKNOWN, DepartureDecision.UNKNOWN,
-                "狀態不明", "資料異常", None, scheduled_time, 400, 9999,
+                DepartureSection.UNKNOWN,
+                DepartureDecision.UNKNOWN,
+                "狀態不明",
+                "資料異常",
+                None,
+                scheduled_time,
+                400,
+                9999,
             )
         if value <= 3:
             return StopClassification(
-                DepartureSection.AVAILABLE, DepartureDecision.ARRIVING_SOON,
-                "即將到站", "即將到站", max(0, value), scheduled_time, 0, max(0, value),
+                DepartureSection.AVAILABLE,
+                DepartureDecision.ARRIVING_SOON,
+                "即將到站",
+                "即將到站",
+                max(0, value),
+                scheduled_time,
+                0,
+                max(0, value),
             )
         if value <= 20:
             return StopClassification(
-                DepartureSection.AVAILABLE, DepartureDecision.CAN_WAIT,
-                f"約{_mins_zh(value)}分鐘後", "可以等", value, scheduled_time, 10, value,
+                DepartureSection.AVAILABLE,
+                DepartureDecision.CAN_WAIT,
+                f"約{_mins_zh(value)}分鐘後",
+                "可以等",
+                value,
+                scheduled_time,
+                10,
+                value,
             )
         return StopClassification(
-            DepartureSection.AVAILABLE, DepartureDecision.LONG_WAIT,
-            f"約{_mins_zh(value)}分鐘後", "等待較久", value, scheduled_time, 20, value,
+            DepartureSection.AVAILABLE,
+            DepartureDecision.LONG_WAIT,
+            f"約{_mins_zh(value)}分鐘後",
+            "等待較久",
+            value,
+            scheduled_time,
+            20,
+            value,
         )
 
     if scheduled_time:
         return StopClassification(
-            DepartureSection.AVAILABLE, DepartureDecision.SCHEDULED,
-            f"{_fmt_time_12h(scheduled_time)}發車", "尚未發車", None, scheduled_time,
-            30, _scheduled_minutes_from_now(scheduled_time, now),
+            DepartureSection.AVAILABLE,
+            DepartureDecision.SCHEDULED,
+            f"{_fmt_time_12h(scheduled_time)}發車",
+            "尚未發車",
+            None,
+            scheduled_time,
+            30,
+            _scheduled_minutes_from_now(scheduled_time, now),
         )
 
     return StopClassification(
-        DepartureSection.NOT_DEPARTED, DepartureDecision.NOT_DEPARTED,
-        "未發車", "尚未發車", None, None, 200, 9999,
+        DepartureSection.NOT_DEPARTED,
+        DepartureDecision.NOT_DEPARTED,
+        "未發車",
+        "尚未發車",
+        None,
+        None,
+        200,
+        9999,
     )

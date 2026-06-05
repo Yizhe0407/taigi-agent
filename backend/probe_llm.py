@@ -21,7 +21,7 @@ from openai import AsyncOpenAI
 
 load_dotenv()
 
-from agent.prompt import build_system_prompt
+from agent.prompt import build_system_prompt  # noqa: E402
 
 # ── Tool schemas (minimal subset for probe) ───────────────────────────────────
 
@@ -75,9 +75,7 @@ CASES = [
 ]
 
 
-async def probe_one(
-    client: AsyncOpenAI, model: str, user_msg: str, extra_body: dict
-) -> None:
+async def probe_one(client: AsyncOpenAI, model: str, user_msg: str, extra_body: dict) -> None:
     messages = [
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": user_msg},

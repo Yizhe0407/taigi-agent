@@ -60,11 +60,7 @@ def yunlin_polygons() -> MultiPolygonCoordinates:
     geometry = feature["geometry"]
     if geometry["type"] != "MultiPolygon":
         raise ValueError("Yunlin boundary must be a MultiPolygon")
-    return tuple(
-        polygon
-        for item in geometry["coordinates"]
-        if len(polygon := _parse_polygon(item)) > 0 and _is_mainland_polygon(polygon)
-    )
+    return tuple(polygon for item in geometry["coordinates"] if len(polygon := _parse_polygon(item)) > 0 and _is_mainland_polygon(polygon))
 
 
 def _point_on_segment(point: LngLat, start: LngLat, end: LngLat) -> bool:
@@ -74,10 +70,7 @@ def _point_on_segment(point: LngLat, start: LngLat, end: LngLat) -> bool:
     cross = (x - x1) * (y2 - y1) - (y - y1) * (x2 - x1)
     if abs(cross) > _EPSILON:
         return False
-    return (
-        min(x1, x2) - _EPSILON <= x <= max(x1, x2) + _EPSILON
-        and min(y1, y2) - _EPSILON <= y <= max(y1, y2) + _EPSILON
-    )
+    return min(x1, x2) - _EPSILON <= x <= max(x1, x2) + _EPSILON and min(y1, y2) - _EPSILON <= y <= max(y1, y2) + _EPSILON
 
 
 def _point_in_ring(point: LngLat, ring: LinearRing) -> bool:
@@ -91,9 +84,7 @@ def _point_in_ring(point: LngLat, ring: LinearRing) -> bool:
 
         x1, y1 = start
         x2, y2 = end
-        intersects = (y1 > y) != (y2 > y) and x < (
-            ((x2 - x1) * (y - y1)) / (y2 - y1) + x1
-        )
+        intersects = (y1 > y) != (y2 > y) and x < (((x2 - x1) * (y - y1)) / (y2 - y1) + x1)
         if intersects:
             inside = not inside
         previous = current

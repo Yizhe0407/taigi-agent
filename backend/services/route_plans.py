@@ -98,10 +98,7 @@ _MAX_STOP_SPREAD_DEGREES = 0.02
 def _average_coordinate(stops: list[StopRecord]) -> otp.Coordinate | None:
     latitudes = [stop.coordinate.latitude for stop in stops]
     longitudes = [stop.coordinate.longitude for stop in stops]
-    if (
-        max(latitudes) - min(latitudes) > _MAX_STOP_SPREAD_DEGREES
-        or max(longitudes) - min(longitudes) > _MAX_STOP_SPREAD_DEGREES
-    ):
+    if max(latitudes) - min(latitudes) > _MAX_STOP_SPREAD_DEGREES or max(longitudes) - min(longitudes) > _MAX_STOP_SPREAD_DEGREES:
         return None
     return otp.Coordinate(
         latitude=sum(latitudes) / len(latitudes),
@@ -186,9 +183,7 @@ async def plan_route_to_coordinate(
         raise RoutePlanningUnavailable(f"雲林站牌索引讀取失敗：{error}") from error
 
     if origin is None:
-        raise RoutePlanningUnavailable(
-            f"目前無法解析本站「{get_kiosk_config().stop_name}」的路線規劃起點"
-        )
+        raise RoutePlanningUnavailable(f"目前無法解析本站「{get_kiosk_config().stop_name}」的路線規劃起點")
 
     destination_place = _destination_place(latitude, longitude)
     if destination_place is None:
@@ -207,32 +202,23 @@ async def plan_route_to_coordinate(
         )
     except otp.OtpError as error:
         _log.warning("OTP route planning failed: %s", error)
-        raise RoutePlanningUnavailable(
-            "路線規劃服務暫時無法使用，請稍後再試"
-        ) from error
+        raise RoutePlanningUnavailable("路線規劃服務暫時無法使用，請稍後再試") from error
 
     bus_itineraries = [plan for plan in itineraries if plan.bus_legs][:3]
     if not bus_itineraries:
-        raise RoutePlanNotFound(
-            f"找不到從「{origin.name}」到「{destination_place.name}」的公車規劃"
-        )
+        raise RoutePlanNotFound(f"找不到從「{origin.name}」到「{destination_place.name}」的公車規劃")
 
     return RoutePlan(
         origin=origin,
         destination=destination_place,
-        routes=tuple(
-            RouteOption(f"option-{index}", itinerary)
-            for index, itinerary in enumerate(bus_itineraries, start=1)
-        ),
+        routes=tuple(RouteOption(f"option-{index}", itinerary) for index, itinerary in enumerate(bus_itineraries, start=1)),
     )
 
 
 def _coordinates_view_model(
     coordinates: tuple[otp.Coordinate, ...],
 ) -> list[list[float]]:
-    return [
-        [coordinate.longitude, coordinate.latitude] for coordinate in coordinates
-    ]
+    return [[coordinate.longitude, coordinate.latitude] for coordinate in coordinates]
 
 
 def _place_view_model(place: Place) -> PlaceViewModel:

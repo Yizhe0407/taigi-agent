@@ -20,15 +20,15 @@ from dataclasses import dataclass
 
 from openai import AsyncOpenAI
 
-_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-_GROQ_DEFAULT_MODEL = "qwen/qwen3-32b"
-# vLLM (Qwen3) requires this to suppress chain-of-thought tokens.
-_VLLM_EXTRA_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
-
 from agent.prompt import build_system_prompt
 from agent.session import AgentSession, InputEnricher
 from agent.telemetry import configure_telemetry
 from agent.tools import TOOL_HANDLERS, TOOL_SCHEMAS
+
+_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+_GROQ_DEFAULT_MODEL = "qwen/qwen3-32b"
+# vLLM (Qwen3) requires this to suppress chain-of-thought tokens.
+_VLLM_EXTRA_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 def parse_cors_origins() -> list[str]:
@@ -55,10 +55,10 @@ class Settings:
     asr_api_key: str
 
     # ── TTS (optional — service is disabled when tts_base_url is None) ────────
-    tts_base_url: str | None          # e.g. https://tts.example.com
-    tts_model: str                    # model name forwarded to /v1/audio/speech
-    tts_voice: str                    # voice name forwarded to /v1/audio/speech
-    tts_api_key: str                  # empty string = no Authorization header
+    tts_base_url: str | None  # e.g. https://tts.example.com
+    tts_model: str  # model name forwarded to /v1/audio/speech
+    tts_voice: str  # voice name forwarded to /v1/audio/speech
+    tts_api_key: str  # empty string = no Authorization header
 
     # ── HTTP API ───────────────────────────────────────────────────────────────
     cors_origins: list[str]
@@ -79,15 +79,9 @@ class Settings:
         else:
             llm_base_url = os.getenv("LLM_BASE_URL", "")
             llm_model = os.getenv("LLM_MODEL", "")
-            missing = [
-                name
-                for name, val in [("LLM_BASE_URL", llm_base_url), ("LLM_MODEL", llm_model)]
-                if not val
-            ]
+            missing = [name for name, val in [("LLM_BASE_URL", llm_base_url), ("LLM_MODEL", llm_model)] if not val]
             if missing:
-                raise RuntimeError(
-                    f"Required env vars not set: GROQ_API_KEY or {', '.join(missing)}"
-                )
+                raise RuntimeError(f"Required env vars not set: GROQ_API_KEY or {', '.join(missing)}")
             llm_api_key = os.getenv("LLM_API_KEY", "ollama")
             llm_extra_body = _VLLM_EXTRA_BODY
 

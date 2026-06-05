@@ -16,23 +16,10 @@ from services.departures.classification import (
     DepartureSection,
     StopClassification,
     _classify_stop,
-    _scheduled_minutes_from_now,
 )
 from services.departures.normalize import (
     TAIPEI_TZ,
     _as_int,
-    _direction_label_from_info,
-    _downstream_names,
-    _fmt_time_12h,
-    _fuzzy_candidates,
-    _is_terminal_direction,
-    _lookup_route,
-    _mins_zh,
-    _name_matches,
-    _normalize_route_key,
-    _stop_similarity,
-    _stops_by_direction_with_seq,
-    _strip_paren,
 )
 from services.departures.provider import (
     get_provider,
@@ -50,8 +37,8 @@ from services.departures.renderers import (
 from services.departures.snapshot import (
     DepartureRouteDetail,
     DepartureRouteStatus,
-    DepartureSummary,
     DepartureSnapshotUnavailable,
+    DepartureSummary,
     RouteDetailNotFound,
     RouteDetailUnavailable,
     RouteDirectionDetail,

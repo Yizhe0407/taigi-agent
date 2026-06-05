@@ -63,8 +63,7 @@ def _largest_cluster_centroid(stops: list[StopRecord]) -> tuple[float, float]:
         cluster = [
             s
             for s in stops
-            if abs(s.coordinate.latitude - anchor.coordinate.latitude) <= RADIUS
-            and abs(s.coordinate.longitude - anchor.coordinate.longitude) <= RADIUS
+            if abs(s.coordinate.latitude - anchor.coordinate.latitude) <= RADIUS and abs(s.coordinate.longitude - anchor.coordinate.longitude) <= RADIUS
         ]
         if len(cluster) > len(best_cluster):
             best_cluster = cluster

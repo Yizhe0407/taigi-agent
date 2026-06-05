@@ -44,16 +44,12 @@ async def get_route_stops(route: str) -> str:
 
 async def get_stop_arrival_statuses_here() -> str:
     """查詢本站所有停靠路線目前的到站狀態。"""
-    return await departures.render_stop_arrival_statuses(
-        _kiosk_stop(), _kiosk_go_back_filter()
-    )
+    return await departures.render_stop_arrival_statuses(_kiosk_stop(), _kiosk_go_back_filter())
 
 
 async def get_arrivals_to_destination(destination: str) -> str:
     """查詢本站哪些路線能到達目的地，並列出各路線下一班到站時間，依到站時間排序。"""
-    return await departures.render_arrivals_to_destination(
-        destination, _kiosk_stop(), go_back=_kiosk_go_back_filter()
-    )
+    return await departures.render_arrivals_to_destination(destination, _kiosk_stop(), go_back=_kiosk_go_back_filter())
 
 
 async def get_arrivals_here(route: str) -> str:
@@ -66,6 +62,4 @@ async def get_arrivals_here(route: str) -> str:
     - 「回程」→ go_back=2
     - 不設定 → 顯示兩個方向
     """
-    return await departures.render_arrivals(
-        route, _kiosk_stop(), go_back=_kiosk_go_back_filter()
-    )
+    return await departures.render_arrivals(route, _kiosk_stop(), go_back=_kiosk_go_back_filter())

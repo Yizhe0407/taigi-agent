@@ -86,11 +86,7 @@ async def call_llm(
                     extra_body=extra_body,
                 )
             except Exception as e:
-                error_type = (
-                    "context_window"
-                    if _looks_like_context_error(e)
-                    else type(e).__name__
-                )
+                error_type = "context_window" if _looks_like_context_error(e) else type(e).__name__
                 telemetry.record_llm_duration(
                     time.perf_counter() - started,
                     model=model,
@@ -123,7 +119,7 @@ async def call_llm(
                 return response
 
         if retry_error is not None:
-            wait = 2 ** attempt
+            wait = 2**attempt
             log_diagnostic(
                 "retry",
                 f"LLM 呼叫失敗（{summarize_error(retry_error)}），{wait}s 後重試...",

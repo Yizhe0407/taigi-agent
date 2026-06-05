@@ -76,21 +76,13 @@ async def synthesize(body: TTSRequest) -> Response:
         # Distinguish "ran but produced nothing" from true success so dashboards
         # can surface empty-output events separately from exceptions.
         outcome = "ok" if result.tailo else "empty_output"
-        tel.record_pipeline_stage(
-            time.perf_counter() - t0, stage="tts.text_process", outcome=outcome
-        )
+        tel.record_pipeline_stage(time.perf_counter() - t0, stage="tts.text_process", outcome=outcome)
     except Exception as err:
-        tel.record_pipeline_stage(
-            time.perf_counter() - t0, stage="tts.text_process", outcome="error"
-        )
-        raise HTTPException(
-            status_code=500, detail=f"文字轉換失敗：{err}"
-        ) from err
+        tel.record_pipeline_stage(time.perf_counter() - t0, stage="tts.text_process", outcome="error")
+        raise HTTPException(status_code=500, detail=f"文字轉換失敗：{err}") from err
 
     if not result.tailo:
-        raise HTTPException(
-            status_code=422, detail="無法將輸入文字轉為台語發音"
-        )
+        raise HTTPException(status_code=422, detail="無法將輸入文字轉為台語發音")
 
     # ── Step 3: Tailo → audio ─────────────────────────────────────────────────
     headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -113,9 +105,7 @@ async def synthesize(body: TTSRequest) -> Response:
     except httpx.TimeoutException as err:
         raise HTTPException(status_code=504, detail="TTS 服務逾時") from err
     except httpx.RequestError as err:
-        raise HTTPException(
-            status_code=503, detail=f"無法連線到 TTS 服務：{err}"
-        ) from err
+        raise HTTPException(status_code=503, detail=f"無法連線到 TTS 服務：{err}") from err
 
     if tts_response.status_code != 200:
         raise HTTPException(

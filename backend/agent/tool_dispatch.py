@@ -104,8 +104,4 @@ async def execute_tool_calls(
     handlers: Mapping[str, ToolHandler],
     telemetry: AgentTelemetry,
 ) -> list[dict]:
-    return list(
-        await asyncio.gather(
-            *[_execute_one(call, handlers, telemetry) for call in tool_calls]
-        )
-    )
+    return list(await asyncio.gather(*[_execute_one(call, handlers, telemetry) for call in tool_calls]))

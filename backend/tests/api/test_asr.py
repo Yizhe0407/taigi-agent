@@ -172,9 +172,7 @@ def test_asr_returns_503_on_connection_error(client: TestClient, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_asr_sends_authorization_header_when_key_is_set(
-    client: TestClient, monkeypatch
-):
+def test_asr_sends_authorization_header_when_key_is_set(client: TestClient, monkeypatch):
     monkeypatch.setenv("ASR_BASE_URL", "http://asr.local")
     monkeypatch.setenv("ASR_MODEL", "qwen3-asr")
     monkeypatch.setenv("ASR_API_KEY", "secret-token")
@@ -194,9 +192,7 @@ def test_asr_sends_authorization_header_when_key_is_set(
     assert captured["headers"].get("Authorization") == "Bearer secret-token"
 
 
-def test_asr_omits_authorization_header_when_key_is_empty(
-    client: TestClient, monkeypatch
-):
+def test_asr_omits_authorization_header_when_key_is_empty(client: TestClient, monkeypatch):
     monkeypatch.setenv("ASR_BASE_URL", "http://asr.local")
     monkeypatch.setenv("ASR_MODEL", "qwen3-asr")
     monkeypatch.delenv("ASR_API_KEY", raising=False)

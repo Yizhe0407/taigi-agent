@@ -19,15 +19,20 @@ _PIPELINE_INSTRUMENTATION_NAME = "taigi_bus_agent.pipeline"
 
 # Recommended bucket boundaries from OTel HTTP semantic conventions spec.
 # https://opentelemetry.io/docs/specs/semconv/http/http-metrics/
-_DURATION_BOUNDARIES = [
-    0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10
-]
+_DURATION_BOUNDARIES = [0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10]
 
 # Byte-range boundaries for audio size histograms (1 KB → 25 MB).
 # Default OTel buckets top out at 10 000, which is useless for MB-scale audio.
 _BYTES_BOUNDARIES = [
-    1_024, 4_096, 16_384, 65_536, 262_144,
-    1_048_576, 4_194_304, 10_485_760, 26_214_400,
+    1_024,
+    4_096,
+    16_384,
+    65_536,
+    262_144,
+    1_048_576,
+    4_194_304,
+    10_485_760,
+    26_214_400,
 ]
 
 # Singleton — set once by configure_telemetry(), read by get_telemetry().
@@ -61,9 +66,7 @@ def configure_telemetry(service_name: str = "taigi-bus-agent") -> "AgentTelemetr
             "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
         )
     ):
-        resource = Resource.create(
-            {"service.name": os.getenv("OTEL_SERVICE_NAME", service_name)}
-        )
+        resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", service_name)})
 
         tracer_provider = TracerProvider(resource=resource)
         tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
@@ -130,10 +133,7 @@ class AgentTelemetry:
         self._pipeline_stage_duration = pipeline_meter.create_histogram(
             "pipeline.stage.duration",
             unit="s",
-            description=(
-                "Duration of a pipeline processing stage. "
-                "Attributes: pipeline.stage (e.g. tts.text_process), pipeline.outcome."
-            ),
+            description=("Duration of a pipeline processing stage. Attributes: pipeline.stage (e.g. tts.text_process), pipeline.outcome."),
         )
         self._asr_audio_bytes = pipeline_meter.create_histogram(
             "pipeline.asr.audio_bytes",
@@ -144,12 +144,8 @@ class AgentTelemetry:
     # ── Span helpers ──────────────────────────────────────────────────────────
 
     @contextmanager
-    def start_span(
-        self, name: str, attributes: Mapping[str, Any] | None = None
-    ) -> Iterator[Any]:
-        with self._tracer.start_as_current_span(
-            name, attributes=_clean_attributes(attributes)
-        ) as span:
+    def start_span(self, name: str, attributes: Mapping[str, Any] | None = None) -> Iterator[Any]:
+        with self._tracer.start_as_current_span(name, attributes=_clean_attributes(attributes)) as span:
             yield span
 
     def mark_span_error(
@@ -167,9 +163,7 @@ class AgentTelemetry:
 
     # ── Agent metrics ─────────────────────────────────────────────────────────
 
-    def record_llm_duration(
-        self, duration_s: float, *, model: str, operation: str, outcome: str
-    ) -> None:
+    def record_llm_duration(self, duration_s: float, *, model: str, operation: str, outcome: str) -> None:
         self._llm_duration.record(
             duration_s,
             {
@@ -198,9 +192,7 @@ class AgentTelemetry:
             },
         )
 
-    def record_tool_duration(
-        self, duration_s: float, *, tool_name: str, outcome: str
-    ) -> None:
+    def record_tool_duration(self, duration_s: float, *, tool_name: str, outcome: str) -> None:
         self._tool_duration.record(
             duration_s,
             {
@@ -220,9 +212,7 @@ class AgentTelemetry:
 
     # ── Pipeline metrics ──────────────────────────────────────────────────────
 
-    def record_pipeline_stage(
-        self, duration_s: float, *, stage: str, outcome: str
-    ) -> None:
+    def record_pipeline_stage(self, duration_s: float, *, stage: str, outcome: str) -> None:
         """Record latency for a named pipeline processing stage.
 
         Args:

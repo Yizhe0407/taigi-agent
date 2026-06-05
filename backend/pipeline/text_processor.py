@@ -40,8 +40,8 @@ def _get_taibun() -> TaibunConverter:
 
 @dataclass
 class TextProcessResult:
-    hanlo: str   # 漢羅混合文字（中間產物，可用於 debug / admin 追蹤）
-    tailo: str   # 台羅拼音（送 TTS）
+    hanlo: str  # 漢羅混合文字（中間產物，可用於 debug / admin 追蹤）
+    tailo: str  # 台羅拼音（送 TTS）
 
 
 def process(zh_text: str) -> TextProcessResult:

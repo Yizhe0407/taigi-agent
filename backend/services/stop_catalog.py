@@ -52,12 +52,7 @@ def _parse_stop(data: Any) -> StopRecord:
     name = data.get("name")
     latitude = data.get("latitude")
     longitude = data.get("longitude")
-    if (
-        not isinstance(stop_id, str)
-        or not isinstance(name, str)
-        or not isinstance(latitude, int | float)
-        or not isinstance(longitude, int | float)
-    ):
+    if not isinstance(stop_id, str) or not isinstance(name, str) or not isinstance(latitude, int | float) or not isinstance(longitude, int | float):
         raise StopCatalogError("stop index is missing stop fields")
 
     return StopRecord(
@@ -80,10 +75,7 @@ def _load_catalog(path: str) -> StopCatalog:
     except (OSError, json.JSONDecodeError) as error:
         raise StopCatalogError(f"無法讀取 {catalog_path}: {error}") from error
 
-    if (
-        not isinstance(payload, dict)
-        or payload.get("schema_version") != _SCHEMA_VERSION
-    ):
+    if not isinstance(payload, dict) or payload.get("schema_version") != _SCHEMA_VERSION:
         raise StopCatalogError("stop index schema version is unsupported")
 
     stops = payload.get("stops")

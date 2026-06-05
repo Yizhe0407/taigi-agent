@@ -8,8 +8,6 @@ contract.
 
 import asyncio
 
-import pytest
-
 from providers import yunlin_ebus
 from providers.yunlin_ebus import YunlinEbusProvider
 

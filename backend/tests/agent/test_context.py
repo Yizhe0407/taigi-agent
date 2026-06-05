@@ -23,9 +23,7 @@ def test_trim_history_keeps_latest_tool_exchange_whole():
         {"role": "assistant", "content": "新回答"},
     ]
 
-    assert trim_history(
-        old_exchange + latest_exchange, max_history_tokens=200
-    ) == latest_exchange
+    assert trim_history(old_exchange + latest_exchange, max_history_tokens=200) == latest_exchange
 
 
 def test_compact_long_tool_results_persists_full_content(tmp_path):

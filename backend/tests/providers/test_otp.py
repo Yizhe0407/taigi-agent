@@ -42,15 +42,11 @@ def _plan_payload():
                                     },
                                     "from": {
                                         "name": "Origin",
-                                        "departure": {
-                                            "scheduledTime": "2026-05-21T08:34:04+08:00"
-                                        },
+                                        "departure": {"scheduledTime": "2026-05-21T08:34:04+08:00"},
                                     },
                                     "to": {
                                         "name": "雲林科技大學",
-                                        "arrival": {
-                                            "scheduledTime": "2026-05-21T08:35:00+08:00"
-                                        },
+                                        "arrival": {"scheduledTime": "2026-05-21T08:35:00+08:00"},
                                     },
                                     "route": None,
                                 },
@@ -68,15 +64,11 @@ def _plan_payload():
                                     },
                                     "from": {
                                         "name": "雲林科技大學",
-                                        "departure": {
-                                            "scheduledTime": "2026-05-21T08:35:00+08:00"
-                                        },
+                                        "departure": {"scheduledTime": "2026-05-21T08:35:00+08:00"},
                                     },
                                     "to": {
                                         "name": "斗六火車站",
-                                        "arrival": {
-                                            "scheduledTime": "2026-05-21T08:45:00+08:00"
-                                        },
+                                        "arrival": {"scheduledTime": "2026-05-21T08:45:00+08:00"},
                                     },
                                     "route": {
                                         "shortName": "201",

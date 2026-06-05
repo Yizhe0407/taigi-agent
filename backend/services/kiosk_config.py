@@ -42,6 +42,7 @@ class KioskConfig:
         if self.direction == "回程":
             return 2
         return None
+
     lat: float | None = None
     lon: float | None = None
 

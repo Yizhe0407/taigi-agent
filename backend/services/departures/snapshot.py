@@ -8,7 +8,6 @@ from datetime import datetime
 from services.departures.classification import (
     DepartureDecision,
     DepartureSection,
-    StopClassification,
     _classify_stop,
 )
 from services.departures.normalize import (
@@ -96,18 +95,10 @@ class DepartureRouteDetail:
 
 def _summary(routes: tuple[DepartureRouteStatus, ...]) -> DepartureSummary:
     return DepartureSummary(
-        available_count=sum(
-            1 for r in routes if r.section == DepartureSection.AVAILABLE
-        ),
-        not_departed_count=sum(
-            1 for r in routes if r.section == DepartureSection.NOT_DEPARTED
-        ),
-        last_departed_count=sum(
-            1 for r in routes if r.section == DepartureSection.LAST_DEPARTED
-        ),
-        unknown_count=sum(
-            1 for r in routes if r.section == DepartureSection.UNKNOWN
-        ),
+        available_count=sum(1 for r in routes if r.section == DepartureSection.AVAILABLE),
+        not_departed_count=sum(1 for r in routes if r.section == DepartureSection.NOT_DEPARTED),
+        last_departed_count=sum(1 for r in routes if r.section == DepartureSection.LAST_DEPARTED),
+        unknown_count=sum(1 for r in routes if r.section == DepartureSection.UNKNOWN),
     )
 
 
@@ -149,9 +140,7 @@ async def build_departure_snapshot(
         )
     except Exception as error:
         _log.warning("Departure snapshot fetch failed: %s", error)
-        raise DepartureSnapshotUnavailable(
-            "公車資訊暫時無法取得，請稍後再試"
-        ) from error
+        raise DepartureSnapshotUnavailable("公車資訊暫時無法取得，請稍後再試") from error
 
     route_by_id = {info["id"]: name for name, info in route_info.items()}
     routes: list[DepartureRouteStatus] = []

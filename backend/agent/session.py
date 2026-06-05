@@ -41,12 +41,10 @@ def _find_direct_response(tool_calls: list, tool_results: list[dict]) -> str | N
             return result["content"]
     return None
 
+
 _MAX_CONTEXT_RECOVERY_RETRIES = 1
 _DEFAULT_MAX_TOOL_ROUNDS = 8
 _TOOL_ROUND_LIMIT_MESSAGE = "查詢逾時，請換個方式再問一次。"
-
-
-
 
 
 class AgentSession:
@@ -116,9 +114,7 @@ class AgentSession:
         """
         assert decision.canned_response is not None
         self.messages.append({"role": "user", "content": user_input})
-        self.messages.append(
-            {"role": "assistant", "content": decision.canned_response}
-        )
+        self.messages.append({"role": "assistant", "content": decision.canned_response})
         self.messages = trim_history(self.messages, self.max_history_tokens)
         if decision.next_state is not None:
             self.conv_state = decision.next_state

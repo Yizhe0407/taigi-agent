@@ -31,6 +31,9 @@ dev = [
     "pytest>=8.0",
 ]
 
+[tool.ruff]
+line-length = 160
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
 

@@ -92,9 +92,7 @@ def _iso_literal(value: datetime) -> str:
     return json.dumps(value.isoformat())
 
 
-def _plan_query(
-    origin: Coordinate, destination: Coordinate, departure_time: datetime
-) -> str:
+def _plan_query(origin: Coordinate, destination: Coordinate, departure_time: datetime) -> str:
     return f"""
     {{
       planConnection(
@@ -189,10 +187,7 @@ def _parse_geometry(data: dict[str, Any]) -> tuple[Coordinate, ...]:
         decoded = polyline.decode(points)
     except ValueError as error:
         raise OtpError("OTP plan leg geometry is not a valid polyline") from error
-    return tuple(
-        Coordinate(latitude=latitude, longitude=longitude)
-        for latitude, longitude in decoded
-    )
+    return tuple(Coordinate(latitude=latitude, longitude=longitude) for latitude, longitude in decoded)
 
 
 def _parse_leg(data: Any) -> Leg:
@@ -202,9 +197,7 @@ def _parse_leg(data: Any) -> Leg:
     mode = data.get("mode")
     from_name = _nested_value(data, "from", "name")
     to_name = _nested_value(data, "to", "name")
-    if not isinstance(mode, str) or not isinstance(from_name, str) or not isinstance(
-        to_name, str
-    ):
+    if not isinstance(mode, str) or not isinstance(from_name, str) or not isinstance(to_name, str):
         raise OtpError("OTP plan leg is missing mode or stop name")
 
     route = data.get("route")
@@ -222,9 +215,7 @@ def _parse_leg(data: Any) -> Leg:
             _nested_value(data, "to", "arrival", "scheduledTime"),
             "leg arrival time",
         ),
-        route_short_name=(
-            route_short_name if isinstance(route_short_name, str) else None
-        ),
+        route_short_name=(route_short_name if isinstance(route_short_name, str) else None),
         route_long_name=route_long_name if isinstance(route_long_name, str) else None,
         duration_seconds=_parse_number(data.get("duration"), "leg duration"),
         distance_meters=_parse_number(data.get("distance"), "leg distance"),
@@ -252,9 +243,7 @@ def _parse_plan_response(payload: Any) -> list[Itinerary]:
     errors = payload.get("errors")
     if isinstance(errors, list) and errors:
         first_error = errors[0]
-        if isinstance(first_error, dict) and isinstance(
-            first_error.get("message"), str
-        ):
+        if isinstance(first_error, dict) and isinstance(first_error.get("message"), str):
             raise OtpError(f"OTP GraphQL query failed: {first_error['message']}")
         raise OtpError("OTP GraphQL query failed")
 

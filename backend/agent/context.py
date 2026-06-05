@@ -99,11 +99,7 @@ def compact_long_tool_results(
             continue
 
         content = msg.get("content")
-        if (
-            not isinstance(content, str)
-            or len(content) <= max_chars
-            or content.startswith(_TOOL_RESULT_COMPACT_MARKER)
-        ):
+        if not isinstance(content, str) or len(content) <= max_chars or content.startswith(_TOOL_RESULT_COMPACT_MARKER):
             continue
 
         msg = dict(msg)
@@ -111,11 +107,7 @@ def compact_long_tool_results(
         path = store.save_tool_result(str(msg.get("tool_call_id", "tool")), content)
         preview = content[:preview_chars]
         suffix = "\n..." if len(content) > preview_chars else ""
-        msg["content"] = (
-            f"{_TOOL_RESULT_COMPACT_MARKER}\n"
-            f"完整內容已保存：{path}\n"
-            f"預覽：\n{preview}{suffix}"
-        )
+        msg["content"] = f"{_TOOL_RESULT_COMPACT_MARKER}\n完整內容已保存：{path}\n預覽：\n{preview}{suffix}"
 
     return compacted
 
@@ -136,9 +128,7 @@ def trim_history(
     # Exchange-count cap — apply before token budget so the bound is hard.
     if len(exchanges) > max_exchanges:
         dropped_count = len(exchanges) - max_exchanges
-        log_diagnostic(
-            "context", f"截掉 {dropped_count} 輪舊對話（上限 {max_exchanges} 輪）"
-        )
+        log_diagnostic("context", f"截掉 {dropped_count} 輪舊對話（上限 {max_exchanges} 輪）")
         exchanges = exchanges[-max_exchanges:]
 
     # 從最新輪往前累加，超過 budget 就停

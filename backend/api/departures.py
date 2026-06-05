@@ -28,6 +28,7 @@ def _kiosk_stop() -> str:
 def _kiosk_go_back_filter() -> int | None:
     return get_kiosk_config().go_back
 
+
 router = APIRouter()
 
 
@@ -38,9 +39,8 @@ router = APIRouter()
 # Tests monkeypatch these symbols on `api.departures` so route handlers see
 # the patched callable.
 
-async def get_departure_snapshot_here(
-    *, updated_at: datetime | None = None
-) -> StopDepartureSnapshot:
+
+async def get_departure_snapshot_here(*, updated_at: datetime | None = None) -> StopDepartureSnapshot:
     return await build_departure_snapshot(
         _kiosk_stop(),
         _kiosk_go_back_filter(),
@@ -60,7 +60,6 @@ class DepartureResponseModel(BaseModel):
 
 
 class DepartureSummaryResponse(DepartureResponseModel):
-
     available_count: int = Field(alias="availableCount")
     not_departed_count: int = Field(alias="notDepartedCount")
     last_departed_count: int = Field(alias="lastDepartedCount")
@@ -68,7 +67,6 @@ class DepartureSummaryResponse(DepartureResponseModel):
 
 
 class DepartureRouteStatusResponse(DepartureResponseModel):
-
     id: str
     route: str
     route_id: int = Field(alias="routeId")
@@ -83,7 +81,6 @@ class DepartureRouteStatusResponse(DepartureResponseModel):
 
 
 class StopDepartureSnapshotResponse(DepartureResponseModel):
-
     stop_name: str = Field(alias="stopName")
     direction_filter: int | None = Field(alias="directionFilter")
     updated_at: datetime = Field(alias="updatedAt")

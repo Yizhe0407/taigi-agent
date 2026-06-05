@@ -77,11 +77,7 @@ def _stop_similarity(a: str, b: str) -> float:
 
 def _fuzzy_candidates(destination: str, stop_names: set[str]) -> list[tuple[str, float]]:
     """Return (name, score) pairs sorted by similarity, score > 0.35 only."""
-    scored = [
-        (name, _stop_similarity(destination, name))
-        for name in stop_names
-        if name != destination
-    ]
+    scored = [(name, _stop_similarity(destination, name)) for name in stop_names if name != destination]
     scored.sort(key=lambda x: -x[1])
     return [(name, score) for name, score in scored if score > 0.35]
 

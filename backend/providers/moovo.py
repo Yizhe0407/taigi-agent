@@ -13,10 +13,7 @@ from typing import Any
 
 import httpx
 
-_TOKEN_URL = (
-    "https://tdx.transportdata.tw/auth/realms/TDXConnect/"
-    "protocol/openid-connect/token"
-)
+_TOKEN_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 _DEFAULT_BIKE_BASE_URL = "https://tdx.transportdata.tw/api/basic/v2/Bike"
 _DEFAULT_CITY = "YunlinCounty"
 _REQUEST_TIMEOUT_SECONDS = 20.0

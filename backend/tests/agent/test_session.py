@@ -168,16 +168,13 @@ def test_session_retries_context_overflow_after_context_recovery():
 
 def test_session_records_llm_tool_latency_and_routing():
     telemetry = RecordingTelemetry()
+
     async def bus_handler(route):
         return f"{route} 約 3 分鐘"
 
     session = make_session(
         [
-            llm_response(
-                assistant_message(
-                    tool_calls=[tool_call("bus", '{"route": "201"}', "bus-1")]
-                )
-            ),
+            llm_response(assistant_message(tool_calls=[tool_call("bus", '{"route": "201"}', "bus-1")])),
             llm_response(assistant_message("有車還在跑")),
         ],
         telemetry=telemetry,
@@ -194,21 +191,13 @@ def test_session_records_llm_tool_latency_and_routing():
     assert telemetry.tool_routes == [(("bus",), True)]
     assert [item[2] for item in telemetry.llm_durations] == ["respond", "respond"]
     assert [item[3] for item in telemetry.llm_durations] == ["ok", "ok"]
-    assert [(item[1], item[2]) for item in telemetry.tool_durations] == [
-        ("bus", "ok")
-    ]
+    assert [(item[1], item[2]) for item in telemetry.tool_durations] == [("bus", "ok")]
 
 
 def test_summarize_error_collapses_cloudflare_tunnel_html():
-    error = RuntimeError(
-        "<!DOCTYPE html><head><title>Cloudflare Tunnel error | example</title></head>"
-        "<body>Error 1033 Cloudflare Tunnel error</body>"
-    )
+    error = RuntimeError("<!DOCTYPE html><head><title>Cloudflare Tunnel error | example</title></head><body>Error 1033 Cloudflare Tunnel error</body>")
 
-    assert summarize_error(error) == (
-        "Cloudflare Tunnel error 1033，LLM endpoint 目前無法連線"
-    )
-
+    assert summarize_error(error) == ("Cloudflare Tunnel error 1033，LLM endpoint 目前無法連線")
 
 
 # ── Router integration ───────────────────────────────────────────────────────
@@ -251,12 +240,8 @@ def test_router_canned_response_for_timetable_query():
 
 def test_router_fallthrough_still_calls_llm():
     """Non-router intents still reach the legacy LLM loop."""
-    session = make_session(
-        [llm_response(assistant_message("你好，有需要查公車嗎？"))]
-    )
+    session = make_session([llm_response(assistant_message("你好，有需要查公車嗎？"))])
     # Off-topic input → UNKNOWN → falls through to LLM.
     reply = asyncio.run(session.respond("你好"))
     assert reply == "你好，有需要查公車嗎？"
     assert len(session.client.chat.completions.calls) == 1
-
-
