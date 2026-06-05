@@ -6,7 +6,7 @@
 
 ## 架構問題
 
-- [ ] **P1 — `agent/session.py` 違反 CLAUDE.md 邊界** (`session.py:16-21, 234-235, 249`)
+- [x] **P1 — `agent/session.py` 違反 CLAUDE.md 邊界** (`session.py:16-21, 234-235, 249`)
   - 引入 `opencc`、定義 `_THINK_RE`，在 session 出口跑 `_S2TWP.convert()` + strip `<think>`
   - CLAUDE.md 明文：session 只做 messages/LLM/dispatch/context recovery；LLM output post-processing 屬 pipeline
   - 修：搬 normalize 到 `pipeline/llm_output.py`，session 改吐 raw str
@@ -21,11 +21,11 @@
   - bus-specific 措辭 hard-code 進 generic router，違反「router 應 generic」精神
   - 修：交回 LLM tools/prompt 處理，或抽 `tools/intent_rules.py`
 
-- [ ] **P2 — `_kiosk_place` 跨層 private import** (`api/route_plans.py:107`)
+- [x] **P2 — `_kiosk_place` 跨層 private import** (`api/route_plans.py:107`)
   - `from services.route_plans import _kiosk_place` — 從外部模組 import private `_*` symbol
   - 修：export 成 public 或 inline
 
-- [ ] **P2 — `_prepare_context` / `_recover_context` 重複** (`session.py:103-118`)
+- [x] **P2 — `_prepare_context` / `_recover_context` 重複** (`session.py:103-118`)
   - 兩 method 只差 budget，代碼幾乎相同
   - 修：抽 `_compact_and_trim(budget)`
 
@@ -73,15 +73,15 @@
   - `with start_span(): pass` 只放 attribute，沒有 traced operation
   - 修：改 `add_event` 在 parent span，省 span overhead
 
-- [ ] **重複 try/except 樣板** (`departures.py:599-610, 711-722, 829-839, 868-872, 939-943`)
+- [x] **重複 try/except 樣板** (`departures.py:599-610, 711-722, 829-839, 868-872, 939-943`)
   - 至少 6 處 `try: provider.X() except Exception: return "查詢失敗，請稍後再試。"` 完全相同
   - 修：抽 `async def _safe_provider_call(coro, default_msg) -> str` helper
 
-- [ ] **冗 `tool_error` 命名誤導** (`tool_dispatch.py:46-47, 93`)
+- [x] **冗 `tool_error` 命名誤導** (`tool_dispatch.py:46-47, 93`)
   - 同函式既傳成功又傳錯誤，命名 `tool_error` misleading
   - 修：改名 `tool_result_msg`
 
-- [ ] **`_TOOL_CALL_FAILED_MARKERS` 字串匹配脆弱** (`llm_client.py:31-34, 50-52`)
+- [x] **`_TOOL_CALL_FAILED_MARKERS` 字串匹配脆弱** (`llm_client.py:31-34, 50-52`)
   - Groq 特定 marker 字串；vLLM 改報不同格式即靜默 fall-through
   - 修：vendor switch 時記得更新此處
 
@@ -110,16 +110,15 @@
   - 隨對話長度 O(N²) tiktoken encode；kiosk 短對話 OK，admin/debug 長 session 會慢
   - 修：cache per-message token count（key by `id(msg)` 或 content hash）
 
-- [ ] **Sequential `load_route_info` → `fetch_route_estimate`** (`departures.py:597-608, 706-720, 825-837`)
+- [x] **Sequential `load_route_info` → `fetch_route_estimate`** (`departures.py:597-608, 706-720, 825-837`)
   - `render_arrivals`、`render_route_stops`、`render_stop_on_route` 序列呼叫
-  - `build_departure_snapshot` 已用 `asyncio.gather`（`departures.py:439-442`），同 pattern 未統一
-  - 修：統一改 `asyncio.gather`
+  - 調查後確認：`fetch_route_estimate(route_id)` 需從 `route_info` 取得 `route_id`，兩步驟有資料依賴，不可 gather
 
 - [ ] **Session store 全 lock 串行化** (`api/session_store.py:40`)
   - 單 `threading.Lock` 包所有讀寫；WAL 已支援 concurrent read，lock 強行序列化
   - 修：分讀寫鎖，或每 thread own connection（kiosk 單機暫可接受）
 
-- [ ] **`_stations_cache` 非 thread-safe** (`services/moovo.py:69, 222`)
+- [x] **`_stations_cache` 非 thread-safe** (`services/moovo.py:69, 222`)
   - module-global 無鎖；cold start 並發 first req 會打 TDX 兩次
   - 修：`asyncio.Lock` 保護 fetch path
 

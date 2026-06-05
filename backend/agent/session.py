@@ -93,22 +93,19 @@ class AgentSession:
         self.messages = trim_history(self.messages, self.max_history_tokens)
         return content
 
-    async def _prepare_context(self) -> None:
+    def _compact_and_trim(self, budget: int) -> None:
         self.messages = compact_long_tool_results(
             self.messages,
             self.context_store,
             max_chars=self.compact_tool_result_chars,
         )
-        self.messages = trim_history(self.messages, self.max_history_tokens)
+        self.messages = trim_history(self.messages, budget)
+
+    async def _prepare_context(self) -> None:
+        self._compact_and_trim(self.max_history_tokens)
 
     async def _recover_context(self) -> None:
-        self.messages = compact_long_tool_results(
-            self.messages,
-            self.context_store,
-            max_chars=self.compact_tool_result_chars,
-        )
-        recovery_budget = max(self.max_history_tokens // 2, 1)
-        self.messages = trim_history(self.messages, recovery_budget)
+        self._compact_and_trim(max(self.max_history_tokens // 2, 1))
 
     def _record_canned_turn(self, user_input: str, decision: Decision) -> None:
         """Append user + canned-assistant turn and apply state update.

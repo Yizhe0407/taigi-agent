@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 from datetime import datetime
+from typing import TypeVar
 
 from services.departures.classification import DepartureSection, _classify_stop
 from services.departures.normalize import (
@@ -19,6 +21,18 @@ from services.departures.normalize import (
 )
 from services.departures.provider import get_provider
 
+_T = TypeVar("_T")
+_QUERY_FAILED = "查詢失敗，請稍後再試。"
+
+
+async def _safe_provider_call(coro: Awaitable[_T]) -> _T | None:
+    """Run a provider coroutine; return None on any exception."""
+    try:
+        return await coro
+    except Exception:
+        return None
+
+
 _SECTION_GROUP_LABEL: dict[DepartureSection, str] = {
     DepartureSection.AVAILABLE: "有車",
     DepartureSection.NOT_DEPARTED: "尚未發車",
@@ -33,20 +47,18 @@ async def render_arrivals(
 ) -> str:
     """Render `route` arrivals at `stop_name` as a kiosk-style string."""
     provider = get_provider()
-    try:
-        route_info = await provider.load_route_info(stop_name)
-    except Exception:
-        return "查詢失敗，請稍後再試。"
+    route_info = await _safe_provider_call(provider.load_route_info(stop_name))
+    if route_info is None:
+        return _QUERY_FAILED
 
     info = _lookup_route(route_info, route)
     route_id = _as_int(info.get("id")) if info is not None else None
     if route_id is None:
         return f"本站沒有路線 {route}。"
 
-    try:
-        data = await provider.fetch_route_estimate(route_id)
-    except Exception:
-        return "查詢失敗，請稍後再試。"
+    data = await _safe_provider_call(provider.fetch_route_estimate(route_id))
+    if data is None:
+        return _QUERY_FAILED
 
     matches = [
         stop for stop in data
@@ -86,7 +98,7 @@ async def render_stop_arrival_statuses(
             provider.load_route_info(stop_name),
         )
     except Exception:
-        return "查詢失敗，請稍後再試。"
+        return _QUERY_FAILED
 
     route_by_id = {info["id"]: name for name, info in route_info.items()}
     sections: dict[str, list[str]] = {
@@ -145,20 +157,18 @@ async def render_stop_arrival_statuses(
 async def render_route_stops(route: str, stop_name: str) -> str:
     """Render the full stop sequence (both directions) of `route`."""
     provider = get_provider()
-    try:
-        route_info = await provider.load_route_info(stop_name)
-    except Exception:
-        return "查詢失敗，請稍後再試。"
+    route_info = await _safe_provider_call(provider.load_route_info(stop_name))
+    if route_info is None:
+        return _QUERY_FAILED
 
     info = route_info.get(route)
     route_id = _as_int(info.get("id")) if info is not None else None
     if route_id is None:
         return f"本站沒有路線 {route}。"
 
-    try:
-        data = await provider.fetch_route_estimate(route_id)
-    except Exception:
-        return "查詢失敗，請稍後再試。"
+    data = await _safe_provider_call(provider.fetch_route_estimate(route_id))
+    if data is None:
+        return _QUERY_FAILED
 
     by_direction: dict[int, list[tuple[int, str]]] = {}
     for stop in data:
@@ -191,20 +201,18 @@ async def render_stop_on_route(
     like '斗六' match '斗六火車站'. LLM reads result verbatim.
     """
     provider = get_provider()
-    try:
-        route_info = await provider.load_route_info(kiosk_stop)
-    except Exception:
-        return "查詢失敗，請稍後再試。"
+    route_info = await _safe_provider_call(provider.load_route_info(kiosk_stop))
+    if route_info is None:
+        return _QUERY_FAILED
 
     info = route_info.get(route)
     route_id = _as_int(info.get("id")) if info is not None else None
     if route_id is None:
         return f"在 {kiosk_stop} 找不到停靠路線 {route}"
 
-    try:
-        data = await provider.fetch_route_estimate(route_id)
-    except Exception:
-        return "查詢失敗，請稍後再試。"
+    data = await _safe_provider_call(provider.fetch_route_estimate(route_id))
+    if data is None:
+        return _QUERY_FAILED
 
     matched: list[str] = []
     for gb, stops in sorted(_stops_by_direction_with_seq(data).items()):
@@ -238,13 +246,12 @@ async def render_arrivals_to_destination(
     - 0.35 <= score < 0.8: return candidate hint so LLM can retry or clarify
     """
     provider = get_provider()
-    try:
-        route_info = await provider.load_route_info(kiosk_stop)
-    except Exception:
-        return "查詢失敗，請稍後再試。"
+    route_info = await _safe_provider_call(provider.load_route_info(kiosk_stop))
+    if route_info is None:
+        return _QUERY_FAILED
 
     if not route_info:
-        return "查詢失敗，請稍後再試。"
+        return _QUERY_FAILED
 
     now = datetime.now(TAIPEI_TZ)
 
@@ -320,10 +327,9 @@ async def render_arrivals_to_destination(
 async def render_routes_at_stop(stop_name: str) -> str:
     """Render the list of routes serving `stop_name` (no ETA, no classify)."""
     provider = get_provider()
-    try:
-        data = await provider.fetch_routes_at_stop(stop_name)
-    except Exception:
-        return "查詢失敗，請稍後再試。"
+    data = await _safe_provider_call(provider.fetch_routes_at_stop(stop_name))
+    if data is None:
+        return _QUERY_FAILED
 
     if not data:
         return f"查無 {stop_name} 站牌。"

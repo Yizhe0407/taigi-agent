@@ -10,8 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from services.kiosk_config import get_kiosk_config
 from services.route_plans import (
     InvalidRouteDestination,
-    RoutePlanningUnavailable,
     RoutePlanNotFound,
+    RoutePlanningUnavailable,
+    kiosk_place,
     plan_route_to_coordinate,
     route_plan_to_view_model,
 )
@@ -104,10 +105,8 @@ class KioskResponse(BaseModel):
 @router.get("/api/kiosk", response_model=KioskResponse)
 def get_kiosk() -> object:
     """Return the kiosk stop name and its actual OTP origin coordinates."""
-    from services.route_plans import _kiosk_place  # noqa: PLC0415
-
     cfg = get_kiosk_config()
-    place = _kiosk_place()
+    place = kiosk_place()
     if place is None:
         raise HTTPException(
             status_code=503,

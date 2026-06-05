@@ -130,7 +130,7 @@ def _resolve_place(name: str) -> Place | None:
     return Place(stop_name, coordinate)
 
 
-def _kiosk_place() -> Place | None:
+def kiosk_place() -> Place | None:
     """Resolve kiosk origin from runtime config.
 
     Priority:
@@ -181,7 +181,7 @@ async def plan_route_to_coordinate(
 ) -> RoutePlan:
     """Plan BUS route options from the configured Kiosk stop to a map coordinate."""
     try:
-        origin = _kiosk_place()
+        origin = kiosk_place()
     except StopCatalogError as error:
         raise RoutePlanningUnavailable(f"雲林站牌索引讀取失敗：{error}") from error
 

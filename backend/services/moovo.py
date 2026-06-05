@@ -7,6 +7,7 @@ high-level station lookup.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import time
@@ -67,6 +68,7 @@ class NearbyMoovoStation:
 
 _provider: TdxBikeProvider = TdxBikeProvider()
 _stations_cache: tuple[float, tuple[MoovoStation, ...]] | None = None
+_stations_lock = asyncio.Lock()
 
 
 def get_provider() -> TdxBikeProvider:
@@ -228,12 +230,19 @@ async def load_moovo_stations(
         if ttl > 0 and now - fetched_at < ttl:
             return stations
 
-    stations_payload, availability_payload = await _provider.fetch_station_payloads()
-    stations = _merge_station_payloads(stations_payload, availability_payload)
-    if not stations:
-        raise MoovoApiError("TDX Bike Yunlin station response is empty")
-    _stations_cache = (now, stations)
-    return stations
+    async with _stations_lock:
+        # Re-check after acquiring lock — another coroutine may have fetched first.
+        if not force_refresh and _stations_cache is not None:
+            fetched_at, stations = _stations_cache
+            if ttl > 0 and now - fetched_at < ttl:
+                return stations
+
+        stations_payload, availability_payload = await _provider.fetch_station_payloads()
+        stations = _merge_station_payloads(stations_payload, availability_payload)
+        if not stations:
+            raise MoovoApiError("TDX Bike Yunlin station response is empty")
+        _stations_cache = (time.monotonic(), stations)
+        return stations
 
 
 def _validate_coordinate(latitude: float, longitude: float) -> None:
