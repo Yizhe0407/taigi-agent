@@ -953,7 +953,7 @@ dev = [
 [[package]]
 name = "taigi-converter"
 version = "0.1.0"
-source = { git = "https://github.com/Yizhe0407/HanloFlow.git?branch=feat%2Foptimization-dictionary#92c5aff08ee6ae506685bd9aa09414bf87b9e085" }
+source = { git = "https://github.com/Yizhe0407/HanloFlow.git?branch=feat%2Foptimization-dictionary#e43062915be865717fa2a1fb38fd625fbf5e9493" }
 dependencies = [
     { name = "msgpack" },
 ]
