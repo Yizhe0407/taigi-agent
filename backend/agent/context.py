@@ -1,7 +1,4 @@
 import json
-from datetime import UTC, datetime
-from pathlib import Path
-from uuid import uuid4
 
 import tiktoken
 
@@ -17,7 +14,7 @@ MAX_HISTORY_TOKENS = 4000
 MAX_EXCHANGES = 5
 LONG_TOOL_RESULT_CHARS = 12_000
 TOOL_RESULT_PREVIEW_CHARS = 1_500
-_TOOL_RESULT_COMPACT_MARKER = "[長工具結果已壓縮]"
+_TOOL_RESULT_COMPACT_MARKER = "[長工具結果已截斷]"
 
 # cl100k_base 詞表含常用中文字，1 字通常對應 1 token，對 Qwen 模型是合理近似
 _enc = tiktoken.get_encoding("cl100k_base")
@@ -38,27 +35,6 @@ def _count_msg_tokens(msg: dict) -> int:
             count += len(_enc.encode(json.dumps(tool_calls, ensure_ascii=False)))
         _TOKEN_CACHE[key] = count + 4
     return _TOKEN_CACHE[key]
-
-
-class ContextStore:
-    """把 compact 後仍需保留的完整內容寫到 session 外。"""
-
-    def __init__(self, root: str | Path = ".agent_state") -> None:
-        self.root = Path(root)
-
-    def _new_path(self, directory: str, suffix: str, hint: str) -> Path:
-        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-        safe_hint = "".join(c if c.isalnum() else "-" for c in hint).strip("-")
-        filename = f"{timestamp}-{safe_hint or 'context'}-{uuid4().hex[:8]}{suffix}"
-        path = self.root / directory / filename
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def save_tool_result(self, call_id: str, content: str) -> Path:
-        """保存被 context 壓縮的完整 tool result。"""
-        path = self._new_path("tool-results", ".txt", call_id)
-        path.write_text(content, encoding="utf-8")
-        return path
 
 
 def estimate_tokens(messages: list) -> int:
@@ -88,11 +64,14 @@ def group_exchanges(messages: list) -> list[list]:
 
 def compact_long_tool_results(
     messages: list[dict],
-    store: ContextStore,
     max_chars: int = LONG_TOOL_RESULT_CHARS,
     preview_chars: int = TOOL_RESULT_PREVIEW_CHARS,
 ) -> list[dict]:
-    """長 tool result 落盤，history 只留路徑與預覽。"""
+    """過長 tool result 截斷成預覽，避免單則訊息吃光 context budget。
+
+    Kiosk session 短且 LLM 沒有回頭取完整內容的工具，截斷後的預覽已足夠；
+    完整內容不另外保存。marker 前綴讓重複呼叫不會二次截斷。
+    """
     compacted = list(messages)
     for i, msg in enumerate(compacted):
         if msg.get("role") != "tool":
@@ -104,10 +83,9 @@ def compact_long_tool_results(
 
         msg = dict(msg)
         compacted[i] = msg
-        path = store.save_tool_result(str(msg.get("tool_call_id", "tool")), content)
         preview = content[:preview_chars]
         suffix = "\n..." if len(content) > preview_chars else ""
-        msg["content"] = f"{_TOOL_RESULT_COMPACT_MARKER}\n完整內容已保存：{path}\n預覽：\n{preview}{suffix}"
+        msg["content"] = f"{_TOOL_RESULT_COMPACT_MARKER}\n預覽：\n{preview}{suffix}"
 
     return compacted
 

@@ -41,7 +41,7 @@ pnpm dev
 - 站名縮寫要人工處理；縮寫對照在 `backend/tools/kiosk_bus.py` 的 `_ALIASES`。
 - 截斷 messages 必須以 tool-call 輪次為單位，不能讓 `tool_call_id` 失去對應 tool result。
 - Tool round limit 達上限時，不可先把新的 assistant `tool_calls` append 進 history 再跳出。
-- `.agent_state/` 是 runtime state，已由 `.gitignore` 排除；測試要注入 `ContextStore(tmp_path)`。
+- `.agent_state/` 是 runtime state（`sessions.db`、`kiosk_config.json`），已由 `.gitignore` 排除；測試要把寫入路徑指向 `tmp_path`（如 `ChatSessionStore(tmp_path / "sessions.db")`）。
 - `load_dotenv()` 必須在依賴 env 的 import 之前。
 - vLLM tool calling 需要 `--enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3`。
 - vLLM 非思考模式格式是 `{"chat_template_kwargs": {"enable_thinking": False}}`。

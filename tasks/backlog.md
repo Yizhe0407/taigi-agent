@@ -24,6 +24,5 @@
 
 ## 技術債
 
-- [ ] Compact 後完整內容 retrieval tool
 - [ ] Chat session scale-out：從單機 SQLite 改外部 KV / Redis
 - [ ] content-level observability 的資料保留與遮罩策略

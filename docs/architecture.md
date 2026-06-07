@@ -8,7 +8,7 @@
 - `IntentRouter` 用 Python regex 決定意圖與工具派送；LLM 只負責 UNKNOWN 的 phrasing。`ConvState` 追蹤對話狀態，不靠 LLM 從 messages 推斷。
 - 公車資料來源集中在 provider，分類與決策集中在 service，Agent 看到的是 tool facade 回傳的字串。
 - 路線規劃不是聊天文字 tool；前端確認目的地座標後呼叫 `POST /api/route-plans`。
-- Context 以輪為單位硬上限（`MAX_EXCHANGES=5`）加 token budget trim；長 tool result 落盤到 `.agent_state/tool-results/`，active context 只留路徑與預覽。
+- Context 以輪為單位硬上限（`MAX_EXCHANGES=5`）加 token budget trim；過長 tool result 直接截斷成預覽（不另外保存完整內容），避免單則訊息吃光 budget。
 - Telemetry 只記 model、tool name、outcome、error type、latency 等 metadata，預設不記內容。
 
 ## 後端
@@ -45,7 +45,7 @@ backend/
 - `agent/llm_client.py`：OpenAI-compatible LLM call、retry/backoff、context overflow。
 - `agent/tool_dispatch.py`：tool call parse 與 dispatch。
 - `agent/tools.py`：`TOOL_SCHEMAS` 與 `TOOL_HANDLERS`。
-- `agent/context.py`：token budget、exchange-count cap、ContextStore、長 tool result compact。
+- `agent/context.py`：token budget、exchange-count cap、長 tool result 截斷。
 - `agent/telemetry.py`：OpenTelemetry spans / metrics。
 
 ### 領域層

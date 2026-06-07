@@ -22,8 +22,7 @@ IntentRouter（Python regex，deterministic）
 產品定位詳見 `docs/product-positioning.md`，架構與目錄細節見 `docs/architecture.md`。
 
 `AgentSession` 輸入輸出為文字，ASR/TTS 在 API 層處理。Context 以輪為單位
-硬上限（預設 5 輪），長工具輸出落盤到 `.agent_state/tool-results/`，
-active context 只保留路徑與預覽。
+硬上限（預設 5 輪），過長工具輸出直接截斷成預覽，不另外保存完整內容。
 
 ## 場域
 

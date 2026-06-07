@@ -15,7 +15,6 @@ from typing import Any
 from agent.context import (
     LONG_TOOL_RESULT_CHARS,
     MAX_HISTORY_TOKENS,
-    ContextStore,
     compact_long_tool_results,
     trim_history,
 )
@@ -63,7 +62,6 @@ class AgentSession:
         max_tool_rounds: int = _DEFAULT_MAX_TOOL_ROUNDS,
         max_history_tokens: int = MAX_HISTORY_TOKENS,
         compact_tool_result_chars: int = LONG_TOOL_RESULT_CHARS,
-        context_store: ContextStore | None = None,
         telemetry: AgentTelemetry | None = None,
         router: IntentRouter | None = None,
     ) -> None:
@@ -77,7 +75,6 @@ class AgentSession:
         self.max_tool_rounds = max_tool_rounds
         self.max_history_tokens = max_history_tokens
         self.compact_tool_result_chars = compact_tool_result_chars
-        self.context_store = context_store or ContextStore()
         self.telemetry = telemetry or AgentTelemetry()
         self.router = router or IntentRouter()
         self.messages: list[dict] = []
@@ -106,7 +103,6 @@ class AgentSession:
     def _compact_and_trim(self, budget: int) -> None:
         self.messages = compact_long_tool_results(
             self.messages,
-            self.context_store,
             max_chars=self.compact_tool_result_chars,
         )
         self.messages = trim_history(self.messages, budget)
