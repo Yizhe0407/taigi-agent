@@ -3,12 +3,11 @@ from __future__ import annotations
 import re
 from zoneinfo import ZoneInfo
 
-from pipeline.normalize import to_halfwidth
+from pipeline.normalize import count_to_chinese, to_halfwidth
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 _PAREN_RE = re.compile(r"\s*[（(][^）)]{0,40}[）)]\s*")
-_ONES_ZH = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"]
 _STOP_SUFFIX = frozenset("站路街號市區鄉鎮村里")
 
 
@@ -18,19 +17,8 @@ def _strip_paren(name: str) -> str:
 
 
 def _mins_zh(n: int) -> str:
-    """Integer minutes → natural Chinese count."""
-    if n <= 0:
-        return "零"
-    if n < 10:
-        return _ONES_ZH[n]
-    if n < 20:
-        return "十" + _ONES_ZH[n % 10]
-    if n < 100:
-        return _ONES_ZH[n // 10] + "十" + _ONES_ZH[n % 10]
-    return str(n)
-
-
-_HOUR_ZH = {1: "一", 2: "兩", 3: "三", 4: "四", 5: "五", 6: "六", 7: "七", 8: "八", 9: "九", 10: "十", 11: "十一", 12: "十二"}
+    """Integer minutes → natural Chinese count; >= 100 stays Arabic for chat display."""
+    return str(n) if n >= 100 else count_to_chinese(n)
 
 
 def _fmt_time_12h(hhmm: str) -> str:

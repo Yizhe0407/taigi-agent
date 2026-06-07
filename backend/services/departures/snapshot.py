@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -94,11 +95,12 @@ class DepartureRouteDetail:
 
 
 def _summary(routes: tuple[DepartureRouteStatus, ...]) -> DepartureSummary:
+    counts = Counter(r.section for r in routes)
     return DepartureSummary(
-        available_count=sum(1 for r in routes if r.section == DepartureSection.AVAILABLE),
-        not_departed_count=sum(1 for r in routes if r.section == DepartureSection.NOT_DEPARTED),
-        last_departed_count=sum(1 for r in routes if r.section == DepartureSection.LAST_DEPARTED),
-        unknown_count=sum(1 for r in routes if r.section == DepartureSection.UNKNOWN),
+        available_count=counts[DepartureSection.AVAILABLE],
+        not_departed_count=counts[DepartureSection.NOT_DEPARTED],
+        last_departed_count=counts[DepartureSection.LAST_DEPARTED],
+        unknown_count=counts[DepartureSection.UNKNOWN],
     )
 
 

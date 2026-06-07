@@ -9,7 +9,7 @@ to the LLM loop.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 from pipeline.normalize import to_halfwidth
@@ -115,11 +115,7 @@ class IntentRouter:
             return Decision(
                 intent=Intent.ROUTE_ONLY,
                 canned_response=(f"{route}您想查什麼，到站時間還是有沒有停某個地方？"),
-                next_state=ConvState(
-                    last_route=route,
-                    last_destination=state.last_destination,
-                    last_intent=Intent.ROUTE_ONLY,
-                ),
+                next_state=replace(state, last_route=route, last_intent=Intent.ROUTE_ONLY),
             )
 
         # Rule 2: remote destination / transfer → map redirect.
@@ -127,11 +123,7 @@ class IntentRouter:
             return Decision(
                 intent=Intent.REMOTE_DESTINATION,
                 canned_response="這段要用地圖規劃比較準喔。",
-                next_state=ConvState(
-                    last_route=state.last_route,
-                    last_destination=state.last_destination,
-                    last_intent=Intent.REMOTE_DESTINATION,
-                ),
+                next_state=replace(state, last_intent=Intent.REMOTE_DESTINATION),
             )
 
         # Rule 3: timetable / inter-stop ETA → unsupported, offer alternative.
@@ -139,11 +131,7 @@ class IntentRouter:
             return Decision(
                 intent=Intent.TIMETABLE_UNSUPPORTED,
                 canned_response=TIMETABLE_CANNED_RESPONSE,
-                next_state=ConvState(
-                    last_route=state.last_route,
-                    last_destination=state.last_destination,
-                    last_intent=Intent.TIMETABLE_UNSUPPORTED,
-                ),
+                next_state=replace(state, last_intent=Intent.TIMETABLE_UNSUPPORTED),
             )
 
         # Everything else → LLM loop (tool dispatch handled by LLM).

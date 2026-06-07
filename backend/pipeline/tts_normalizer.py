@@ -14,18 +14,12 @@ from __future__ import annotations
 
 import re
 
-_DIGIT: dict[str, str] = {
-    "0": "零",
-    "1": "一",
-    "2": "二",
-    "3": "三",
-    "4": "四",
-    "5": "五",
-    "6": "六",
-    "7": "七",
-    "8": "八",
-    "9": "九",
-}
+from pipeline.normalize import (
+    DIGIT_ZH,
+    HOUR_ZH,
+    count_to_chinese,
+    digits_to_chinese,
+)
 
 _LETTER: dict[str, str] = {
     "A": "阿",
@@ -56,44 +50,19 @@ _LETTER: dict[str, str] = {
     "Z": "賊",
 }
 
-# Hours use 兩 for 2, not 二
-_HOUR_ZH: dict[int, str] = {
-    1: "一",
-    2: "兩",
-    3: "三",
-    4: "四",
-    5: "五",
-    6: "六",
-    7: "七",
-    8: "八",
-    9: "九",
-    10: "十",
-    11: "十一",
-    12: "十二",
-}
-
-_ONES = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"]
-
-
-def _count_to_chinese(n: int) -> str:
-    """Integer → natural Chinese count. >= 100 falls back to digit-by-digit."""
-    if n <= 0:
-        return "零"
-    if n < 10:
-        return _ONES[n]
-    if n < 20:
-        return "十" + _ONES[n % 10]
-    if n < 100:
-        return _ONES[n // 10] + "十" + _ONES[n % 10]
-    return _digits_to_chinese(str(n))
-
-
-def _digits_to_chinese(s: str) -> str:
-    return "".join(_DIGIT.get(c, c) for c in s)
-
 
 def _letters_to_chinese(s: str) -> str:
     return "".join(_LETTER.get(c.upper(), "") for c in s)
+
+
+def _format_time_zh(period: str, hour: int, minute: int) -> str:
+    """`period` + hour:minute → '下午一點零五分' style Chinese time."""
+    h_zh = HOUR_ZH.get(hour, count_to_chinese(hour))
+    if minute == 0:
+        return f"{period}{h_zh}點"
+    if minute < 10:
+        return f"{period}{h_zh}點零{count_to_chinese(minute)}分"
+    return f"{period}{h_zh}點{count_to_chinese(minute)}分"
 
 
 def _time_sub(m: re.Match[str]) -> str:
@@ -104,19 +73,14 @@ def _time_sub(m: re.Match[str]) -> str:
         period, dh = "下午", h - 12
     else:
         period, dh = "", h
-    h_zh = _HOUR_ZH.get(dh, _count_to_chinese(dh))
-    if mn == 0:
-        return f"{period}{h_zh}點"
-    if mn < 10:
-        return f"{period}{h_zh}點零{_count_to_chinese(mn)}分"
-    return f"{period}{h_zh}點{_count_to_chinese(mn)}分"
+    return _format_time_zh(period, dh, mn)
 
 
 def _route_sub(m: re.Match[str]) -> str:
     prefix = m.group(1) or ""
     digits = m.group(2)
     suffix = m.group(3) or ""
-    return _letters_to_chinese(prefix) + _digits_to_chinese(digits) + _letters_to_chinese(suffix) + "路"
+    return _letters_to_chinese(prefix) + digits_to_chinese(digits) + _letters_to_chinese(suffix) + "路"
 
 
 def normalize_for_tts(text: str) -> str:
@@ -134,14 +98,7 @@ def normalize_for_tts(text: str) -> str:
     # 2. Period-prefixed 12h time: 下午/上午/中午/凌晨 + N:MM → Chinese
     # Must run before plain HH:MM step to avoid double-adding the period prefix.
     def _prefixed_time_sub(m: re.Match[str]) -> str:
-        period = m.group(1)
-        h, mn = int(m.group(2)), int(m.group(3))
-        h_zh = _HOUR_ZH.get(h, _count_to_chinese(h))
-        if mn == 0:
-            return f"{period}{h_zh}點"
-        if mn < 10:
-            return f"{period}{h_zh}點零{_count_to_chinese(mn)}分"
-        return f"{period}{h_zh}點{_count_to_chinese(mn)}分"
+        return _format_time_zh(m.group(1), int(m.group(2)), int(m.group(3)))
 
     text = re.sub(r"(下午|上午|中午|凌晨)(\d{1,2}):(\d{2})(?!\d)", _prefixed_time_sub, text)
 
@@ -156,24 +113,24 @@ def normalize_for_tts(text: str) -> str:
     # 4. Minute/duration: N分鐘後?, N分後?, 約N分
     text = re.sub(
         r"(\d+)(分鐘後|分後|分鐘|分)",
-        lambda m: _count_to_chinese(int(m.group(1))) + m.group(2),
+        lambda m: count_to_chinese(int(m.group(1))) + m.group(2),
         text,
     )
 
     # 5. Ordinal/count classifiers
     text = re.sub(
         r"第(\d+)(班|輛|站|號)",
-        lambda m: "第" + _count_to_chinese(int(m.group(1))) + m.group(2),
+        lambda m: "第" + count_to_chinese(int(m.group(1))) + m.group(2),
         text,
     )
     text = re.sub(
         r"(\d+)(站後|站|班)",
-        lambda m: _count_to_chinese(int(m.group(1))) + m.group(2),
+        lambda m: count_to_chinese(int(m.group(1))) + m.group(2),
         text,
     )
 
     # 6. Remaining Arabic digits → digit-by-digit
-    text = re.sub(r"\d", lambda m: _DIGIT[m.group()], text)
+    text = re.sub(r"\d", lambda m: DIGIT_ZH[m.group()], text)
 
     # 7. Remaining ASCII letters → phonetic Chinese
     text = re.sub(r"[A-Za-z]", lambda m: _LETTER.get(m.group().upper(), ""), text)
