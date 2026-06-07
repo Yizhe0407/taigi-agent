@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from zoneinfo import ZoneInfo
 
 from pipeline.normalize import count_to_chinese, to_halfwidth
@@ -134,6 +135,39 @@ def _direction_label_from_info(
         return f"往{dest}" if dest else "去程"
     dest = info.get("back_dest", "")
     return f"往{dest}" if dest else "回程"
+
+
+def iter_scoped_stop_etas(
+    eta_data: list[dict],
+    route_info: dict[str, dict],
+    stop_name: str,
+    go_back: int | None,
+) -> Iterator[tuple[dict, str, int, int]]:
+    """Yield (stop_row, route, route_id, stop_go_back) for ETA rows in kiosk scope.
+
+    Shared scope filter for the kiosk arrival views: parses GoBack/xno, resolves
+    the route name, and applies the direction filter — explicit go_back when set,
+    otherwise drop terminal-direction rows for non-circular routes.
+    """
+    route_by_id = {info["id"]: name for name, info in route_info.items()}
+    for stop in eta_data:
+        stop_go_back = _as_int(stop.get("GoBack")) or 1
+
+        route_id = _as_int(stop.get("xno"))
+        if route_id is None:
+            continue
+
+        route = route_by_id.get(route_id)
+        if route is None:
+            continue
+
+        if go_back is not None:
+            if stop_go_back != go_back:
+                continue
+        elif _is_terminal_direction(stop_name, route_info, route, stop_go_back):
+            continue
+
+        yield stop, route, route_id, stop_go_back
 
 
 def _is_terminal_direction(

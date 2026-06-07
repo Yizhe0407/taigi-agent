@@ -15,7 +15,7 @@ from services.departures.normalize import (
     TAIPEI_TZ,
     _as_int,
     _direction_label_from_info,
-    _is_terminal_direction,
+    iter_scoped_stop_etas,
 )
 from services.departures.provider import get_provider
 
@@ -144,28 +144,10 @@ async def build_departure_snapshot(
         _log.warning("Departure snapshot fetch failed: %s", error)
         raise DepartureSnapshotUnavailable("公車資訊暫時無法取得，請稍後再試") from error
 
-    route_by_id = {info["id"]: name for name, info in route_info.items()}
     routes: list[DepartureRouteStatus] = []
     seen: set[tuple[str, int, str]] = set()
 
-    for stop in eta_data:
-        stop_go_back = _as_int(stop.get("GoBack")) or 1
-
-        route_id = _as_int(stop.get("xno"))
-        if route_id is None:
-            continue
-
-        route = route_by_id.get(route_id)
-        if route is None:
-            continue
-
-        if go_back is not None:
-            if stop_go_back != go_back:
-                continue
-        else:
-            if _is_terminal_direction(stop_name, route_info, route, stop_go_back):
-                continue
-
+    for stop, route, route_id, stop_go_back in iter_scoped_stop_etas(eta_data, route_info, stop_name, go_back):
         c = _classify_stop(stop, now)
         direction = _direction_label_from_info(route_info, route, stop_go_back)
         dedupe_key = (route, stop_go_back, c.status_text)

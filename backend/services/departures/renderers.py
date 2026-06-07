@@ -13,11 +13,10 @@ from services.departures.normalize import (
     _direction_label_from_info,
     _downstream_names,
     _fuzzy_candidates,
-    _is_terminal_direction,
     _lookup_route,
     _name_matches,
     _stops_by_direction_with_seq,
-    _strip_paren,
+    iter_scoped_stop_etas,
 )
 from services.departures.provider import get_provider
 
@@ -120,7 +119,6 @@ async def render_stop_arrival_statuses(
     except Exception:
         return _QUERY_FAILED
 
-    route_by_id = {info["id"]: name for name, info in route_info.items()}
     sections: dict[str, list[str]] = {
         "有車": [],
         "尚未發車": [],
@@ -129,24 +127,7 @@ async def render_stop_arrival_statuses(
     seen: set[str] = set()
     now = datetime.now(TAIPEI_TZ)
 
-    for stop in eta_data:
-        stop_go_back = _as_int(stop.get("GoBack")) or 1
-
-        route_id = _as_int(stop.get("xno"))
-        if route_id is None:
-            continue
-
-        route = route_by_id.get(route_id)
-        if route is None:
-            continue
-
-        if go_back is not None:
-            if stop_go_back != go_back:
-                continue
-        else:
-            if _is_terminal_direction(stop_name, route_info, route, stop_go_back):
-                continue
-
+    for stop, route, _route_id, stop_go_back in iter_scoped_stop_etas(eta_data, route_info, stop_name, go_back):
         c = _classify_stop(stop, now)
         # UNKNOWN rows are skipped — the agent's kiosk-style output only
         # surfaces the three actionable groups (matches the legacy renderer).
@@ -180,13 +161,7 @@ async def render_route_stops(route: str, stop_name: str) -> str:
         return resolved
     route_info, data = resolved
 
-    by_direction: dict[int, list[tuple[int, str]]] = {}
-    for stop in data:
-        go_back = stop.get("GoBack", 1)
-        seq = stop.get("SeqNo", 0)
-        name = _strip_paren(stop.get("StopName", ""))
-        by_direction.setdefault(go_back, []).append((seq, name))
-
+    by_direction = _stops_by_direction_with_seq(data)
     if not by_direction:
         return f"查無路線 {route} 的站牌。"
 
