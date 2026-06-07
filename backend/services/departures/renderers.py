@@ -119,11 +119,7 @@ async def render_stop_arrival_statuses(
     except Exception:
         return _QUERY_FAILED
 
-    sections: dict[str, list[str]] = {
-        "有車": [],
-        "尚未發車": [],
-        "末班已過": [],
-    }
+    sections: dict[str, list[str]] = {label: [] for label in _SECTION_GROUP_LABEL.values()}
     seen: set[str] = set()
     now = datetime.now(TAIPEI_TZ)
 

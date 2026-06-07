@@ -34,6 +34,9 @@ class RouteDetailUnavailable(RuntimeError):
     """Raised when the upstream source cannot provide route details."""
 
 
+_ROUTE_DETAIL_UNAVAILABLE = "路線詳情暫時無法取得，請稍後再試"
+
+
 @dataclass(frozen=True)
 class DepartureRouteStatus:
     id: str
@@ -194,7 +197,7 @@ async def build_route_detail(
         route_info = await provider.load_route_info(stop_name)
     except Exception as error:
         _log.warning("Route detail fetch (load_route_info) failed: %s", error)
-        raise RouteDetailUnavailable("路線詳情暫時無法取得，請稍後再試") from error
+        raise RouteDetailUnavailable(_ROUTE_DETAIL_UNAVAILABLE) from error
 
     info = route_info.get(route)
     if info is None:
@@ -208,7 +211,7 @@ async def build_route_detail(
         estimate_data = await provider.fetch_route_estimate(route_id)
     except Exception as error:
         _log.warning("Route detail fetch (fetch_route_estimate) failed: %s", error)
-        raise RouteDetailUnavailable("路線詳情暫時無法取得，請稍後再試") from error
+        raise RouteDetailUnavailable(_ROUTE_DETAIL_UNAVAILABLE) from error
 
     now = datetime.now(TAIPEI_TZ)
     by_direction: dict[int, list[RouteStopDetail]] = {}
