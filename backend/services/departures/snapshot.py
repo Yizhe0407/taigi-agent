@@ -108,13 +108,13 @@ def _sort_key(route: DepartureRouteStatus) -> tuple[int, int, str, int]:
     return (route.sort_priority, route.sort_minutes, route.route, route.go_back)
 
 
-def _stop_detail_from_row(stop: dict, kiosk_stop_name: str) -> RouteStopDetail | None:
+def _stop_detail_from_row(stop: dict, kiosk_stop_name: str, now: datetime) -> RouteStopDetail | None:
     seq = _as_int(stop.get("SeqNo"))
     name = str(stop.get("StopName") or "").strip()
     if seq is None or not name:
         return None
 
-    c = _classify_stop(stop, datetime.now(TAIPEI_TZ))
+    c = _classify_stop(stop, now)
     return RouteStopDetail(
         seq=seq,
         name=name,
@@ -228,13 +228,14 @@ async def build_route_detail(
         _log.warning("Route detail fetch (fetch_route_estimate) failed: %s", error)
         raise RouteDetailUnavailable("路線詳情暫時無法取得，請稍後再試") from error
 
+    now = datetime.now(TAIPEI_TZ)
     by_direction: dict[int, list[RouteStopDetail]] = {}
     for row in estimate_data:
         row_go_back = _as_int(row.get("GoBack")) or 1
         if go_back is not None and row_go_back != go_back:
             continue
 
-        stop_detail = _stop_detail_from_row(row, stop_name)
+        stop_detail = _stop_detail_from_row(row, stop_name, now)
         if stop_detail is None:
             continue
         by_direction.setdefault(row_go_back, []).append(stop_detail)
