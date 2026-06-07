@@ -33,6 +33,8 @@ _DEFAULT_DIRECTION: str | None = "回程"
 class KioskConfig:
     stop_name: str = _DEFAULT_STOP_NAME
     direction: str | None = _DEFAULT_DIRECTION  # "去程" | "回程" | None (show both)
+    lat: float | None = None
+    lon: float | None = None
 
     @property
     def go_back(self) -> int | None:
@@ -42,9 +44,6 @@ class KioskConfig:
         if self.direction == "回程":
             return 2
         return None
-
-    lat: float | None = None
-    lon: float | None = None
 
 
 _current: KioskConfig | None = None
@@ -92,3 +91,13 @@ def set_kiosk_config(cfg: KioskConfig) -> None:
         json.dumps(asdict(cfg), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def kiosk_stop_name() -> str:
+    """Current kiosk stop name — the default scope for kiosk-here queries."""
+    return get_kiosk_config().stop_name
+
+
+def kiosk_go_back_filter() -> int | None:
+    """Current kiosk direction filter as an ebus GoBack int (None = both)."""
+    return get_kiosk_config().go_back

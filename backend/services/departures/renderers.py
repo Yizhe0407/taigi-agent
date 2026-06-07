@@ -130,11 +130,10 @@ async def render_stop_arrival_statuses(
     now = datetime.now(TAIPEI_TZ)
 
     for stop in eta_data:
-        stop_go_back = stop.get("GoBack", 1)
+        stop_go_back = _as_int(stop.get("GoBack")) or 1
 
-        try:
-            route_id = int(stop["xno"])
-        except (KeyError, TypeError, ValueError):
+        route_id = _as_int(stop.get("xno"))
+        if route_id is None:
             continue
 
         route = route_by_id.get(route_id)

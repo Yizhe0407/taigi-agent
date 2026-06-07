@@ -18,16 +18,7 @@ from services.departures import (
     build_departure_snapshot,
     build_route_detail,
 )
-from services.kiosk_config import get_kiosk_config
-
-
-def _kiosk_stop() -> str:
-    return get_kiosk_config().stop_name
-
-
-def _kiosk_go_back_filter() -> int | None:
-    return get_kiosk_config().go_back
-
+from services.kiosk_config import kiosk_go_back_filter, kiosk_stop_name
 
 router = APIRouter()
 
@@ -42,14 +33,14 @@ router = APIRouter()
 
 async def get_departure_snapshot_here(*, updated_at: datetime | None = None) -> StopDepartureSnapshot:
     return await build_departure_snapshot(
-        _kiosk_stop(),
-        _kiosk_go_back_filter(),
+        kiosk_stop_name(),
+        kiosk_go_back_filter(),
         updated_at=updated_at,
     )
 
 
 async def get_route_detail_here(route: str) -> DepartureRouteDetail:
-    return await build_route_detail(route, _kiosk_stop(), _kiosk_go_back_filter())
+    return await build_route_detail(route, kiosk_stop_name(), kiosk_go_back_filter())
 
 
 # ── Pydantic response schemas ─────────────────────────────────────────────────

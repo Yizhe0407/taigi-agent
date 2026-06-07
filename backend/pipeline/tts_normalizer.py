@@ -1,13 +1,14 @@
 """TTS pre-normalizer: convert LLM output to TTS-safe Chinese before Tailo pipeline.
 
 Applied in order:
-1. Strip all bracket types, keep inner content.
-2. Convert HH:MM times to Chinese time expressions.
-3. Convert route codes (digit+optional-letter patterns + 路) digit-by-digit.
-4. Convert minute/duration counts (N分, N分鐘) to Chinese.
-5. Convert ordinal/count classifiers (第N班, N站後, N號).
-6. Convert remaining Arabic digits digit-by-digit.
-7. Convert remaining ASCII letters via phonetic table.
+1. Collapse newlines to commas.
+2. Strip all bracket types, keep inner content.
+3. Convert HH:MM times to Chinese time expressions (period-prefixed, then plain).
+4. Convert route codes (digit+optional-letter patterns + 路) digit-by-digit.
+5. Convert minute/duration counts (N分, N分鐘) to Chinese.
+6. Convert ordinal/count classifiers (第N班, N站後, N號).
+7. Convert remaining Arabic digits digit-by-digit.
+8. Convert remaining ASCII letters via phonetic table.
 """
 
 from __future__ import annotations
@@ -88,36 +89,36 @@ def normalize_for_tts(text: str) -> str:
     if not text:
         return text
 
-    # 0. Collapse newlines — LLM may output multi-line; HanloFlow behavior unknown
+    # 1. Collapse newlines — LLM may output multi-line; HanloFlow behavior unknown
     text = re.sub(r"\n+", "，", text)
 
-    # 1. Strip all bracket types, keep inner content
+    # 2. Strip all bracket types, keep inner content
     text = re.sub(r"[「」『』【】《》〈〉]", "", text)
     text = re.sub(r"[（(]\s*([^）)]{0,40})\s*[）)]", r"\1", text)
 
-    # 2. Period-prefixed 12h time: 下午/上午/中午/凌晨 + N:MM → Chinese
+    # 3a. Period-prefixed 12h time: 下午/上午/中午/凌晨 + N:MM → Chinese
     # Must run before plain HH:MM step to avoid double-adding the period prefix.
     def _prefixed_time_sub(m: re.Match[str]) -> str:
         return _format_time_zh(m.group(1), int(m.group(2)), int(m.group(3)))
 
     text = re.sub(r"(下午|上午|中午|凌晨)(\d{1,2}):(\d{2})(?!\d)", _prefixed_time_sub, text)
 
-    # 3. Plain HH:MM → Chinese time (24h format, no prefix)
+    # 3b. Plain HH:MM → Chinese time (24h format, no prefix)
     # Use lookahead/lookbehind instead of \b: Python \w includes CJK chars,
     # so \b fails between a digit and a Chinese character.
     text = re.sub(r"(?<!\d)(\d{1,2}):(\d{2})(?!\d)", _time_sub, text)
 
-    # 3. Route codes: optional-letter + 1–4 digits + optional-letter + 路
+    # 4. Route codes: optional-letter + 1–4 digits + optional-letter + 路
     text = re.sub(r"([A-Za-z]?)(\d{1,4})([A-Za-z]?)路", _route_sub, text)
 
-    # 4. Minute/duration: N分鐘後?, N分後?, 約N分
+    # 5. Minute/duration: N分鐘後?, N分後?, 約N分
     text = re.sub(
         r"(\d+)(分鐘後|分後|分鐘|分)",
         lambda m: count_to_chinese(int(m.group(1))) + m.group(2),
         text,
     )
 
-    # 5. Ordinal/count classifiers
+    # 6. Ordinal/count classifiers
     text = re.sub(
         r"第(\d+)(班|輛|站|號)",
         lambda m: "第" + count_to_chinese(int(m.group(1))) + m.group(2),
@@ -129,10 +130,10 @@ def normalize_for_tts(text: str) -> str:
         text,
     )
 
-    # 6. Remaining Arabic digits → digit-by-digit
+    # 7. Remaining Arabic digits → digit-by-digit
     text = re.sub(r"\d", lambda m: DIGIT_ZH[m.group()], text)
 
-    # 7. Remaining ASCII letters → phonetic Chinese
+    # 8. Remaining ASCII letters → phonetic Chinese
     text = re.sub(r"[A-Za-z]", lambda m: _LETTER.get(m.group().upper(), ""), text)
 
     return text

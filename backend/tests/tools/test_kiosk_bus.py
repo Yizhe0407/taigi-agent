@@ -11,11 +11,9 @@ def test_get_route_stops_uses_kiosk_config_stop_name(monkeypatch):
         calls.append((route, stop_name))
         return "ok"
 
-    monkeypatch.setattr(
-        kiosk_bus,
-        "get_kiosk_config",
-        lambda: KioskConfig(stop_name="雲林科技大學", direction="回程"),
-    )
+    cfg = KioskConfig(stop_name="雲林科技大學", direction="回程")
+    monkeypatch.setattr(kiosk_bus, "kiosk_stop_name", lambda: cfg.stop_name)
+    monkeypatch.setattr(kiosk_bus, "kiosk_go_back_filter", lambda: cfg.go_back)
     monkeypatch.setattr(kiosk_bus.departures, "render_route_stops", fake_render)
 
     assert asyncio.run(kiosk_bus.get_route_stops("201")) == "ok"
@@ -29,11 +27,9 @@ def test_get_stop_arrival_statuses_here_passes_direction_filter(monkeypatch):
         calls.append((stop_name, go_back))
         return "ok"
 
-    monkeypatch.setattr(
-        kiosk_bus,
-        "get_kiosk_config",
-        lambda: KioskConfig(stop_name="雲林科技大學", direction="回程"),
-    )
+    cfg = KioskConfig(stop_name="雲林科技大學", direction="回程")
+    monkeypatch.setattr(kiosk_bus, "kiosk_stop_name", lambda: cfg.stop_name)
+    monkeypatch.setattr(kiosk_bus, "kiosk_go_back_filter", lambda: cfg.go_back)
     monkeypatch.setattr(kiosk_bus.departures, "render_stop_arrival_statuses", fake_render)
 
     assert asyncio.run(kiosk_bus.get_stop_arrival_statuses_here()) == "ok"
