@@ -16,7 +16,6 @@ from __future__ import annotations
 import re
 
 from pipeline.normalize import (
-    DIGIT_ZH,
     HOUR_ZH,
     count_to_chinese,
     digits_to_chinese,
@@ -131,9 +130,9 @@ def normalize_for_tts(text: str) -> str:
     )
 
     # 7. Remaining Arabic digits → digit-by-digit
-    text = re.sub(r"\d", lambda m: DIGIT_ZH[m.group()], text)
+    text = re.sub(r"\d+", lambda m: digits_to_chinese(m.group()), text)
 
     # 8. Remaining ASCII letters → phonetic Chinese
-    text = re.sub(r"[A-Za-z]", lambda m: _LETTER.get(m.group().upper(), ""), text)
+    text = re.sub(r"[A-Za-z]+", lambda m: _letters_to_chinese(m.group()), text)
 
     return text
