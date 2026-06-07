@@ -139,7 +139,7 @@ def _classify_stop(stop: dict, now: datetime) -> StopClassification:
         return StopClassification(
             DepartureSection.AVAILABLE,
             DepartureDecision.SCHEDULED,
-            f"{_fmt_time_12h(scheduled_time)}發車",
+            f"{_fmt_time_12h(scheduled_time)} 發車",
             "尚未發車",
             None,
             scheduled_time,

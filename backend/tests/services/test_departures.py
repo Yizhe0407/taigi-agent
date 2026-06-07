@@ -304,8 +304,7 @@ def test_render_stop_arrival_statuses_groups_by_section(use_provider):
 
     statuses = asyncio.run(departures.render_stop_arrival_statuses("雲林科技大學", go_back=2))
     assert statuses == (
-        "雲林科技大學 目前到站狀態：\n有車：\n201 往高鐵雲林站：下午九點三十五分發車\n"
-        "尚未發車：\n7000B 往梅山站：未發車\n末班已過：\n101 往斗六棒球場：末班駛離"
+        "雲林科技大學 目前到站狀態：\n有車：\n201 往高鐵雲林站：下午9:35 發車\n尚未發車：\n7000B 往梅山站：未發車\n末班已過：\n101 往斗六棒球場：末班駛離"
     )
 
 

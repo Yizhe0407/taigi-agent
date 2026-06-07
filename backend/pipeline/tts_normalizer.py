@@ -131,7 +131,21 @@ def normalize_for_tts(text: str) -> str:
     text = re.sub(r"[「」『』【】《》〈〉]", "", text)
     text = re.sub(r"[（(]\s*([^）)]{0,40})\s*[）)]", r"\1", text)
 
-    # 2. HH:MM → Chinese time
+    # 2. Period-prefixed 12h time: 下午/上午/中午/凌晨 + N:MM → Chinese
+    # Must run before plain HH:MM step to avoid double-adding the period prefix.
+    def _prefixed_time_sub(m: re.Match[str]) -> str:
+        period = m.group(1)
+        h, mn = int(m.group(2)), int(m.group(3))
+        h_zh = _HOUR_ZH.get(h, _count_to_chinese(h))
+        if mn == 0:
+            return f"{period}{h_zh}點"
+        if mn < 10:
+            return f"{period}{h_zh}點零{_count_to_chinese(mn)}分"
+        return f"{period}{h_zh}點{_count_to_chinese(mn)}分"
+
+    text = re.sub(r"(下午|上午|中午|凌晨)(\d{1,2}):(\d{2})(?!\d)", _prefixed_time_sub, text)
+
+    # 3. Plain HH:MM → Chinese time (24h format, no prefix)
     # Use lookahead/lookbehind instead of \b: Python \w includes CJK chars,
     # so \b fails between a digit and a Chinese character.
     text = re.sub(r"(?<!\d)(\d{1,2}):(\d{2})(?!\d)", _time_sub, text)
