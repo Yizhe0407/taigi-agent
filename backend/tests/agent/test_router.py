@@ -165,7 +165,6 @@ def test_non_canned_intents_fall_back_to_llm(router: IntentRouter, empty_state: 
     assert decision.intent == Intent.UNKNOWN
     assert decision.fallback_to_llm is True
     assert decision.canned_response is None
-    assert decision.tool_call is None
 
 
 def test_empty_input_falls_back(router: IntentRouter, empty_state: ConvState):
@@ -182,12 +181,11 @@ def test_whitespace_only_input_falls_back(router: IntentRouter, empty_state: Con
 # ── Decision invariants ──────────────────────────────────────────────────────
 
 
-def test_canned_response_decisions_do_not_set_tool_call(router: IntentRouter, empty_state: ConvState):
-    """Each Decision must set at most one of canned/tool/fallback."""
+def test_canned_response_decisions_do_not_fall_back(router: IntentRouter, empty_state: ConvState):
+    """A canned-response Decision never also flags fallback_to_llm."""
     for input_str in ["201", "我要去台中", "完整時刻表"]:
         decision = router.classify(input_str, empty_state)
         assert decision.canned_response is not None
-        assert decision.tool_call is None
         assert decision.fallback_to_llm is False
 
 

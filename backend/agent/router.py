@@ -42,14 +42,14 @@ class ConvState:
 class Decision:
     """Outcome of `IntentRouter.classify`.
 
-    Exactly one of `canned_response`, `tool_call`, or `fallback_to_llm`
-    is set. `next_state` (when not None) replaces the session's
-    ConvState after this turn.
+    Exactly one of `canned_response` or `fallback_to_llm` is set: the router
+    only resolves canned-response intents, and everything else (including all
+    tool dispatch) falls through to the LLM. `next_state` (when not None)
+    replaces the session's ConvState after this turn.
     """
 
     intent: Intent
     canned_response: str | None = None
-    tool_call: tuple[str, dict] | None = None
     fallback_to_llm: bool = False
     next_state: ConvState | None = None
 

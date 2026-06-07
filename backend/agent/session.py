@@ -86,10 +86,22 @@ class AgentSession:
     def _request_messages(self) -> list[dict]:
         return [{"role": "system", "content": self.system_prompt}, *self.messages]
 
+    def _trim(self) -> None:
+        self.messages = trim_history(self.messages, self.max_history_tokens)
+
     def _finish_with_assistant(self, content: str) -> str:
         self.messages.append({"role": "assistant", "content": content})
-        self.messages = trim_history(self.messages, self.max_history_tokens)
+        self._trim()
         return content
+
+    def _finish_normalized(self, content: str) -> str:
+        """Trim history and return normalized model output.
+
+        Shared by the two LLM exit paths — a free-text completion and a
+        respond_directly result — which finalize the turn identically.
+        """
+        self._trim()
+        return normalize_llm_output(content)
 
     def _compact_and_trim(self, budget: int) -> None:
         self.messages = compact_long_tool_results(
@@ -115,7 +127,7 @@ class AgentSession:
         assert decision.canned_response is not None
         self.messages.append({"role": "user", "content": user_input})
         self.messages.append({"role": "assistant", "content": decision.canned_response})
-        self.messages = trim_history(self.messages, self.max_history_tokens)
+        self._trim()
         if decision.next_state is not None:
             self.conv_state = decision.next_state
 
@@ -216,8 +228,7 @@ class AgentSession:
 
                 self.messages.append(assistant_message(message, tool_calls))
                 if not tool_calls:
-                    self.messages = trim_history(self.messages, self.max_history_tokens)
-                    return normalize_llm_output(message.content or "")
+                    return self._finish_normalized(message.content or "")
 
                 tool_rounds += 1
                 tool_results = await execute_tool_calls(
@@ -230,5 +241,4 @@ class AgentSession:
                 # respond_directly short-circuits the loop: no further LLM call needed.
                 direct = _find_direct_response(tool_calls, tool_results)
                 if direct is not None:
-                    self.messages = trim_history(self.messages, self.max_history_tokens)
-                    return normalize_llm_output(direct)
+                    return self._finish_normalized(direct)
