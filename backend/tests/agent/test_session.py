@@ -55,6 +55,8 @@ class RecordingTelemetry:
         self.tool_routes = []
         self.tool_durations = []
         self.tool_errors = []
+        self.turns = []
+        self.contents = []
 
     @contextmanager
     def start_span(self, name, attributes=None):
@@ -87,6 +89,12 @@ class RecordingTelemetry:
 
     def record_tool_error(self, *, tool_name, error_type):
         self.tool_errors.append((tool_name, error_type))
+
+    def record_turn(self, *, path, intent, outcome, tool_rounds=None):
+        self.turns.append((path, intent, outcome, tool_rounds))
+
+    def set_content(self, span, key, text, *, limit=None):
+        self.contents.append((getattr(span, "name", None), key, text))
 
 
 def make_session(responses, **kwargs):
@@ -192,6 +200,41 @@ def test_session_records_llm_tool_latency_and_routing():
     assert [item[2] for item in telemetry.llm_durations] == ["respond", "respond"]
     assert [item[3] for item in telemetry.llm_durations] == ["ok", "ok"]
     assert [(item[1], item[2]) for item in telemetry.tool_durations] == [("bus", "ok")]
+    assert telemetry.turns == [("llm", "unknown", "ok", 1)]
+
+
+def test_session_records_turn_outcomes_for_canned_limit_and_error_paths():
+    # Canned path: pure route number resolves without an LLM call.
+    canned = RecordingTelemetry()
+    session = make_session([], telemetry=canned)
+    asyncio.run(session.respond("201"))
+    assert canned.turns == [("canned", "route_only", "ok", None)]
+
+    # Tool-round limit path.
+    limited = RecordingTelemetry()
+    session = make_session(
+        [llm_response(assistant_message(tool_calls=[tool_call("bus", "{}", "c1")]))],
+        max_tool_rounds=0,
+        telemetry=limited,
+    )
+    asyncio.run(session.respond("你好"))
+    assert limited.turns == [("llm", "unknown", "tool_round_limit", 0)]
+
+    # Error path: context overflow persists past recovery → outcome=error.
+    # (Uses context errors because they propagate without retry backoff sleeps.)
+    failing = RecordingTelemetry()
+    session = make_session(
+        [
+            RuntimeError("maximum context length exceeded"),
+            RuntimeError("maximum context length exceeded"),
+        ],
+        telemetry=failing,
+    )
+    try:
+        asyncio.run(session.respond("查一下"))
+    except RuntimeError:
+        pass
+    assert failing.turns == [("llm", "unknown", "error", 0)]
 
 
 def test_summarize_error_collapses_cloudflare_tunnel_html():

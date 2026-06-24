@@ -22,8 +22,8 @@ from openai import AsyncOpenAI
 
 from agent.prompt import build_system_prompt
 from agent.session import AgentSession, InputEnricher
-from agent.telemetry import configure_telemetry
 from agent.tools import TOOL_HANDLERS, TOOL_SCHEMAS
+from telemetry import configure_telemetry
 
 _GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 _GROQ_DEFAULT_MODEL = "qwen/qwen3-32b"

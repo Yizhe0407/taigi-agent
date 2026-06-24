@@ -8,7 +8,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
-from agent.telemetry import get_telemetry
+from providers.http import get_http_client
+from telemetry import get_telemetry
 
 router = APIRouter()
 
@@ -38,13 +39,13 @@ async def _asr_post_audio(
     model: str,
 ) -> httpx.Response:
     """Send audio bytes to the ASR endpoint. Extracted for testability."""
-    async with httpx.AsyncClient(timeout=_ASR_TIMEOUT_SECONDS) as client:
-        return await client.post(
-            url,
-            headers=headers,
-            files={"file": (filename, audio_bytes, content_type)},
-            data={"model": model},
-        )
+    return await get_http_client().post(
+        url,
+        headers=headers,
+        files={"file": (filename, audio_bytes, content_type)},
+        data={"model": model},
+        timeout=_ASR_TIMEOUT_SECONDS,
+    )
 
 
 class TranscriptionResponse(BaseModel):
@@ -110,4 +111,6 @@ async def transcribe_audio(request: Request, file: UploadFile) -> object:
     if not text:
         raise HTTPException(status_code=422, detail="未聽清楚，請再說一次")
 
+    # Transcript onto the FastAPI request span (raw audio is size-only by design).
+    get_telemetry().set_current_content("asr.transcript", text)
     return {"text": text}

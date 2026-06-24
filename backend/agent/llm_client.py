@@ -9,12 +9,13 @@ of bubbling a 4xx to the caller.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import Any
 
 from agent.diagnostics import log_diagnostic
 from agent.error import summarize_error
-from agent.telemetry import AgentTelemetry
+from telemetry import AgentTelemetry
 
 _LLM_MAX_RETRIES = 3
 
@@ -54,6 +55,27 @@ def _looks_like_tool_call_failure(error: Exception) -> bool:
     return any(marker in text for marker in _TOOL_CALL_FAILED_MARKERS)
 
 
+def _output_content(response: Any) -> str:
+    """Serialize the completion message (content + tool calls) for span capture.
+
+    Best-effort: returns "" on unexpected response shapes so capture can never
+    break the success path (set_content skips empty strings).
+    """
+    try:
+        message = response.choices[0].message
+        payload: dict[str, Any] = {"content": message.content}
+        tool_calls = [
+            {"name": call.function.name, "arguments": call.function.arguments}
+            for call in (message.tool_calls or [])
+            if getattr(call, "type", "function") == "function"
+        ]
+        if tool_calls:
+            payload["tool_calls"] = tool_calls
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 async def call_llm(
     client: Any,
     model: str,
@@ -77,6 +99,12 @@ async def call_llm(
                 "agent.llm.attempt": attempt + 1,
             },
         ) as span:
+            telemetry.set_content(
+                span,
+                "gen_ai.input.messages",
+                json.dumps(messages, ensure_ascii=False),
+                limit=8_000,
+            )
             try:
                 response = await client.chat.completions.create(
                     model=model,
@@ -116,6 +144,7 @@ async def call_llm(
                     operation=operation,
                     outcome="ok",
                 )
+                telemetry.set_content(span, "gen_ai.output.messages", _output_content(response))
                 return response
 
         if retry_error is not None:

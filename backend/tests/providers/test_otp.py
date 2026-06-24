@@ -88,21 +88,12 @@ def test_plan_bus_connections_queries_otp_and_parses_legs(monkeypatch):
     calls = []
 
     class FakeAsyncClient:
-        def __init__(self, timeout):
-            self.timeout = timeout
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-        async def post(self, url, json):
-            calls.append((url, json, self.timeout))
+        async def post(self, url, json, timeout=None):
+            calls.append((url, json, timeout))
             return Response(_plan_payload())
 
     monkeypatch.setenv("OTP_BASE_URL", "http://otp.local/")
-    monkeypatch.setattr(otp.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(otp, "get_http_client", FakeAsyncClient)
 
     itineraries = asyncio.run(
         otp.plan_bus_connections(

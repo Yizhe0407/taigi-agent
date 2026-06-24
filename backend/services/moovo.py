@@ -23,6 +23,7 @@ from providers.moovo import (
     MoovoError,
     TdxBikeProvider,
 )
+from telemetry import get_telemetry
 
 __all__ = [
     "MoovoApiError",
@@ -220,15 +221,19 @@ async def load_moovo_stations(*, force_refresh: bool = False) -> tuple[MoovoStat
     if not force_refresh and _stations_cache is not None:
         fetched_at, stations = _stations_cache
         if ttl > 0 and now - fetched_at < ttl:
+            get_telemetry().record_cache_lookup(cache="moovo.stations", hit=True)
             return stations
 
     async with _stations_lock:
-        # Re-check after acquiring lock — another coroutine may have fetched first.
+        # Re-check after acquiring lock — another coroutine may have fetched
+        # first. Re-read the clock: the wait for the lock spans the fetch.
         if not force_refresh and _stations_cache is not None:
             fetched_at, stations = _stations_cache
-            if ttl > 0 and now - fetched_at < ttl:
+            if ttl > 0 and time.monotonic() - fetched_at < ttl:
+                get_telemetry().record_cache_lookup(cache="moovo.stations", hit=True)
                 return stations
 
+        get_telemetry().record_cache_lookup(cache="moovo.stations", hit=False)
         stations_payload, availability_payload = await _provider.fetch_station_payloads()
         stations = _merge_station_payloads(stations_payload, availability_payload)
         if not stations:

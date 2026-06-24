@@ -14,6 +14,8 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from taibun import Converter as TaibunConverter  # type: ignore[import-untyped]
@@ -21,6 +23,10 @@ from taigi_converter import TaigiConverter  # type: ignore[import-untyped]
 
 _hanlo_converter: TaigiConverter | None = None
 _taibun_converter: TaibunConverter | None = None
+
+# 單一 worker：converter 未保證 thread-safe，所有轉換在同一條 thread 上序列化，
+# 但不再卡住 event loop（首次呼叫的 model 載入也在這條 thread 上）。
+_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="text-process")
 
 
 def _get_hanlo() -> TaigiConverter:
@@ -55,3 +61,8 @@ def process(zh_text: str) -> TextProcessResult:
     hanlo = str(_get_hanlo().convert(zh_text))
     tailo = str(_get_taibun().get(hanlo)) if hanlo else ""
     return TextProcessResult(hanlo=hanlo, tailo=tailo)
+
+
+async def process_async(zh_text: str) -> TextProcessResult:
+    """CPU-bound `process` 丟到專用 thread，避免阻塞 event loop。"""
+    return await asyncio.get_running_loop().run_in_executor(_executor, process, zh_text)

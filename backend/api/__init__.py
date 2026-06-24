@@ -15,9 +15,10 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor  # noqa: E402
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor  # noqa: E402
 
-from agent.telemetry import configure_telemetry  # noqa: E402
 from config import parse_cors_origins  # noqa: E402
+from providers.http import aclose_http_client  # noqa: E402
 from services.departures import get_provider  # noqa: E402
+from telemetry import configure_telemetry  # noqa: E402
 
 from .admin import router as admin_router  # noqa: E402
 from .asr import router as asr_router  # noqa: E402
@@ -34,6 +35,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     provider = get_provider()
     if hasattr(provider, "aclose"):
         await provider.aclose()
+    await aclose_http_client()
 
 
 app = FastAPI(title="Taigi Bus Agent API", lifespan=_lifespan)

@@ -24,10 +24,11 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from agent.telemetry import get_telemetry
 from config import get_settings
-from pipeline.text_processor import process as text_process
+from pipeline.text_processor import process_async as text_process_async
 from pipeline.tts_normalizer import normalize_for_tts
+from providers.http import get_http_client
+from telemetry import get_telemetry
 
 router = APIRouter()
 
@@ -127,8 +128,11 @@ async def synthesize(body: TTSRequest) -> Response:
     t0 = time.perf_counter()
     try:
         tts_text = normalize_for_tts(body.text)
-        with tel.start_span("tts.text_process", {"tts.input_chars": len(tts_text)}):
-            result = text_process(tts_text)
+        with tel.start_span("tts.text_process", {"tts.input_chars": len(tts_text)}) as span:
+            result = await text_process_async(tts_text)
+            tel.set_content(span, "tts.input_text", tts_text)
+            tel.set_content(span, "tts.hanlo_text", result.hanlo)
+            tel.set_content(span, "tts.tailo_text", result.tailo)
         outcome = "ok" if result.tailo else "empty_output"
         tel.record_pipeline_stage(time.perf_counter() - t0, stage="tts.text_process", outcome=outcome)
     except Exception as err:
@@ -148,33 +152,42 @@ async def synthesize(body: TTSRequest) -> Response:
 
     base_payload: dict = {"model": model, "voice": voice}
 
+    t1 = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=_TTS_TIMEOUT_SECONDS) as client:
+        with tel.start_span("tts.synthesize", {"tts.segments": len(segments)}):
+            client = get_http_client()
             responses = await asyncio.gather(
                 *[
                     client.post(
                         f"{base_url}/v1/audio/speech",
                         headers=req_headers,
                         json={**base_payload, "input": seg},
+                        timeout=_TTS_TIMEOUT_SECONDS,
                     )
                     for seg, _ in segments
                 ]
             )
+            for resp in responses:
+                if resp.status_code != 200:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"TTS 服務回應錯誤（{resp.status_code}）",
+                    )
+    except HTTPException:
+        tel.record_pipeline_stage(time.perf_counter() - t1, stage="tts.synthesize", outcome="upstream_error")
+        raise
     except httpx.TimeoutException as err:
+        tel.record_pipeline_stage(time.perf_counter() - t1, stage="tts.synthesize", outcome="timeout")
         raise HTTPException(status_code=504, detail="TTS 服務逾時") from err
     except httpx.RequestError as err:
+        tel.record_pipeline_stage(time.perf_counter() - t1, stage="tts.synthesize", outcome="connect_error")
         raise HTTPException(status_code=503, detail=f"無法連線到 TTS 服務：{err}") from err
-
-    for resp in responses:
-        if resp.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail=f"TTS 服務回應錯誤（{resp.status_code}）",
-            )
+    tel.record_pipeline_stage(time.perf_counter() - t1, stage="tts.synthesize", outcome="ok")
 
     # ── Step 5: concatenate WAV with silence ──────────────────────────────────
     silences_ms = [ms for _, ms in segments]
     audio_bytes = _concat_wav([r.content for r in responses], silences_ms)
+    tel.record_tts_audio_bytes(len(audio_bytes))
 
     return Response(
         content=audio_bytes,

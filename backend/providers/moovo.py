@@ -7,11 +7,15 @@ logic stays decoupled from transport.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import Any
 
 import httpx
+
+from providers.http import get_http_client
+from telemetry import get_telemetry
 
 _TOKEN_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 _DEFAULT_BIKE_BASE_URL = "https://tdx.transportdata.tw/api/basic/v2/Bike"
@@ -60,21 +64,13 @@ class TdxBikeProvider:
 
     async def fetch_station_payloads(self) -> tuple[list[Any], list[Any]]:
         """Return raw (stations, availability) lists for the configured city."""
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            token = await self._get_token(client)
-            params = {"$format": "JSON"}
-            stations = await self._get_json(
-                client,
-                token,
-                f"Station/City/{self._city}",
-                params=params,
-            )
-            availability = await self._get_json(
-                client,
-                token,
-                f"Availability/City/{self._city}",
-                params=params,
-            )
+        client = get_http_client()
+        token = await self._get_token(client)
+        params = {"$format": "JSON"}
+        stations, availability = await asyncio.gather(
+            self._get_json(client, token, f"Station/City/{self._city}", params=params),
+            self._get_json(client, token, f"Availability/City/{self._city}", params=params),
+        )
 
         if not isinstance(stations, list) or not isinstance(availability, list):
             raise MoovoApiError("TDX Bike station response is not a list")
@@ -88,10 +84,10 @@ class TdxBikeProvider:
 
     async def _get_token(self, client: httpx.AsyncClient) -> str:
         now = time.monotonic()
-        if self._token_cache is not None:
-            expires_at, token = self._token_cache
-            if now < expires_at:
-                return token
+        hit = self._token_cache is not None and now < self._token_cache[0]
+        get_telemetry().record_cache_lookup(cache="tdx.token", hit=hit)
+        if hit and self._token_cache is not None:
+            return self._token_cache[1]
 
         client_id, client_secret = _tdx_credentials()
         try:
@@ -102,6 +98,7 @@ class TdxBikeProvider:
                     "client_id": client_id,
                     "client_secret": client_secret,
                 },
+                timeout=self._timeout,
             )
             response.raise_for_status()
             payload = response.json()
@@ -135,6 +132,7 @@ class TdxBikeProvider:
                     "Accept": "application/json",
                 },
                 params=params,
+                timeout=self._timeout,
             )
             response.raise_for_status()
             return response.json()

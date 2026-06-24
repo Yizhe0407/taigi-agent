@@ -8,6 +8,7 @@ from `Settings`; only the mutable message log is persisted (see
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -105,12 +106,14 @@ async def send_chat_message(session_id: str, body: ChatMessageRequest) -> object
     store = _get_store()
 
     try:
-        messages = store.load_messages(session_id)
+        # SQLite I/O is synchronous — run it off the event loop so a slow disk
+        # can't stall other in-flight requests.
+        messages = await asyncio.to_thread(store.load_messages, session_id)
         if messages is None:
             raise LookupError(session_id)
         session = _rehydrate_session(messages)
         reply = await session.respond(body.message)
-        store.save_messages(session_id, session.messages)
+        await asyncio.to_thread(store.save_messages, session_id, session.messages)
     except LookupError as error:
         raise HTTPException(status_code=404, detail="對話階段不存在或已過期，請重新開始") from error
     except Exception as error:

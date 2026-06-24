@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from agent.context import (
@@ -21,7 +22,6 @@ from agent.context import (
 from agent.diagnostics import log_diagnostic
 from agent.llm_client import ContextWindowExceeded, ToolCallFailed, call_llm
 from agent.router import ConvState, Decision, Intent, IntentRouter
-from agent.telemetry import AgentTelemetry
 from agent.tool_dispatch import (
     ToolHandler,
     assistant_message,
@@ -29,6 +29,7 @@ from agent.tool_dispatch import (
     function_tool_calls,
 )
 from pipeline.normalize import normalize_llm_output
+from telemetry import AgentTelemetry
 
 InputEnricher = Callable[[str], Awaitable[str]]
 
@@ -44,6 +45,16 @@ def _find_direct_response(tool_calls: list, tool_results: list[dict]) -> str | N
 _MAX_CONTEXT_RECOVERY_RETRIES = 1
 _DEFAULT_MAX_TOOL_ROUNDS = 8
 _TOOL_ROUND_LIMIT_MESSAGE = "查詢逾時，請換個方式再問一次。"
+
+
+@dataclass(frozen=True)
+class _LlmTurnResult:
+    """LLM loop 的單一收斂出口；`error` 非 None 時由呼叫端記錄 metric 後重拋。"""
+
+    outcome: str  # "ok" | "tool_round_limit" | "error"
+    reply: str
+    tool_rounds: int
+    error: Exception | None = None
 
 
 class AgentSession:
@@ -139,8 +150,15 @@ class AgentSession:
                     "agent.router.intent": decision.intent.value,
                     "agent.router.path": "canned",
                 },
-            ):
+            ) as span:
                 self._record_canned_turn(user_input, decision)
+                self.telemetry.set_content(span, "agent.input.text", user_input)
+                self.telemetry.set_content(span, "agent.reply.text", decision.canned_response)
+                self.telemetry.record_turn(
+                    path="canned",
+                    intent=decision.intent.value,
+                    outcome="ok",
+                )
                 return decision.canned_response
 
         return await self._llm_respond(user_input, intent=decision.intent)
@@ -161,12 +179,32 @@ class AgentSession:
                 "agent.router.intent": intent.value,
                 "agent.router.path": "llm",
             },
-        ):
+        ) as span:
+            self.telemetry.set_content(span, "agent.input.text", enriched_content)
+            self.telemetry.set_content(span, "agent.system_prompt", self.system_prompt)
             self.messages.append({"role": "user", "content": enriched_content})
 
-            tool_rounds = 0
-            context_retries = 0
-            force_required = True  # degraded to False on ToolCallFailed
+            result = await self._run_llm_loop()
+            # 唯一記錄點：loop 的每個出口（含錯誤）都以 _LlmTurnResult 收斂，
+            # 新增出口路徑時型別上必須給 outcome，不可能漏記。
+            self.telemetry.record_turn(
+                path="llm",
+                intent=intent.value,
+                outcome=result.outcome,
+                tool_rounds=result.tool_rounds,
+            )
+            if result.error is not None:
+                raise result.error
+            self.telemetry.set_content(span, "agent.reply.text", result.reply)
+            return result.reply
+
+    async def _run_llm_loop(self) -> _LlmTurnResult:
+        """LLM tool-call loop。所有出口都回傳 `_LlmTurnResult`，不直接 raise —
+        例外帶在 `error` 欄位由 `_llm_respond` 統一記錄 metric 後重拋。"""
+        tool_rounds = 0
+        context_retries = 0
+        force_required = True  # degraded to False on ToolCallFailed
+        try:
             while True:
                 await self._prepare_context()
                 try:
@@ -220,11 +258,19 @@ class AgentSession:
                         "warn",
                         f"單輪 tool call 達到上限 {self.max_tool_rounds}，強制跳出",
                     )
-                    return self._finish_with_assistant(_TOOL_ROUND_LIMIT_MESSAGE)
+                    return _LlmTurnResult(
+                        outcome="tool_round_limit",
+                        reply=self._finish_with_assistant(_TOOL_ROUND_LIMIT_MESSAGE),
+                        tool_rounds=tool_rounds,
+                    )
 
                 self.messages.append(assistant_message(message, tool_calls))
                 if not tool_calls:
-                    return self._finish_normalized(message.content or "")
+                    return _LlmTurnResult(
+                        outcome="ok",
+                        reply=self._finish_normalized(message.content or ""),
+                        tool_rounds=tool_rounds,
+                    )
 
                 tool_rounds += 1
                 tool_results = await execute_tool_calls(
@@ -237,4 +283,15 @@ class AgentSession:
                 # respond_directly short-circuits the loop: no further LLM call needed.
                 direct = _find_direct_response(tool_calls, tool_results)
                 if direct is not None:
-                    return self._finish_normalized(direct)
+                    return _LlmTurnResult(
+                        outcome="ok",
+                        reply=self._finish_normalized(direct),
+                        tool_rounds=tool_rounds,
+                    )
+        except Exception as error:
+            return _LlmTurnResult(
+                outcome="error",
+                reply="",
+                tool_rounds=tool_rounds,
+                error=error,
+            )

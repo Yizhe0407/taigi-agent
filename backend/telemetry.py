@@ -16,6 +16,7 @@ from opentelemetry.trace import Status, StatusCode
 
 _AGENT_INSTRUMENTATION_NAME = "taigi_bus_agent.agent"
 _PIPELINE_INSTRUMENTATION_NAME = "taigi_bus_agent.pipeline"
+_PROVIDER_INSTRUMENTATION_NAME = "taigi_bus_agent.provider"
 
 # Recommended bucket boundaries from OTel HTTP semantic conventions spec.
 # https://opentelemetry.io/docs/specs/semconv/http/http-metrics/
@@ -37,6 +38,16 @@ _BYTES_BOUNDARIES = [
 
 # Singleton — set once by configure_telemetry(), read by get_telemetry().
 _telemetry: "AgentTelemetry | None" = None
+
+# Content-level capture (user input / prompt / LLM 回應 / tool result / 轉譯文字)。
+# 預設開啟；設 TELEMETRY_CAPTURE_CONTENT=false 關閉。原始音訊 bytes 不收 —
+# binary 塞 span attribute 是反模式，metadata（大小、長度）已由 metrics 涵蓋。
+_CAPTURE_CONTENT_ENV = "TELEMETRY_CAPTURE_CONTENT"
+_CONTENT_MAX_CHARS = 4_000
+
+
+def _truncate_content(text: str, limit: int) -> str:
+    return text if len(text) <= limit else f"{text[:limit]}…[truncated {len(text)} chars]"
 
 
 def _clean_attributes(attributes: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -104,6 +115,8 @@ class AgentTelemetry:
     """OpenTelemetry spans and metrics emitted by the agent harness and pipeline."""
 
     def __init__(self) -> None:
+        self._capture_content = os.getenv(_CAPTURE_CONTENT_ENV, "true").strip().lower() not in ("false", "0", "no")
+
         # ── Agent instrumentation (LLM + tool calls) ─────────────────────────
         agent_meter = metrics.get_meter(_AGENT_INSTRUMENTATION_NAME)
         self._tracer = trace.get_tracer(_AGENT_INSTRUMENTATION_NAME)
@@ -127,6 +140,24 @@ class AgentTelemetry:
             unit="{error}",
             description="Tool dispatch and handler failures.",
         )
+        self._turns = agent_meter.create_counter(
+            "agent.turn",
+            unit="{turn}",
+            description=("Completed agent turns. Attributes: agent.router.path (canned/llm), agent.router.intent, agent.outcome (ok/tool_round_limit/error)."),
+        )
+        self._turn_tool_rounds = agent_meter.create_histogram(
+            "agent.turn.tool_rounds",
+            unit="{round}",
+            description="Tool-call rounds consumed by one LLM-path turn.",
+        )
+
+        # ── Provider instrumentation (upstream caches) ────────────────────────
+        provider_meter = metrics.get_meter(_PROVIDER_INSTRUMENTATION_NAME)
+        self._cache_lookups = provider_meter.create_counter(
+            "provider.cache.lookup",
+            unit="{lookup}",
+            description=("Upstream-data cache lookups. Attributes: cache.name (e.g. ebus.route_info), cache.outcome (hit/miss)."),
+        )
 
         # ── Pipeline instrumentation (ASR / TTS stages) ───────────────────────
         pipeline_meter = metrics.get_meter(_PIPELINE_INSTRUMENTATION_NAME)
@@ -139,6 +170,11 @@ class AgentTelemetry:
             "pipeline.asr.audio_bytes",
             unit="By",
             description="Size of audio uploaded to the ASR proxy endpoint.",
+        )
+        self._tts_audio_bytes = pipeline_meter.create_histogram(
+            "pipeline.tts.audio_bytes",
+            unit="By",
+            description="Size of the concatenated WAV returned by the TTS endpoint.",
         )
 
     # ── Span helpers ──────────────────────────────────────────────────────────
@@ -160,6 +196,46 @@ class AgentTelemetry:
         if exception is not None:
             span.record_exception(exception)
         span.set_status(Status(StatusCode.ERROR, description or error_type))
+
+    # ── Content capture ───────────────────────────────────────────────────────
+
+    @property
+    def capture_content(self) -> bool:
+        return self._capture_content
+
+    def set_content(
+        self,
+        span: Any,
+        key: str,
+        text: object,
+        *,
+        limit: int = _CONTENT_MAX_CHARS,
+    ) -> None:
+        """Attach content-level text to a span, truncated to `limit` chars.
+
+        No-op when TELEMETRY_CAPTURE_CONTENT=false or text is None/empty.
+        Never raises — telemetry must not break the request path.
+        """
+        if not self._capture_content or text is None:
+            return
+        try:
+            value = text if isinstance(text, str) else str(text)
+            if value:
+                span.set_attribute(key, _truncate_content(value, limit))
+        except Exception:  # noqa: BLE001 — content capture is best-effort
+            pass
+
+    def set_current_content(
+        self,
+        key: str,
+        text: object,
+        *,
+        limit: int = _CONTENT_MAX_CHARS,
+    ) -> None:
+        """`set_content` onto the current span (e.g. the FastAPI request span)."""
+        span = trace.get_current_span()
+        if span.is_recording():
+            self.set_content(span, key, text, limit=limit)
 
     # ── Agent metrics ─────────────────────────────────────────────────────────
 
@@ -210,6 +286,41 @@ class AgentTelemetry:
             },
         )
 
+    def record_turn(
+        self,
+        *,
+        path: str,
+        intent: str,
+        outcome: str,
+        tool_rounds: int | None = None,
+    ) -> None:
+        """Record one completed agent turn.
+
+        `tool_rounds` is only meaningful on the LLM path; canned turns pass None.
+        """
+        self._turns.add(
+            1,
+            {
+                "agent.router.path": path,
+                "agent.router.intent": intent,
+                "agent.outcome": outcome,
+            },
+        )
+        if tool_rounds is not None:
+            self._turn_tool_rounds.record(tool_rounds, {"agent.outcome": outcome})
+
+    # ── Provider metrics ──────────────────────────────────────────────────────
+
+    def record_cache_lookup(self, *, cache: str, hit: bool) -> None:
+        """Record an upstream-data cache lookup (hit ratio drives TTL tuning)."""
+        self._cache_lookups.add(
+            1,
+            {
+                "cache.name": cache,
+                "cache.outcome": "hit" if hit else "miss",
+            },
+        )
+
     # ── Pipeline metrics ──────────────────────────────────────────────────────
 
     def record_pipeline_stage(self, duration_s: float, *, stage: str, outcome: str) -> None:
@@ -231,3 +342,7 @@ class AgentTelemetry:
     def record_asr_audio_bytes(self, n_bytes: int) -> None:
         """Record size of an audio upload to the ASR proxy."""
         self._asr_audio_bytes.record(n_bytes)
+
+    def record_tts_audio_bytes(self, n_bytes: int) -> None:
+        """Record size of the synthesized WAV returned to the frontend."""
+        self._tts_audio_bytes.record(n_bytes)

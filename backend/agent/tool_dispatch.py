@@ -13,7 +13,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from agent.telemetry import AgentTelemetry
+from telemetry import AgentTelemetry
 
 ToolHandler = Callable[..., Awaitable[str]]
 
@@ -59,6 +59,7 @@ async def _execute_one(
         "agent.tool.call",
         {"agent.tool.name": tool_name, "agent.tool.call_id": call.id},
     ) as span:
+        telemetry.set_content(span, "agent.tool.arguments", call.function.arguments)
         try:
             try:
                 tool_args = json.loads(call.function.arguments or "{}")
@@ -90,6 +91,7 @@ async def _execute_one(
                 result = f"工具 {tool_name} 執行失敗：{e}"
 
             # tool_call_id 必須對應 assistant message 裡同一個 call id。
+            telemetry.set_content(span, "agent.tool.result", str(result))
             return tool_result_msg(call.id, str(result))
         finally:
             telemetry.record_tool_duration(

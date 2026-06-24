@@ -1,3 +1,4 @@
+import functools
 import json
 
 import tiktoken
@@ -19,22 +20,27 @@ _TOOL_RESULT_COMPACT_MARKER = "[長工具結果已截斷]"
 # cl100k_base 詞表含常用中文字，1 字通常對應 1 token，對 Qwen 模型是合理近似
 _enc = tiktoken.get_encoding("cl100k_base")
 
-# Per-message token count cache keyed by id(msg). Avoids re-encoding the full
-# history on every LLM turn (O(N²) → O(N) amortised). id reuse after GC is
-# safe in practice: kiosk sessions are short and bounded by MAX_EXCHANGES.
-_TOKEN_CACHE: dict[int, int] = {}
+
+@functools.lru_cache(maxsize=2048)
+def _count_text_tokens(text: str) -> int:
+    """Content-keyed token count cache.
+
+    Keying on the text itself (not id(msg)) stays correct across session
+    rehydration — the HTTP API re-creates message dicts from JSON on every
+    request, so identity-based keys would collide after GC id reuse and grow
+    without bound. lru_cache bounds memory and still amortises re-encoding
+    the same history every LLM turn (O(N²) → O(N)).
+    """
+    return len(_enc.encode(text))
 
 
 def _count_msg_tokens(msg: dict) -> int:
-    key = id(msg)
-    if key not in _TOKEN_CACHE:
-        content = msg.get("content") or ""
-        count = len(_enc.encode(content)) if isinstance(content, str) else 0
-        tool_calls = msg.get("tool_calls")
-        if tool_calls:
-            count += len(_enc.encode(json.dumps(tool_calls, ensure_ascii=False)))
-        _TOKEN_CACHE[key] = count + 4
-    return _TOKEN_CACHE[key]
+    content = msg.get("content") or ""
+    count = _count_text_tokens(content) if isinstance(content, str) else 0
+    tool_calls = msg.get("tool_calls")
+    if tool_calls:
+        count += _count_text_tokens(json.dumps(tool_calls, ensure_ascii=False))
+    return count + 4
 
 
 def estimate_tokens(messages: list) -> int:

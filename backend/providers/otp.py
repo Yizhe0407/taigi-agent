@@ -12,6 +12,8 @@ from typing import Any
 import httpx
 import polyline
 
+from providers.http import get_http_client
+
 _DEFAULT_BASE_URL = "http://localhost:8081"
 _GRAPHQL_PATH = "/otp/gtfs/v1"
 _TIMEOUT_SECONDS = 15
@@ -261,8 +263,11 @@ def _parse_plan_response(payload: Any) -> list[Itinerary]:
 
 async def _post_graphql(query: str) -> Any:
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
-            response = await client.post(_endpoint(), json={"query": query})
+        response = await get_http_client().post(
+            _endpoint(),
+            json={"query": query},
+            timeout=_TIMEOUT_SECONDS,
+        )
         response.raise_for_status()
     except httpx.HTTPError as error:
         raise OtpError(f"OTP request failed: {error}") from error

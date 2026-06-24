@@ -46,11 +46,12 @@ backend/
 - `agent/tool_dispatch.py`：tool call parse 與 dispatch。
 - `agent/tools.py`：`TOOL_SCHEMAS` 與 `TOOL_HANDLERS`。
 - `agent/context.py`：token budget、exchange-count cap、長 tool result 截斷。
-- `agent/telemetry.py`：OpenTelemetry spans / metrics。
+- `telemetry.py`（backend 根）：OpenTelemetry spans / metrics；cross-cutting infra，與 `config.py` 同層，任何層都可引用。
 
 ### 領域層
 
 - `providers/bus.py`：`BusProvider` Protocol。
+- `providers/http.py`：process-wide 共用 `httpx.AsyncClient`（連線池重用）；TTS/ASR/OTP/TDX 都透過它發請求，各呼叫點自帶 per-request timeout，app shutdown 時由 lifespan 關閉。
 - `providers/yunlin_ebus.py`：雲林 ebus provider。
 - `providers/otp.py`：OpenTripPlanner GraphQL provider。
 - `providers/moovo.py`：TDX bike provider。

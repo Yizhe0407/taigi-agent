@@ -13,6 +13,7 @@ from collections.abc import Callable
 import httpx
 
 from providers.bus import BusProvider
+from telemetry import get_telemetry
 
 _DEFAULT_BASE = "https://ebus.yunlin.gov.tw/api"
 _DEFAULT_TIMEOUT = 10.0
@@ -70,7 +71,9 @@ class YunlinEbusProvider(BusProvider):
 
     async def fetch_route_estimate(self, route_id: int) -> list[dict]:
         cached = self._route_estimate_by_id.get(route_id)
-        if cached is not None and not self._is_expired(cached[0], self._route_estimate_ttl):
+        hit = cached is not None and not self._is_expired(cached[0], self._route_estimate_ttl)
+        get_telemetry().record_cache_lookup(cache="ebus.route_estimate", hit=hit)
+        if hit:
             return cached[1]
         resp = await self._http.get(f"{self._base}/route/{route_id}/estimate")
         resp.raise_for_status()
@@ -121,7 +124,9 @@ class YunlinEbusProvider(BusProvider):
         跟真實站牌的標示方式一致。
         """
         cached = self._route_info_by_stop.get(stop_name)
-        if cached is not None and not self._is_expired(cached[0], self._route_info_ttl):
+        hit = cached is not None and not self._is_expired(cached[0], self._route_info_ttl)
+        get_telemetry().record_cache_lookup(cache="ebus.route_info", hit=hit)
+        if hit:
             return cached[1]
 
         route_info = self._build_route_info(await self.fetch_routes_at_stop(stop_name))

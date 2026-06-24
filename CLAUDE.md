@@ -45,7 +45,7 @@ pnpm dev
 - `load_dotenv()` 必須在依賴 env 的 import 之前。
 - vLLM tool calling 需要 `--enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3`。
 - vLLM 非思考模式格式是 `{"chat_template_kwargs": {"enable_thinking": False}}`。
-- Telemetry 預設不外送 user input、prompt、tool result；若要內容層級觀測，先定資料保留與遮罩策略。
+- Telemetry content-level 觀測預設開啟（user input、prompt、LLM 回應、tool result、ASR/TTS 文字掛在 span attributes，經 `set_content()` 截斷）；設 `TELEMETRY_CAPTURE_CONTENT=false` 關閉。原始音訊 bytes 不收，只記大小。
 
 ## Commit 規範
 
