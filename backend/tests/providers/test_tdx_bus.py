@@ -127,11 +127,11 @@ def test_fetch_eta_at_stop_normalises_fields(monkeypatch):
     provider = TdxBusProvider("id", "secret")
     rows = asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))
 
-    # Both City and InterCity return _ETA_ROWS, so 4 rows total (2 × 2).
-    assert len(rows) == 4
-    r = rows[0]
+    # City and InterCity both return the same _ETA_ROWS (dir=0 + dir=1).
+    # After dedup by min sequence, 2 unique (sub_route_name, direction) rows remain.
+    assert len(rows) == 2
+    r = next(r for r in rows if r["direction"] == 0)
     assert r["sub_route_name"] == "201"
-    assert r["direction"] == 0
     assert r["stop_status"] == 0
     assert r["estimate_seconds"] == 300
 
@@ -269,6 +269,34 @@ def test_fetch_eta_at_stop_degrades_when_one_endpoint_fails(monkeypatch):
     rows = asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))
     # City returned 2 rows, InterCity failed — should still get city rows
     assert len(rows) == 2
+
+
+def test_fetch_eta_at_stop_deduplicates_circular_route(monkeypatch):
+    """Circular routes return two rows for the kiosk stop; keep the lower-sequence one."""
+    circular_eta = [
+        # seq=1: departure point — 末班已過
+        {"SubRouteName": {"Zh_tw": "Y02"}, "Direction": 0, "StopStatus": 3, "EstimateTime": None, "StopSequence": 1},
+        # seq=10: arrival point — 7.5h away (irrelevant for boarding)
+        {"SubRouteName": {"Zh_tw": "Y02"}, "Direction": 0, "StopStatus": 0, "EstimateTime": 27000, "StopSequence": 10},
+    ]
+
+    class FixedClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            if "City" in url:
+                return _FakeResp(circular_eta)
+            return _FakeResp([])  # InterCity: nothing
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: FixedClient())
+    provider = TdxBusProvider("id", "secret")
+    rows = asyncio.run(provider.fetch_eta_at_stop("斗六火車站"))
+
+    y02_rows = [r for r in rows if r["sub_route_name"] == "Y02"]
+    assert len(y02_rows) == 1, "should keep only one row per route+direction"
+    assert y02_rows[0]["stop_status"] == 3, "should keep seq=1 (末班已過), not seq=10 (7.5h)"
+    assert y02_rows[0]["stop_sequence"] == 1
 
 
 def test_fetch_eta_at_stop_raises_when_both_endpoints_fail(monkeypatch):

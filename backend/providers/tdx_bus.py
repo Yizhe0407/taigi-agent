@@ -149,6 +149,7 @@ class TdxBusProvider(BusProvider):
             "direction": row.get("Direction", 0),
             "stop_status": row.get("StopStatus", 1),
             "estimate_seconds": row.get("EstimateTime"),
+            "stop_sequence": row.get("StopSequence"),
         }
 
     @staticmethod
@@ -191,7 +192,8 @@ class TdxBusProvider(BusProvider):
         intercity_rows = _safe_list(results[1])
         if isinstance(results[0], BaseException) and isinstance(results[1], BaseException):
             raise results[0]
-        return [self._norm_eta(r) for r in city_rows + intercity_rows]
+        all_rows = [self._norm_eta(r) for r in city_rows + intercity_rows]
+        return self._dedup_by_min_sequence(all_rows)
 
     async def fetch_route_estimate(self, sub_route_name: str) -> list[dict]:
         cached = self._route_estimate_cache.get(sub_route_name)
@@ -278,6 +280,25 @@ class TdxBusProvider(BusProvider):
             }
             for name in all_names
         }
+
+    @staticmethod
+    def _dedup_by_min_sequence(rows: list[dict]) -> list[dict]:
+        """Keep one row per (sub_route_name, direction) — prefer lowest StopSequence.
+
+        Circular routes (e.g., Y02) have the kiosk as both the first and last stop.
+        TDX returns one ETA row per stop occurrence, so we get two rows: seq=1
+        (departure, boarding-relevant) and seq=N (arrival of the same bus after
+        completing the loop). Keeping the minimum-sequence row ensures the kiosk
+        shows the departure status rather than the distant arrival time.
+        """
+        best: dict[tuple[str, int], dict] = {}
+        for row in rows:
+            key = (row.get("sub_route_name", ""), row.get("direction", 0))
+            seq = row.get("stop_sequence") or 9999
+            existing = best.get(key)
+            if existing is None or (existing.get("stop_sequence") or 9999) > seq:
+                best[key] = row
+        return list(best.values())
 
     def _expired(self, fetched_at: float, ttl: float | None) -> bool:
         if ttl is None or ttl <= 0:
