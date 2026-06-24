@@ -421,9 +421,9 @@ def test_get_retries_on_429_then_succeeds(monkeypatch):
     provider._kiosk_uids["A"] = {"UID1"}
     rows = asyncio.run(provider.fetch_eta_at_stop("A"))
 
-    # 2 sleeps (backoff before attempt 2 and 3); data from successful call
-    assert len(sleeps) == 2
-    assert sleeps == [1.0, 2.0]  # 1<<0, 1<<1
+    # 1 sleep (backoff before attempt 2); data from successful call
+    assert len(sleeps) == 1
+    assert sleeps == [1.0]  # 1<<0
     assert any(r["sub_route_name"] == "201" for r in rows)
 
 
@@ -449,3 +449,32 @@ def test_get_raises_after_max_retries(monkeypatch):
         assert False, "should have raised"
     except httpx.HTTPStatusError as e:
         assert "429" in str(e)
+
+
+def test_fetch_eta_at_stop_returns_stale_on_error(monkeypatch):
+    """When TDX fails but stale cache exists, return stale data instead of raising."""
+
+    class Always429Client:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            return _FakeResp([], status_code=429)
+
+    async def fake_sleep(s: float) -> None:
+        pass
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: Always429Client())
+    fake_now = [0.0]
+    provider = TdxBusProvider("id", "secret", eta_ttl_seconds=30.0, sleep=fake_sleep, clock=lambda: fake_now[0])
+    provider._kiosk_uids["A"] = {"UID1"}
+
+    # Seed stale cache manually (expired)
+    stale_rows = [{"sub_route_name": "201", "direction": 0, "stop_status": 0, "estimate_seconds": 120, "stop_sequence": 1}]
+    provider._eta_cache["A"] = (0.0, stale_rows)
+    fake_now[0] = 60.0  # TTL expired
+
+    rows = asyncio.run(provider.fetch_eta_at_stop("A"))
+    assert rows == stale_rows  # stale returned, not raised
+    # Cache timestamp should be refreshed to prevent immediate retry
+    assert provider._eta_cache["A"][0] == 60.0

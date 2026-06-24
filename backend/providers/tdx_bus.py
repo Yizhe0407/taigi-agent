@@ -68,7 +68,7 @@ _TOKEN_BUFFER_SECONDS = 60.0
 _DEFAULT_ROUTE_INFO_TTL = 600.0
 _DEFAULT_ROUTE_ESTIMATE_TTL = 30.0  # TDX updates ~30 s; 10 s caused 429 rate-limit hits
 _DEFAULT_ETA_TTL = 30.0  # cache fetch_eta_at_stop; without this every frontend poll hits TDX
-_MAX_RETRIES = 3  # retries on HTTP 429; backoff 1→2→4 s (or Retry-After header)
+_MAX_RETRIES = 1  # retries on HTTP 429; Retry-After is 20-40 s so 3 retries = 60-120 s blocking
 
 _INTERCITY_RE = re.compile(r"^7\d{3}")
 
@@ -218,7 +218,15 @@ class TdxBusProvider(BusProvider):
             return cached[1]
 
         uids = self._kiosk_uids.get(stop_name)
-        rows = await (self._fetch_eta_by_uids(uids) if uids else self._fetch_eta_by_name(stop_name))
+        try:
+            rows = await (self._fetch_eta_by_uids(uids) if uids else self._fetch_eta_by_name(stop_name))
+        except Exception:
+            if cached is not None:
+                # Serve stale data and refresh timestamp to prevent immediate retry storm.
+                _log.warning("TDX ETA fetch failed; serving stale cache for %s", stop_name)
+                self._eta_cache[stop_name] = (self._clock(), cached[1])
+                return cached[1]
+            raise
         self._eta_cache[stop_name] = (self._clock(), rows)
         return rows
 
