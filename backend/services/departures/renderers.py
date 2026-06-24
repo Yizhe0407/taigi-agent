@@ -291,8 +291,16 @@ async def render_arrivals_to_destination(
 
     now = datetime.now(TAIPEI_TZ)
     valid = [(name, info.get("id")) for name, info in route_info.items()]
-    tasks = [_check_route_arrivals(name, rid, provider, kiosk_stop, go_back, destination, route_info, now) for name, rid in valid if rid]
-    results = await asyncio.gather(*tasks)
+    # Semaphore limits concurrent TDX calls; firing all N routes in parallel
+    # causes 429 storms when cache is cold.
+    sem = asyncio.Semaphore(3)
+
+    async def _guarded(name: str, rid: str) -> tuple[list[tuple[str, int]], set[str]]:
+        async with sem:
+            return await _check_route_arrivals(name, rid, provider, kiosk_stop, go_back, destination, route_info, now)
+
+    tasks_guarded = [_guarded(name, rid) for name, rid in valid if rid]
+    results = await asyncio.gather(*tasks_guarded)
     raw = [item for hits, _ in results for item in hits]
     all_stops = {name for _, stops in results for name in stops}
 

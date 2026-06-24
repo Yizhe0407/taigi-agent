@@ -238,16 +238,23 @@ class TdxBusProvider(BusProvider):
             return cached[1]
 
         # Only query the endpoint that owns this route — halves request volume.
-        if _is_intercity(sub_route_name):
-            raw = await self._get(
-                f"{_BASE}/EstimatedTimeOfArrival/InterCity",
-                {"$filter": f"SubRouteName/Zh_tw eq '{sub_route_name}'"},
-            )
-        else:
-            raw = await self._get(
-                f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
-                {"$filter": f"SubRouteName/Zh_tw eq '{sub_route_name}'"},
-            )
+        try:
+            if _is_intercity(sub_route_name):
+                raw = await self._get(
+                    f"{_BASE}/EstimatedTimeOfArrival/InterCity",
+                    {"$filter": f"SubRouteName/Zh_tw eq '{sub_route_name}'"},
+                )
+            else:
+                raw = await self._get(
+                    f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
+                    {"$filter": f"SubRouteName/Zh_tw eq '{sub_route_name}'"},
+                )
+        except Exception:
+            if cached is not None:
+                _log.warning("TDX route estimate fetch failed; serving stale cache for %s", sub_route_name)
+                self._route_estimate_cache[sub_route_name] = (self._clock(), cached[1])
+                return cached[1]
+            raise
 
         rows = [self._norm_stop_eta(r) for r in raw]
         self._route_estimate_cache[sub_route_name] = (self._clock(), rows)
