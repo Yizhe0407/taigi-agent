@@ -7,6 +7,7 @@ export type VoiceState = "idle" | "recording" | "transcribing"
 
 export function useVoiceInput(onTranscript: (text: string) => void, onError: (msg: string) => void) {
   const voiceState = ref<VoiceState>("idle")
+  const micDenied = ref(false)
 
   let mediaRecorder: MediaRecorder | null = null
   let activeStream: MediaStream | null = null
@@ -32,7 +33,8 @@ export function useVoiceInput(onTranscript: (text: string) => void, onError: (ms
       voiceState.value = "idle"
       const name = err instanceof DOMException ? err.name : ""
       if (name === "NotAllowedError" || name === "PermissionDeniedError") {
-        onError("麥克風權限被拒絕，請在瀏覽器設定中允許後再試")
+        micDenied.value = true
+        onError("麥克風權限被封鎖，請至瀏覽器設定開啟麥克風後重新整理頁面")
       }
       else if (name === "NotFoundError" || name === "DevicesNotFoundError") {
         onError("找不到麥克風裝置")
@@ -100,5 +102,5 @@ export function useVoiceInput(onTranscript: (text: string) => void, onError: (ms
     releaseStream()
   })
 
-  return { voiceState, toggle }
+  return { voiceState, micDenied, toggle }
 }

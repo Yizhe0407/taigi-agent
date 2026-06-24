@@ -35,7 +35,7 @@ function onVoiceError(msg: string) {
   messages.value.push({ id: `voice-err-${Date.now()}`, role: "assistant", text: `（${msg}）` })
 }
 
-const { voiceState, toggle: toggleVoiceRaw } = useVoiceInput(sendVoiceMessage, onVoiceError)
+const { voiceState, micDenied, toggle: toggleVoiceRaw } = useVoiceInput(sendVoiceMessage, onVoiceError)
 
 function toggleVoice() {
   if (voiceState.value === "idle") {
@@ -128,6 +128,7 @@ const dirClass = computed(() =>
         :is-sending="isSending"
         :show-chat="showChat"
         :voice-state="voiceState"
+        :mic-denied="micDenied"
         :tts-state="ttsState"
         :mouth-amplitude="mouthAmplitude"
         :move-mode="moveMode"

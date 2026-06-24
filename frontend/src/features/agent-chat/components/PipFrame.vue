@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from "vue"
-import { Mic, Settings, X } from "@lucide/vue"
+import { Mic, MicOff, Settings, X } from "@lucide/vue"
 
 import type { TtsState } from "../composables/useTts"
 import type { VoiceState } from "../composables/useVoiceInput"
@@ -17,6 +17,7 @@ const props = defineProps<{
   isSending: boolean
   showChat: boolean
   voiceState: VoiceState
+  micDenied: boolean
   ttsState: TtsState
   mouthAmplitude: number
   moveMode: boolean
@@ -124,9 +125,10 @@ const emit = defineEmits<{
         :class="{
           'bg-red-500 text-white shadow-[0_4px_20px_rgba(239,68,68,0.45)] cursor-pointer': voiceState === 'recording',
           'bg-kiosk-accent text-white shadow-[0_4px_20px_rgba(216,106,31,0.45)] cursor-default': voiceState === 'transcribing',
-          'bg-white/20 backdrop-blur-md text-white border border-white/30 cursor-pointer': voiceState === 'idle',
+          'bg-white/10 backdrop-blur-md text-white/40 border border-white/15 cursor-default': micDenied && voiceState === 'idle',
+          'bg-white/20 backdrop-blur-md text-white border border-white/30 cursor-pointer': !micDenied && voiceState === 'idle',
         }"
-        :disabled="voiceState === 'transcribing'"
+        :disabled="voiceState === 'transcribing' || micDenied"
         @click="emit('toggle-voice')"
       >
         <template v-if="voiceState === 'recording'">
@@ -137,6 +139,10 @@ const emit = defineEmits<{
         </template>
         <template v-else-if="voiceState === 'transcribing'">
           <span class="text-[16px] font-bold">辨識中…</span>
+        </template>
+        <template v-else-if="micDenied">
+          <MicOff class="size-[20px]" :stroke-width="2.2" />
+          <span class="text-[16px] font-bold">請至瀏覽器設定開啟麥克風</span>
         </template>
         <template v-else-if="ttsState !== 'idle'">
           <div class="flex items-end gap-[3px]">
