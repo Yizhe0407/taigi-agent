@@ -21,7 +21,6 @@
 ## Now
 
 - [ ] Demo 腳本與報告素材：`tasks/demo-report.md`
-- [ ] Demo 前路線資料驗證：`tasks/route-planning.md`
 - [ ] 站務員視覺狀態機：`tasks/station-attendant.md`（blocked，等組員 3D 模型）
 
 ## Later
@@ -36,7 +35,7 @@
 | Done | 離站決策首頁 | `tasks/departure-dashboard.md` |
 | Done | TTS 台語播報 | `tasks/tts.md` |
 | Done | ASR 短指令 | `tasks/asr.md` |
-| Done | 路線規劃 | `tasks/route-planning.md`（剩資料驗證）|
+| Done | 路線規劃 | `tasks/route-planning.md` |
 | Blocked | 數位站務員 | `tasks/station-attendant.md`（等組員模型）|
 | Not started | Demo 與報告 | `tasks/demo-report.md` |
 | Not started | 評估與使用者試用 | `tasks/evaluation.md` |
