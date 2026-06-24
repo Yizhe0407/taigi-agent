@@ -13,11 +13,16 @@ from providers.tdx_bus import TdxBusProvider
 
 
 class _FakeResp:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code: int = 200):
         self._payload = payload
+        self.status_code = status_code
+        self.headers: dict = {}
 
     def raise_for_status(self):
-        pass
+        if self.status_code >= 400:
+            import httpx
+
+            raise httpx.HTTPStatusError(str(self.status_code), request=None, response=self)
 
     def json(self):
         return self._payload
@@ -346,4 +351,58 @@ def test_fetch_eta_at_stop_raises_when_both_endpoints_fail(monkeypatch):
         asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))
         assert False, "should have raised"
     except Exception as e:
+        assert "429" in str(e)
+
+
+def test_get_retries_on_429_then_succeeds(monkeypatch):
+    """_get retries up to _MAX_RETRIES times on 429 response before succeeding."""
+    calls = []
+    sleeps = []
+
+    class RetryClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            # First 2 calls return 429; 3rd succeeds
+            if len(calls) <= 2:
+                return _FakeResp([], status_code=429)
+            return _FakeResp(_ETA_ROWS)
+
+    async def fake_sleep(s: float) -> None:
+        sleeps.append(s)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: RetryClient())
+    provider = TdxBusProvider("id", "secret", sleep=fake_sleep)
+    provider._kiosk_uids["A"] = {"UID1"}
+    rows = asyncio.run(provider.fetch_eta_at_stop("A"))
+
+    # 2 sleeps (backoff before attempt 2 and 3); data from successful call
+    assert len(sleeps) == 2
+    assert sleeps == [1.0, 2.0]  # 1<<0, 1<<1
+    assert any(r["sub_route_name"] == "201" for r in rows)
+
+
+def test_get_raises_after_max_retries(monkeypatch):
+    """_get raises after exhausting all retries on persistent 429."""
+    import httpx
+
+    class Always429Client:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            return _FakeResp([], status_code=429)
+
+    async def fake_sleep(s: float) -> None:
+        pass
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: Always429Client())
+    provider = TdxBusProvider("id", "secret", sleep=fake_sleep)
+    provider._kiosk_uids["A"] = {"UID1"}
+    try:
+        asyncio.run(provider.fetch_eta_at_stop("A"))
+        assert False, "should have raised"
+    except httpx.HTTPStatusError as e:
         assert "429" in str(e)

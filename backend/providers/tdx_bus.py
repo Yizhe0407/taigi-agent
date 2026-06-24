@@ -52,7 +52,7 @@ import asyncio
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from providers.bus import BusProvider
 from providers.http import get_http_client
@@ -67,6 +67,7 @@ _TOKEN_BUFFER_SECONDS = 60.0
 
 _DEFAULT_ROUTE_INFO_TTL = 600.0
 _DEFAULT_ROUTE_ESTIMATE_TTL = 30.0  # TDX updates ~30 s; 10 s caused 429 rate-limit hits
+_MAX_RETRIES = 3  # retries on HTTP 429; backoff 1→2→4 s (or Retry-After header)
 
 _INTERCITY_RE = re.compile(r"^7\d{3}")
 
@@ -102,12 +103,14 @@ class TdxBusProvider(BusProvider):
         route_info_ttl_seconds: float | None = _DEFAULT_ROUTE_INFO_TTL,
         route_estimate_ttl_seconds: float | None = _DEFAULT_ROUTE_ESTIMATE_TTL,
         clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._client_id = client_id
         self._client_secret = client_secret
         self._route_info_ttl = route_info_ttl_seconds
         self._route_estimate_ttl = route_estimate_ttl_seconds
         self._clock = clock
+        self._sleep = sleep
         # token cache
         self._token: str = ""
         self._token_expires_at: float = 0.0
@@ -143,14 +146,21 @@ class TdxBusProvider(BusProvider):
     async def _get(self, url: str, params: dict) -> list[dict]:
         token = await self._get_token()
         http = get_http_client()
-        resp = await http.get(
-            url,
-            params={**params, "$format": "JSON"},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=15.0,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        for attempt in range(_MAX_RETRIES + 1):
+            resp = await http.get(
+                url,
+                params={**params, "$format": "JSON"},
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=15.0,
+            )
+            if resp.status_code == 429 and attempt < _MAX_RETRIES:
+                wait = float(resp.headers.get("Retry-After", 1 << attempt))
+                _log.warning("TDX 429 on %s; retry in %.0fs (attempt %d/%d)", url, wait, attempt + 1, _MAX_RETRIES)
+                await self._sleep(wait)
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        raise RuntimeError("unreachable")
 
     # ── Normalizers ───────────────────────────────────────────────────────────
 
