@@ -5,7 +5,7 @@ import { UI_FALLBACK_MESSAGES } from "@/lib/api-messages"
 
 import { DeparturesApiError, fetchDeparturesHere } from "../api/departures"
 
-export function useDepartureSnapshot(refreshMs = 30_000) {
+export function useDepartureSnapshot(refreshMs = 60_000) {
   const query = useQuery({
     queryKey: ["departures", "here"],
     queryFn: ({ signal }) => fetchDeparturesHere(signal),

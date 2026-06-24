@@ -67,6 +67,7 @@ _TOKEN_BUFFER_SECONDS = 60.0
 
 _DEFAULT_ROUTE_INFO_TTL = 600.0
 _DEFAULT_ROUTE_ESTIMATE_TTL = 30.0  # TDX updates ~30 s; 10 s caused 429 rate-limit hits
+_DEFAULT_ETA_TTL = 30.0  # cache fetch_eta_at_stop; without this every frontend poll hits TDX
 _MAX_RETRIES = 3  # retries on HTTP 429; backoff 1→2→4 s (or Retry-After header)
 
 _INTERCITY_RE = re.compile(r"^7\d{3}")
@@ -102,6 +103,7 @@ class TdxBusProvider(BusProvider):
         *,
         route_info_ttl_seconds: float | None = _DEFAULT_ROUTE_INFO_TTL,
         route_estimate_ttl_seconds: float | None = _DEFAULT_ROUTE_ESTIMATE_TTL,
+        eta_ttl_seconds: float | None = _DEFAULT_ETA_TTL,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -109,6 +111,7 @@ class TdxBusProvider(BusProvider):
         self._client_secret = client_secret
         self._route_info_ttl = route_info_ttl_seconds
         self._route_estimate_ttl = route_estimate_ttl_seconds
+        self._eta_ttl = eta_ttl_seconds
         self._clock = clock
         self._sleep = sleep
         # token cache
@@ -120,6 +123,8 @@ class TdxBusProvider(BusProvider):
         self._kiosk_uids: dict[str, set[str]] = {}
         # sub_route_name → (fetched_at, rows)
         self._route_estimate_cache: dict[str, tuple[float, list[dict]]] = {}
+        # stop_name → (fetched_at, rows)
+        self._eta_cache: dict[str, tuple[float, list[dict]]] = {}
 
     # ── Auth ──────────────────────────────────────────────────────────────────
 
@@ -206,10 +211,16 @@ class TdxBusProvider(BusProvider):
         min-sequence dedup during the cold-start window when both methods are
         called concurrently for the first time.
         """
+        cached = self._eta_cache.get(stop_name)
+        hit = cached is not None and not self._expired(cached[0], self._eta_ttl)
+        get_telemetry().record_cache_lookup(cache="tdx.eta", hit=hit)
+        if hit:
+            return cached[1]
+
         uids = self._kiosk_uids.get(stop_name)
-        if uids:
-            return await self._fetch_eta_by_uids(uids)
-        return await self._fetch_eta_by_name(stop_name)
+        rows = await (self._fetch_eta_by_uids(uids) if uids else self._fetch_eta_by_name(stop_name))
+        self._eta_cache[stop_name] = (self._clock(), rows)
+        return rows
 
     async def fetch_route_estimate(self, sub_route_name: str) -> list[dict]:
         cached = self._route_estimate_cache.get(sub_route_name)

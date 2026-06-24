@@ -213,6 +213,49 @@ def test_fetch_eta_at_stop_normalises_fields(monkeypatch):
     assert r["estimate_seconds"] == 300
 
 
+def test_fetch_eta_at_stop_caches_within_ttl(monkeypatch):
+    """fetch_eta_at_stop should not re-fetch TDX within the ETA TTL window."""
+    calls = []
+
+    class CountingClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            return _FakeResp(_ETA_ROWS)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: CountingClient())
+    fake_now = [0.0]
+    provider = TdxBusProvider("id", "secret", eta_ttl_seconds=30.0, clock=lambda: fake_now[0])
+    asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))
+    first_calls = len(calls)
+    fake_now[0] += 15
+    asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))
+    assert len(calls) == first_calls  # cache hit, no new requests
+
+
+def test_fetch_eta_at_stop_refetches_after_ttl(monkeypatch):
+    calls = []
+
+    class CountingClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            return _FakeResp(_ETA_ROWS)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: CountingClient())
+    fake_now = [0.0]
+    provider = TdxBusProvider("id", "secret", eta_ttl_seconds=30.0, clock=lambda: fake_now[0])
+    asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))
+    first_calls = len(calls)
+    fake_now[0] += 31
+    asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))
+    assert len(calls) > first_calls  # cache expired, re-fetched
+
+
 def test_fetch_route_estimate_caches_within_ttl(monkeypatch):
     calls = []
 
