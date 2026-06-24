@@ -1,35 +1,11 @@
 <script setup lang="ts">
 import { Moon, Route } from "@lucide/vue"
-import { computed } from "vue"
 import { useRouter } from "vue-router"
 
 import { usePip } from "@/features/agent-chat/composables/usePip"
-import { formatTaipeiHourMinute } from "@/lib/time"
-import { useNow } from "@/lib/useNow"
-
-const props = defineProps<{ tomorrowFirstTime: string | null }>()
 
 const router = useRouter()
 const { open: openPip } = usePip()
-const { now } = useNow()
-
-/**
- * Minutes remaining until tomorrow's first bus.
- * Uses the Taipei-formatted current time so the countdown is
- * correct regardless of the browser's local timezone.
- */
-const countdown = computed(() => {
-  if (!props.tomorrowFirstTime) return null
-  const [fh, fm] = props.tomorrowFirstTime.split(":").map(Number)
-  if (isNaN(fh) || isNaN(fm)) return null
-
-  const nowText = formatTaipeiHourMinute(now.value) // "HH:MM"
-  const [nh, nm] = nowText.split(":").map(Number)
-  let diff = fh * 60 + fm - (nh * 60 + nm)
-  if (diff <= 0) diff += 24 * 60
-
-  return { hours: Math.floor(diff / 60), minutes: diff % 60 }
-})
 </script>
 
 <template>
@@ -55,23 +31,8 @@ const countdown = computed(() => {
 
     <div class="h-0.5 bg-kiosk-line my-5 rounded shrink-0" />
 
-    <!-- Tomorrow first bus + countdown -->
-    <div class="flex items-end gap-5 shrink-0">
-      <div class="flex-1 min-w-0">
-        <div class="text-base text-kiosk-muted font-medium mb-1">明日首班</div>
-        <div class="text-[54px] font-bold text-kiosk-ink tabular-nums tracking-[-0.03em] leading-none font-mono">
-          {{ tomorrowFirstTime ?? "—" }}
-        </div>
-      </div>
-      <div v-if="countdown" class="shrink-0 text-right pb-1">
-        <div class="text-base text-kiosk-muted font-medium mb-1">還要等</div>
-        <div class="inline-flex items-baseline gap-1 text-kiosk-ink font-bold">
-          <span class="text-[38px] tabular-nums font-mono tracking-[-0.03em] leading-none">{{ countdown.hours }}</span>
-          <span class="text-xl">小時</span>
-          <span class="text-[38px] tabular-nums font-mono tracking-[-0.03em] leading-none">{{ countdown.minutes }}</span>
-          <span class="text-xl">分</span>
-        </div>
-      </div>
+    <div class="text-lg font-medium text-kiosk-muted shrink-0">
+      明日首班資訊請洽站務員或查詢公路客運時刻表。
     </div>
 
     <!-- Action buttons -->

@@ -17,19 +17,24 @@ In progress。TTS proxy、文字轉換與前端分段播放已完成；剩下和
 - [x] `AudioContext.resume()` 放在 user gesture 內，處理瀏覽器 autoplay policy
 - [x] 可觀測性：`tts.text_process` span、`pipeline.stage.duration`
 
+## 已完成（補記）
+
+- [x] TTS 狀態同步到 PipFrame：`ttsState` + `mouthAmplitude` 已傳至 `Live2DAvatar`
+- [x] 字幕區：`lastAgentText` bubble 在 PipFrame 顯示，typewriter 動畫與 TTS 同步
+- [x] thinking 狀態：`isSending || ttsState === 'loading'` → 跳點 + 「小芸思考中…」
+
 ## 待辦
 
-- [ ] 首頁摘要播報文案
+- [ ] 首頁摘要播報文案（按鈕後先播報離站狀態再問「要去哪？」）
 - [ ] 單一路線播報文案
 - [ ] 末班已過 / 資料錯誤播報文案
-- [ ] TTS 播放狀態同步到數位站務員
-- [ ] 播報字幕與 route card highlight 同步
+- [ ] route card highlight 與 TTS 播報同步
 - [ ] First-audio latency 量測
 - [ ] TTS 自然度 MOS 評分
 
 ## 驗收
 
-- [ ] 按「唸給我聽」後能播報本站重點狀態
+- [ ] 按鈕後能播報本站重點狀態
 - [ ] 播報不中斷 departure polling
 - [ ] 播報失敗時 UI 能清楚回到可操作狀態
 
