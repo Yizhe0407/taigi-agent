@@ -20,7 +20,6 @@
 
 ## Now
 
-- [ ] Mic permission 拒絕引導：`tasks/asr.md`
 - [ ] Demo 腳本與報告素材：`tasks/demo-report.md`
 - [ ] Demo 前路線資料驗證：`tasks/route-planning.md`
 - [ ] 站務員視覺狀態機：`tasks/station-attendant.md`（blocked，等組員 3D 模型）
@@ -36,7 +35,7 @@
 |------|------------|------|
 | Done | 離站決策首頁 | `tasks/departure-dashboard.md` |
 | Done | TTS 台語播報 | `tasks/tts.md` |
-| Done | ASR 短指令 | `tasks/asr.md`（剩 mic permission）|
+| Done | ASR 短指令 | `tasks/asr.md` |
 | Done | 路線規劃 | `tasks/route-planning.md`（剩資料驗證）|
 | Blocked | 數位站務員 | `tasks/station-attendant.md`（等組員模型）|
 | Not started | Demo 與報告 | `tasks/demo-report.md` |
