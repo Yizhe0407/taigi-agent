@@ -10,10 +10,17 @@ export function departureDisplayState(
   return "expired"
 }
 
+export function formatMinutes(minutes: number): string {
+  if (minutes <= 0) return "即將到站"
+  if (minutes < 60) return `${minutes} 分`
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  return m === 0 ? `${h} 小時` : `${h} 小時 ${m} 分`
+}
+
 export function departureMinutesLabel(route: DepartureRouteStatus): string {
   if (route.minutes === null) return route.statusText
-  if (route.minutes <= 0) return "即將到站"
-  return `${route.minutes} 分`
+  return formatMinutes(route.minutes)
 }
 
 export function heroStatusState(

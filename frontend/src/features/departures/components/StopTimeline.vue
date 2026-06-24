@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { RouteStopDetail } from "../types"
+import { formatMinutes } from "../utils/departure-status"
 
 const props = defineProps<{
   stops: RouteStopDetail[]
@@ -12,7 +13,9 @@ const CURRENT_STOP_BORDER_CLASS = "border-[#D86A1F] bg-[#D86A1F]"
 const DEFAULT_STOP_FILL_CLASS = "bg-white"
 
 function stopStatusLabel(stop: RouteStopDetail): string {
-  return stop.isCurrentStop ? "本站" : stop.statusText
+  if (stop.isCurrentStop) return "本站"
+  if (stop.minutes !== null) return formatMinutes(stop.minutes)
+  return stop.statusText
 }
 </script>
 

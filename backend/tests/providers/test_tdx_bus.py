@@ -209,3 +209,83 @@ def test_fetch_routes_at_stop_deduplicates(monkeypatch):
     names = [r["sub_route_name"] for r in routes]
     # 201 appears in both City and InterCity response, and both directions — only once in output
     assert names.count("201") == 1
+
+
+def test_fetch_route_estimate_city_uses_single_endpoint(monkeypatch):
+    """City route (201) should only query the City endpoint — not InterCity."""
+    calls = []
+
+    class CountingClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            return _FakeResp(_ETA_ROWS)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: CountingClient())
+    provider = TdxBusProvider("id", "secret")
+    asyncio.run(provider.fetch_route_estimate("201"))
+
+    assert len(calls) == 1
+    assert "City" in calls[0]
+
+
+def test_fetch_route_estimate_intercity_uses_single_endpoint(monkeypatch):
+    """Intercity route (7123A) should only query the InterCity endpoint."""
+    calls = []
+
+    class CountingClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            return _FakeResp(_ETA_ROWS)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: CountingClient())
+    provider = TdxBusProvider("id", "secret")
+    asyncio.run(provider.fetch_route_estimate("7123A"))
+
+    assert len(calls) == 1
+    assert "InterCity" in calls[0]
+
+
+def test_fetch_eta_at_stop_degrades_when_one_endpoint_fails(monkeypatch):
+    """If one endpoint returns 429/error, results from the other are still used."""
+    import httpx
+
+    class PartialClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            if "InterCity" in url:
+                raise httpx.HTTPStatusError("429", request=None, response=None)
+            return _FakeResp(_ETA_ROWS)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: PartialClient())
+    provider = TdxBusProvider("id", "secret")
+    rows = asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))
+    # City returned 2 rows, InterCity failed — should still get city rows
+    assert len(rows) == 2
+
+
+def test_fetch_eta_at_stop_raises_when_both_endpoints_fail(monkeypatch):
+    """If both endpoints fail, the exception propagates."""
+    import httpx
+
+    class FailingClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            raise httpx.HTTPStatusError("429", request=None, response=None)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: FailingClient())
+    provider = TdxBusProvider("id", "secret")
+    try:
+        asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))
+        assert False, "should have raised"
+    except Exception as e:
+        assert "429" in str(e)

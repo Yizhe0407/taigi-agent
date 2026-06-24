@@ -1,7 +1,16 @@
 """TDX (tdx.transportdata.tw) concrete `BusProvider` implementation.
 
-Covers both YunlinCounty city buses and intercity (公路客運) buses by querying
-the City and InterCity TDX endpoints in parallel and merging results.
+Covers both YunlinCounty city buses and intercity (公路客運) buses.
+
+Route classification:
+  Intercity: sub_route_name matches ^7\\d{3} (7000D, 7120, 7123A, …)
+  City:      everything else (101, 201, 701, Y01, …)
+
+fetch_route_estimate only queries the relevant endpoint (not both) to halve
+request volume and avoid 429 rate limits. fetch_eta_at_stop and _stop_of_route
+still query both because the caller doesn't know which routes are at the stop.
+All parallel gather calls use return_exceptions=True so a 429 or timeout on
+one endpoint degrades gracefully instead of killing the whole call.
 
 Internal row schema — all methods return flat dicts with these keys:
 
@@ -24,6 +33,8 @@ Internal row schema — all methods return flat dicts with these keys:
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 import time
 from collections.abc import Callable
 
@@ -31,13 +42,22 @@ from providers.bus import BusProvider
 from providers.http import get_http_client
 from telemetry import get_telemetry
 
+_log = logging.getLogger(__name__)
+
 _TOKEN_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 _BASE = "https://tdx.transportdata.tw/api/basic/v2/Bus"
 _CITY = "YunlinCounty"
 _TOKEN_BUFFER_SECONDS = 60.0
 
 _DEFAULT_ROUTE_INFO_TTL = 600.0
-_DEFAULT_ROUTE_ESTIMATE_TTL = 10.0
+_DEFAULT_ROUTE_ESTIMATE_TTL = 30.0  # TDX updates ~30 s; 10 s caused 429 rate-limit hits
+
+_INTERCITY_RE = re.compile(r"^7\d{3}")
+
+
+def _is_intercity(sub_route_name: str) -> bool:
+    """True for public highway buses (7000D, 7120, 7123A, …), False for city buses."""
+    return bool(_INTERCITY_RE.match(sub_route_name))
 
 
 def _zh(field: object) -> str:
@@ -47,12 +67,21 @@ def _zh(field: object) -> str:
     return ""
 
 
+def _safe_list(result: list[dict] | BaseException) -> list[dict]:
+    """Return an empty list when an asyncio.gather result is an exception."""
+    if isinstance(result, BaseException):
+        _log.warning("TDX endpoint error (degraded gracefully): %s", result)
+        return []
+    return result
+
+
 class TdxBusProvider(BusProvider):
     """HTTP-backed `BusProvider` for tdx.transportdata.tw.
 
     Authenticates via OAuth2 client_credentials; token is cached until near
     expiry. Route-info cache lives on the instance and expires after
-    `route_info_ttl_seconds`. Route-estimate cache is short-lived (default 10 s).
+    `route_info_ttl_seconds`. Route-estimate cache expires after
+    `route_estimate_ttl_seconds` (default 30 s — matches TDX update cadence).
     """
 
     def __init__(
@@ -147,7 +176,7 @@ class TdxBusProvider(BusProvider):
         return result
 
     async def fetch_eta_at_stop(self, stop_name: str) -> list[dict]:
-        city_rows, intercity_rows = await asyncio.gather(
+        results = await asyncio.gather(
             self._get(
                 f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
                 {"$filter": f"StopName/Zh_tw eq '{stop_name}'"},
@@ -156,7 +185,12 @@ class TdxBusProvider(BusProvider):
                 f"{_BASE}/EstimatedTimeOfArrival/InterCity",
                 {"$filter": f"StopName/Zh_tw eq '{stop_name}'"},
             ),
+            return_exceptions=True,
         )
+        city_rows = _safe_list(results[0])
+        intercity_rows = _safe_list(results[1])
+        if isinstance(results[0], BaseException) and isinstance(results[1], BaseException):
+            raise results[0]
         return [self._norm_eta(r) for r in city_rows + intercity_rows]
 
     async def fetch_route_estimate(self, sub_route_name: str) -> list[dict]:
@@ -166,17 +200,19 @@ class TdxBusProvider(BusProvider):
         if hit:
             return cached[1]
 
-        city_rows, intercity_rows = await asyncio.gather(
-            self._get(
-                f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
-                {"$filter": f"SubRouteName/Zh_tw eq '{sub_route_name}'"},
-            ),
-            self._get(
+        # Only query the endpoint that owns this route — halves request volume.
+        if _is_intercity(sub_route_name):
+            raw = await self._get(
                 f"{_BASE}/EstimatedTimeOfArrival/InterCity",
                 {"$filter": f"SubRouteName/Zh_tw eq '{sub_route_name}'"},
-            ),
-        )
-        rows = [self._norm_stop_eta(r) for r in city_rows + intercity_rows]
+            )
+        else:
+            raw = await self._get(
+                f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
+                {"$filter": f"SubRouteName/Zh_tw eq '{sub_route_name}'"},
+            )
+
+        rows = [self._norm_stop_eta(r) for r in raw]
         self._route_estimate_cache[sub_route_name] = (self._clock(), rows)
         return rows
 
@@ -198,8 +234,8 @@ class TdxBusProvider(BusProvider):
     # ── Internal ──────────────────────────────────────────────────────────────
 
     async def _stop_of_route(self, stop_name: str) -> tuple[list[dict], list[dict]]:
-        """Fetch StopOfRoute for both City and InterCity filtered by stop name."""
-        return await asyncio.gather(
+        """Fetch StopOfRoute for City and InterCity; degrade gracefully on error."""
+        results = await asyncio.gather(
             self._get(
                 f"{_BASE}/StopOfRoute/City/{_CITY}",
                 {"$filter": f"Stops/any(s: s/StopName/Zh_tw eq '{stop_name}')"},
@@ -208,7 +244,9 @@ class TdxBusProvider(BusProvider):
                 f"{_BASE}/StopOfRoute/InterCity",
                 {"$filter": f"Stops/any(s: s/StopName/Zh_tw eq '{stop_name}')"},
             ),
+            return_exceptions=True,
         )
+        return _safe_list(results[0]), _safe_list(results[1])
 
     @staticmethod
     def _build_route_info(records: list[dict]) -> dict[str, dict]:

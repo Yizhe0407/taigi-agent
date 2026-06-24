@@ -6,6 +6,7 @@ import { usePip } from "@/features/agent-chat/composables/usePip"
 
 import type { DepartureRouteStatus } from "../types"
 import {
+  formatMinutes,
   heroStatusState,
   heroStatusText,
   statusChipClasses,
@@ -25,8 +26,8 @@ const { open: openPip } = usePip()
         v-if="nextBest && nextBest.minutes !== null"
         class="py-2 px-[18px] bg-kiosk-accent-soft rounded-full text-lg font-bold text-kiosk-accent inline-flex items-baseline gap-1.5"
       >
-        <span class="text-2xl tabular-nums">{{ nextBest.minutes <= 0 ? '即將' : nextBest.minutes }}</span>
-        <span class="text-base">{{ nextBest.minutes <= 0 ? '到站' : '分鐘後' }}</span>
+        <span class="text-2xl tabular-nums">{{ formatMinutes(nextBest.minutes) }}</span>
+        <span v-if="nextBest.minutes > 0" class="text-base">後</span>
       </div>
     </div>
 
@@ -47,7 +48,7 @@ const { open: openPip } = usePip()
       <div>
         <div class="text-base text-kiosk-muted font-medium mb-1">預定發車</div>
         <div class="text-[54px] font-bold text-kiosk-ink tabular-nums tracking-[-0.03em] leading-none font-mono">
-          {{ nextBest?.scheduledTime ?? (nextBest?.statusText ?? "—") }}
+          {{ nextBest?.minutes != null ? formatMinutes(nextBest.minutes) : (nextBest?.statusText ?? "—") }}
         </div>
       </div>
       <div
