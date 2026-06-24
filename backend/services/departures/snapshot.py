@@ -13,7 +13,6 @@ from services.departures.classification import (
 )
 from services.departures.normalize import (
     TAIPEI_TZ,
-    _as_int,
     _direction_label_from_info,
     iter_scoped_stop_etas,
 )
@@ -41,7 +40,7 @@ _ROUTE_DETAIL_UNAVAILABLE = "路線詳情暫時無法取得，請稍後再試"
 class DepartureRouteStatus:
     id: str
     route: str
-    route_id: int
+    route_id: str
     direction: str
     go_back: int
     section: DepartureSection
@@ -91,7 +90,7 @@ class RouteDirectionDetail:
 @dataclass(frozen=True)
 class DepartureRouteDetail:
     route: str
-    route_id: int
+    route_id: str
     stop_name: str
     direction_filter: int | None
     directions: tuple[RouteDirectionDetail, ...]
@@ -112,8 +111,8 @@ def _sort_key(route: DepartureRouteStatus) -> tuple[int, int, str, int]:
 
 
 def _stop_detail_from_row(stop: dict, kiosk_stop_name: str, now: datetime) -> RouteStopDetail | None:
-    seq = _as_int(stop.get("SeqNo"))
-    name = str(stop.get("StopName") or "").strip()
+    seq = stop.get("stop_sequence")
+    name = str(stop.get("stop_name") or "").strip()
     if seq is None or not name:
         return None
 
@@ -150,21 +149,21 @@ async def build_departure_snapshot(
     routes: list[DepartureRouteStatus] = []
     seen: set[tuple[str, int, str]] = set()
 
-    for stop, route, route_id, stop_go_back in iter_scoped_stop_etas(eta_data, route_info, stop_name, go_back):
+    for stop, route, route_id, stop_direction in iter_scoped_stop_etas(eta_data, route_info, stop_name, go_back):
         c = _classify_stop(stop, now)
-        direction = _direction_label_from_info(route_info, route, stop_go_back)
-        dedupe_key = (route, stop_go_back, c.status_text)
+        direction = _direction_label_from_info(route_info, route, stop_direction)
+        dedupe_key = (route, stop_direction, c.status_text)
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
 
         routes.append(
             DepartureRouteStatus(
-                id=f"{route_id}-{stop_go_back}",
+                id=f"{route_id}-{stop_direction}",
                 route=route,
                 route_id=route_id,
                 direction=direction,
-                go_back=stop_go_back,
+                go_back=stop_direction,
                 section=c.section,
                 decision=c.decision,
                 status_text=c.status_text,
@@ -203,8 +202,8 @@ async def build_route_detail(
     if info is None:
         raise RouteDetailNotFound(f"在 {stop_name} 找不到停靠路線 {route}")
 
-    route_id = _as_int(info.get("id"))
-    if route_id is None:
+    route_id = info.get("id")
+    if not route_id:
         raise RouteDetailUnavailable(f"路線 {route} 的 route id 格式異常")
 
     try:
@@ -216,22 +215,22 @@ async def build_route_detail(
     now = datetime.now(TAIPEI_TZ)
     by_direction: dict[int, list[RouteStopDetail]] = {}
     for row in estimate_data:
-        row_go_back = _as_int(row.get("GoBack")) or 1
-        if go_back is not None and row_go_back != go_back:
+        row_direction = row.get("direction", 0)
+        if go_back is not None and row_direction != go_back:
             continue
 
         stop_detail = _stop_detail_from_row(row, stop_name, now)
         if stop_detail is None:
             continue
-        by_direction.setdefault(row_go_back, []).append(stop_detail)
+        by_direction.setdefault(row_direction, []).append(stop_detail)
 
     directions = tuple(
         RouteDirectionDetail(
-            go_back=row_go_back,
-            label=_direction_label_from_info(route_info, route, row_go_back),
+            go_back=row_direction,
+            label=_direction_label_from_info(route_info, route, row_direction),
             stops=tuple(sorted(stops, key=lambda s: s.seq)),
         )
-        for row_go_back, stops in sorted(by_direction.items())
+        for row_direction, stops in sorted(by_direction.items())
         if stops
     )
 

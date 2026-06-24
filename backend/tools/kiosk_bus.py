@@ -50,8 +50,8 @@ async def get_arrivals_here(route: str) -> str:
     stop_name 從 KIOSK_STOP 取，方向從 KIOSK_DIRECTION 取。
 
     KIOSK_DIRECTION 設定：
-    - 「去程」→ go_back=1
-    - 「回程」→ go_back=2
+    - 「去程」→ direction=0
+    - 「回程」→ direction=1
     - 不設定 → 顯示兩個方向
     """
     return await departures.render_arrivals(route, kiosk_stop_name(), go_back=kiosk_go_back_filter())

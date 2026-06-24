@@ -9,7 +9,6 @@ from providers.bus import BusProvider
 from services.departures.classification import DepartureSection, _classify_stop
 from services.departures.normalize import (
     TAIPEI_TZ,
-    _as_int,
     _direction_label_from_info,
     _downstream_names,
     _fuzzy_candidates,
@@ -64,8 +63,8 @@ async def _resolve_route_estimate(
         return _QUERY_FAILED
 
     info = _lookup_route(route_info, route) if fuzzy else route_info.get(route)
-    route_id = _as_int(info.get("id")) if info is not None else None
-    if route_id is None:
+    route_id = info.get("id") if info is not None else None
+    if not route_id:
         return not_found_msg or f"本站沒有路線 {route}。"
 
     data = await _safe_provider_call(provider.fetch_route_estimate(route_id))
@@ -85,19 +84,19 @@ async def render_arrivals(
         return resolved
     route_info, data = resolved
 
-    matches = [stop for stop in data if stop_name in stop.get("StopName", "") and (go_back is None or stop.get("GoBack") == go_back)]
+    matches = [stop for stop in data if stop_name in stop.get("stop_name", "") and (go_back is None or stop.get("direction") == go_back)]
     if not matches:
         return f"路線 {route} 不停 {stop_name}。"
 
     now = datetime.now(TAIPEI_TZ)
     results = []
     for stop in matches:
-        stop_go_back = stop.get("GoBack", 1)
+        stop_direction = stop.get("direction", 0)
         status_text = _mark_incoming(_classify_stop(stop, now).status_text)
         # Single-direction query: direction is already implied by kiosk config;
         # label only adds noise for TTS and short-response constraints.
         if go_back is None:
-            label = _direction_label_from_info(route_info, route, stop_go_back)
+            label = _direction_label_from_info(route_info, route, stop_direction)
             results.append(f"{label}：{status_text}")
         else:
             results.append(status_text)
@@ -123,7 +122,7 @@ async def render_stop_arrival_statuses(
     seen: set[str] = set()
     now = datetime.now(TAIPEI_TZ)
 
-    for stop, route, _route_id, stop_go_back in iter_scoped_stop_etas(eta_data, route_info, stop_name, go_back):
+    for stop, route, _route_id, stop_direction in iter_scoped_stop_etas(eta_data, route_info, stop_name, go_back):
         c = _classify_stop(stop, now)
         # UNKNOWN rows are skipped — the agent's kiosk-style output only
         # surfaces the three actionable groups (matches the legacy renderer).
@@ -131,7 +130,7 @@ async def render_stop_arrival_statuses(
         if group is None:
             continue
 
-        label = _direction_label_from_info(route_info, route, stop_go_back)
+        label = _direction_label_from_info(route_info, route, stop_direction)
         line = f"{route} {label}：{c.status_text}"
         if line in seen:
             continue
@@ -162,8 +161,8 @@ async def render_route_stops(route: str, stop_name: str) -> str:
         return f"查無路線 {route} 的站牌。"
 
     results = []
-    for go_back, stops in sorted(by_direction.items()):
-        label = _direction_label_from_info(route_info, route, go_back)
+    for direction, stops in sorted(by_direction.items()):
+        label = _direction_label_from_info(route_info, route, direction)
         ordered = [name for _, name in sorted(stops)]
         results.append(f"{label}：{'、'.join(ordered)}")
 
@@ -205,7 +204,7 @@ async def render_stop_on_route(
 
 async def _check_route_arrivals(
     route_name: str,
-    route_id: int,
+    route_id: str,
     provider: BusProvider,
     kiosk_stop: str,
     go_back: int | None,
@@ -225,8 +224,8 @@ async def _check_route_arrivals(
 
     hits: list[tuple[str, int]] = []
     all_downstream: set[str] = set()
-    for gb, stops in _stops_by_direction_with_seq(data).items():
-        if go_back is not None and gb != go_back:
+    for direction, stops in _stops_by_direction_with_seq(data).items():
+        if go_back is not None and direction != go_back:
             continue
         downstream = _downstream_names(stops, kiosk_stop)
         if downstream is None:
@@ -235,17 +234,17 @@ async def _check_route_arrivals(
         if not any(_name_matches(destination, n) for n in downstream):
             continue
 
-        direction = _direction_label_from_info(route_info, route_name, gb)
-        if _name_matches(kiosk_stop, direction.removeprefix("往")):
-            direction = "（循環）"
+        dir_label = _direction_label_from_info(route_info, route_name, direction)
+        if _name_matches(kiosk_stop, dir_label.removeprefix("往")):
+            dir_label = "（循環）"
 
-        kiosk_rows = [row for row in data if kiosk_stop in row.get("StopName", "") and row.get("GoBack", 1) == gb]
+        kiosk_rows = [row for row in data if kiosk_stop in row.get("stop_name", "") and row.get("direction", 0) == direction]
         if kiosk_rows:
             c = _classify_stop(kiosk_rows[0], now)
             status_text = _mark_incoming(c.status_text)
-            hits.append((f"{route_name} {direction}：{status_text}", c.sort_minutes))
+            hits.append((f"{route_name} {dir_label}：{status_text}", c.sort_minutes))
         else:
-            hits.append((f"{route_name} {direction}：無即時資料", 9999))
+            hits.append((f"{route_name} {dir_label}：無即時資料", 9999))
 
     return hits, all_downstream
 
@@ -291,8 +290,8 @@ async def render_arrivals_to_destination(
         return _QUERY_FAILED
 
     now = datetime.now(TAIPEI_TZ)
-    valid = [(name, _as_int(info.get("id"))) for name, info in route_info.items()]
-    tasks = [_check_route_arrivals(name, rid, provider, kiosk_stop, go_back, destination, route_info, now) for name, rid in valid if rid is not None]
+    valid = [(name, info.get("id")) for name, info in route_info.items()]
+    tasks = [_check_route_arrivals(name, rid, provider, kiosk_stop, go_back, destination, route_info, now) for name, rid in valid if rid]
     results = await asyncio.gather(*tasks)
     raw = [item for hits, _ in results for item in hits]
     all_stops = {name for _, stops in results for name in stops}
@@ -324,7 +323,7 @@ async def render_routes_at_stop(stop_name: str) -> str:
     seen: set[str] = set()
     lines: list[str] = []
     for r in data:
-        name = r.get("name", "?")
+        name = r.get("sub_route_name", "?")
         if name not in seen:
             seen.add(name)
             lines.append(name)

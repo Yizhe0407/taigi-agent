@@ -15,9 +15,11 @@ def _updated_at() -> datetime:
 class FakeBusProvider(BusProvider):
     """In-memory BusProvider used to drive `services.departures` from tests.
 
-    Lets each case spell out only the upstream data it cares about and
-    raise on anything unexpected — surfaces accidental Protocol drift
-    instead of silently returning empty payloads.
+    TDX field schema:
+      fetch_eta_at_stop rows:    sub_route_name, direction (0/1), stop_status (0-4), estimate_seconds
+      fetch_route_estimate rows: stop_name, stop_sequence, direction (0/1), stop_status, estimate_seconds
+      fetch_routes_at_stop rows: sub_route_name, direction
+      load_route_info values:    {id: str, go_dest: str, back_dest: str}
     """
 
     def __init__(
@@ -45,7 +47,7 @@ class FakeBusProvider(BusProvider):
             raise self._eta_error
         return self._eta_at_stop
 
-    async def fetch_route_estimate(self, route_id: int) -> list[dict]:
+    async def fetch_route_estimate(self, sub_route_name: str) -> list[dict]:
         if self._route_estimate_error is not None:
             raise self._route_estimate_error
         return self._route_estimate
@@ -69,44 +71,21 @@ def test_build_departure_snapshot_classifies_and_sorts_routes(use_provider):
     use_provider(
         FakeBusProvider(
             route_info={
-                "201": {
-                    "id": 65036,
-                    "go_dest": "雲林科技大學",
-                    "back_dest": "高鐵雲林站",
-                },
-                "301": {
-                    "id": 301,
-                    "go_dest": "雲林科技大學",
-                    "back_dest": "斗六",
-                },
-                "302": {
-                    "id": 302,
-                    "go_dest": "雲林科技大學",
-                    "back_dest": "虎尾",
-                },
-                "7101": {
-                    "id": 7101,
-                    "go_dest": "雲林科技大學",
-                    "back_dest": "麥寮",
-                },
-                "7000B": {
-                    "id": 65352,
-                    "go_dest": "台北站",
-                    "back_dest": "梅山站",
-                },
-                "101": {
-                    "id": 15121,
-                    "go_dest": "受天宮",
-                    "back_dest": "斗六棒球場",
-                },
+                "201": {"id": "201", "go_dest": "雲林科技大學", "back_dest": "高鐵雲林站"},
+                "301": {"id": "301", "go_dest": "雲林科技大學", "back_dest": "斗六"},
+                "302": {"id": "302", "go_dest": "雲林科技大學", "back_dest": "虎尾"},
+                "7101": {"id": "7101", "go_dest": "雲林科技大學", "back_dest": "麥寮"},
+                "7000D": {"id": "7000D", "go_dest": "台北站", "back_dest": "梅山站"},
+                "101": {"id": "101", "go_dest": "受天宮", "back_dest": "斗六棒球場"},
             },
             eta_at_stop=[
-                {"xno": 302, "GoBack": 2, "Value": 25, "ComeTime": ""},
-                {"xno": 15121, "GoBack": 2, "Value": -3, "ComeTime": ""},
-                {"xno": 65036, "GoBack": 2, "Value": 2, "ComeTime": ""},
-                {"xno": 65352, "GoBack": 2, "Value": None, "ComeTime": ""},
-                {"xno": 301, "GoBack": 2, "Value": 12, "ComeTime": ""},
-                {"xno": 7101, "GoBack": 2, "Value": None, "ComeTime": "21:35"},
+                # direction=1 = 回程
+                {"sub_route_name": "302", "direction": 1, "stop_status": 0, "estimate_seconds": 1500},
+                {"sub_route_name": "101", "direction": 1, "stop_status": 3, "estimate_seconds": None},
+                {"sub_route_name": "201", "direction": 1, "stop_status": 0, "estimate_seconds": 120},
+                {"sub_route_name": "7000D", "direction": 1, "stop_status": 1, "estimate_seconds": None},
+                {"sub_route_name": "301", "direction": 1, "stop_status": 0, "estimate_seconds": 720},
+                {"sub_route_name": "7101", "direction": 1, "stop_status": 4, "estimate_seconds": None},
             ],
         )
     )
@@ -114,38 +93,38 @@ def test_build_departure_snapshot_classifies_and_sorts_routes(use_provider):
     snapshot = asyncio.run(
         departures.build_departure_snapshot(
             "雲林科技大學",
-            go_back=2,
+            go_back=1,  # 回程 = direction 1
             updated_at=_updated_at(),
         )
     )
 
     assert snapshot.stop_name == "雲林科技大學"
-    assert snapshot.direction_filter == 2
+    assert snapshot.direction_filter == 1
     assert snapshot.updated_at == _updated_at()
-    assert snapshot.summary.available_count == 4
-    assert snapshot.summary.not_departed_count == 1
+    assert snapshot.summary.available_count == 3
+    assert snapshot.summary.not_departed_count == 2
     assert snapshot.summary.last_departed_count == 1
     assert [route.route for route in snapshot.routes] == [
         "201",
         "301",
         "302",
+        "7000D",
         "7101",
-        "7000B",
         "101",
     ]
     assert [route.decision for route in snapshot.routes] == [
         "arriving_soon",
         "can_wait",
         "long_wait",
-        "scheduled",
+        "not_departed",
         "not_departed",
         "last_departed",
     ]
     assert snapshot.routes[0].status_text == "即將到站"
     assert snapshot.routes[1].decision_text == "可以等"
     assert snapshot.routes[2].decision_text == "等待較久"
-    assert snapshot.routes[3].scheduled_time == "21:35"
-    assert snapshot.routes[4].section == "not_departed"
+    assert snapshot.routes[3].section == "not_departed"
+    assert snapshot.routes[4].status_text == "今日未營運"
     assert snapshot.routes[5].section == "last_departed"
 
 
@@ -153,15 +132,11 @@ def test_build_departure_snapshot_applies_direction_filter(use_provider):
     use_provider(
         FakeBusProvider(
             route_info={
-                "201": {
-                    "id": 65036,
-                    "go_dest": "雲林科技大學",
-                    "back_dest": "高鐵雲林站",
-                },
+                "201": {"id": "201", "go_dest": "雲林科技大學", "back_dest": "高鐵雲林站"},
             },
             eta_at_stop=[
-                {"xno": 65036, "GoBack": 1, "Value": 6, "ComeTime": ""},
-                {"xno": 65036, "GoBack": 2, "Value": 8, "ComeTime": ""},
+                {"sub_route_name": "201", "direction": 0, "stop_status": 0, "estimate_seconds": 360},
+                {"sub_route_name": "201", "direction": 1, "stop_status": 0, "estimate_seconds": 480},
             ],
         )
     )
@@ -169,13 +144,13 @@ def test_build_departure_snapshot_applies_direction_filter(use_provider):
     snapshot = asyncio.run(
         departures.build_departure_snapshot(
             "雲林科技大學",
-            go_back=1,
+            go_back=0,  # 去程 = direction 0
             updated_at=_updated_at(),
         )
     )
 
     assert len(snapshot.routes) == 1
-    assert snapshot.routes[0].go_back == 1
+    assert snapshot.routes[0].go_back == 0
     assert snapshot.routes[0].direction == "往雲林科技大學"
 
 
@@ -183,20 +158,17 @@ def test_build_departure_snapshot_marks_unexpected_values_unknown(use_provider):
     use_provider(
         FakeBusProvider(
             route_info={
-                "201": {
-                    "id": 65036,
-                    "go_dest": "雲林科技大學",
-                    "back_dest": "高鐵雲林站",
-                },
+                "201": {"id": "201", "go_dest": "雲林科技大學", "back_dest": "高鐵雲林站"},
             },
-            eta_at_stop=[{"xno": 65036, "GoBack": 2, "Value": -1, "ComeTime": ""}],
+            # stop_status=0 but no estimate_seconds → data inconsistency → UNKNOWN
+            eta_at_stop=[{"sub_route_name": "201", "direction": 1, "stop_status": 0, "estimate_seconds": None}],
         )
     )
 
     snapshot = asyncio.run(
         departures.build_departure_snapshot(
             "雲林科技大學",
-            go_back=2,
+            go_back=1,
             updated_at=_updated_at(),
         )
     )
@@ -220,17 +192,13 @@ def test_build_route_detail_returns_structured_stop_order(use_provider):
     use_provider(
         FakeBusProvider(
             route_info={
-                "201": {
-                    "id": 65036,
-                    "go_dest": "雲林科技大學",
-                    "back_dest": "高鐵雲林站",
-                },
+                "201": {"id": "201", "go_dest": "雲林科技大學", "back_dest": "高鐵雲林站"},
             },
             route_estimate=[
-                {"StopName": "高鐵雲林站", "SeqNo": 3, "GoBack": 2, "Value": None},
-                {"StopName": "雲林科技大學", "SeqNo": 1, "GoBack": 2, "Value": 0},
-                {"StopName": "大學路口", "SeqNo": 2, "GoBack": 2, "Value": 4},
-                {"StopName": "雲林科技大學", "SeqNo": 4, "GoBack": 1, "Value": -3},
+                {"stop_name": "高鐵雲林站", "stop_sequence": 3, "direction": 1, "stop_status": 1, "estimate_seconds": None},
+                {"stop_name": "雲林科技大學", "stop_sequence": 1, "direction": 1, "stop_status": 0, "estimate_seconds": 0},
+                {"stop_name": "大學路口", "stop_sequence": 2, "direction": 1, "stop_status": 0, "estimate_seconds": 240},
+                {"stop_name": "雲林科技大學", "stop_sequence": 4, "direction": 0, "stop_status": 3, "estimate_seconds": None},
             ],
         )
     )
@@ -239,17 +207,17 @@ def test_build_route_detail_returns_structured_stop_order(use_provider):
         departures.build_route_detail(
             "201",
             "雲林科技大學",
-            go_back=2,
+            go_back=1,  # 回程 = direction 1
         )
     )
 
     assert detail.route == "201"
-    assert detail.route_id == 65036
+    assert detail.route_id == "201"
     assert detail.stop_name == "雲林科技大學"
-    assert detail.direction_filter == 2
+    assert detail.direction_filter == 1
     assert len(detail.directions) == 1
     direction = detail.directions[0]
-    assert direction.go_back == 2
+    assert direction.go_back == 1
     assert direction.label == "往高鐵雲林站"
     assert [stop.name for stop in direction.stops] == [
         "雲林科技大學",
@@ -278,33 +246,21 @@ def test_render_stop_arrival_statuses_groups_by_section(use_provider):
     use_provider(
         FakeBusProvider(
             route_info={
-                "201": {
-                    "id": 65036,
-                    "go_dest": "雲林科技大學",
-                    "back_dest": "高鐵雲林站",
-                },
-                "7000B": {
-                    "id": 65352,
-                    "go_dest": "台北站",
-                    "back_dest": "梅山站",
-                },
-                "101": {
-                    "id": 15121,
-                    "go_dest": "受天宮",
-                    "back_dest": "斗六棒球場",
-                },
+                "201": {"id": "201", "go_dest": "雲林科技大學", "back_dest": "高鐵雲林站"},
+                "7000D": {"id": "7000D", "go_dest": "台北站", "back_dest": "梅山站"},
+                "101": {"id": "101", "go_dest": "受天宮", "back_dest": "斗六棒球場"},
             },
             eta_at_stop=[
-                {"xno": 65036, "GoBack": 2, "Value": None, "ComeTime": "21:35"},
-                {"xno": 65352, "GoBack": 2, "Value": None, "ComeTime": ""},
-                {"xno": 15121, "GoBack": 2, "Value": -3, "ComeTime": ""},
+                {"sub_route_name": "201", "direction": 1, "stop_status": 0, "estimate_seconds": 720},
+                {"sub_route_name": "7000D", "direction": 1, "stop_status": 1, "estimate_seconds": None},
+                {"sub_route_name": "101", "direction": 1, "stop_status": 3, "estimate_seconds": None},
             ],
         )
     )
 
-    statuses = asyncio.run(departures.render_stop_arrival_statuses("雲林科技大學", go_back=2))
+    statuses = asyncio.run(departures.render_stop_arrival_statuses("雲林科技大學", go_back=1))
     assert statuses == (
-        "雲林科技大學 目前到站狀態：\n有車：\n201 往高鐵雲林站：下午9:35 發車\n尚未發車：\n7000B 往梅山站：未發車\n末班已過：\n101 往斗六棒球場：末班駛離"
+        "雲林科技大學 目前到站狀態：\n有車：\n201 往高鐵雲林站：約十二分鐘後\n尚未發車：\n7000D 往梅山站：未發車\n末班已過：\n101 往斗六棒球場：末班駛離"
     )
 
 
@@ -312,16 +268,12 @@ def test_render_arrivals_uses_classify(use_provider):
     use_provider(
         FakeBusProvider(
             route_info={
-                "201": {
-                    "id": 65036,
-                    "go_dest": "雲林科技大學",
-                    "back_dest": "高鐵雲林站",
-                },
+                "201": {"id": "201", "go_dest": "雲林科技大學", "back_dest": "高鐵雲林站"},
             },
             route_estimate=[
-                {"StopName": "雲林科技大學", "GoBack": 1, "Value": 2, "ComeTime": ""},
-                {"StopName": "雲林科技大學", "GoBack": 2, "Value": 12, "ComeTime": ""},
-                {"StopName": "其他站", "GoBack": 1, "Value": 0, "ComeTime": ""},
+                {"stop_name": "雲林科技大學", "stop_sequence": 1, "direction": 0, "stop_status": 0, "estimate_seconds": 120},
+                {"stop_name": "雲林科技大學", "stop_sequence": 1, "direction": 1, "stop_status": 0, "estimate_seconds": 720},
+                {"stop_name": "其他站", "stop_sequence": 2, "direction": 0, "stop_status": 0, "estimate_seconds": 0},
             ],
         )
     )
@@ -333,17 +285,13 @@ def test_render_route_stops_lists_both_directions(use_provider):
     use_provider(
         FakeBusProvider(
             route_info={
-                "201": {
-                    "id": 65036,
-                    "go_dest": "雲林科技大學",
-                    "back_dest": "高鐵雲林站",
-                },
+                "201": {"id": "201", "go_dest": "雲林科技大學", "back_dest": "高鐵雲林站"},
             },
             route_estimate=[
-                {"StopName": "高鐵雲林站", "SeqNo": 1, "GoBack": 1, "Value": None},
-                {"StopName": "雲林科技大學", "SeqNo": 2, "GoBack": 1, "Value": 0},
-                {"StopName": "雲林科技大學", "SeqNo": 1, "GoBack": 2, "Value": 0},
-                {"StopName": "高鐵雲林站", "SeqNo": 2, "GoBack": 2, "Value": 4},
+                {"stop_name": "高鐵雲林站", "stop_sequence": 1, "direction": 0, "stop_status": 1, "estimate_seconds": None},
+                {"stop_name": "雲林科技大學", "stop_sequence": 2, "direction": 0, "stop_status": 0, "estimate_seconds": 0},
+                {"stop_name": "雲林科技大學", "stop_sequence": 1, "direction": 1, "stop_status": 0, "estimate_seconds": 0},
+                {"stop_name": "高鐵雲林站", "stop_sequence": 2, "direction": 1, "stop_status": 0, "estimate_seconds": 240},
             ],
         )
     )
@@ -357,9 +305,9 @@ def test_render_routes_at_stop_lists_unique_routes(use_provider):
     use_provider(
         FakeBusProvider(
             routes_at_stop=[
-                {"name": "201", "ddesc": "高鐵雲林站－雲林科技大學"},
-                {"name": "201", "ddesc": "高鐵雲林站－雲林科技大學"},
-                {"name": "7126", "ddesc": "斗六－雲林科技大學"},
+                {"sub_route_name": "201", "direction": 0},
+                {"sub_route_name": "201", "direction": 1},
+                {"sub_route_name": "7126", "direction": 0},
             ],
         )
     )
@@ -370,10 +318,10 @@ def test_render_routes_at_stop_lists_unique_routes(use_provider):
 def test_render_stop_on_route_found(use_provider):
     use_provider(
         FakeBusProvider(
-            route_info={"201": {"id": 1, "go_dest": "高鐵雲林站", "back_dest": "雲林科技大學"}},
+            route_info={"201": {"id": "201", "go_dest": "高鐵雲林站", "back_dest": "雲林科技大學"}},
             route_estimate=[
-                {"GoBack": 1, "SeqNo": 1, "StopName": "雲林科技大學", "Value": 10},
-                {"GoBack": 1, "SeqNo": 2, "StopName": "斗六火車站", "Value": 20},
+                {"direction": 0, "stop_sequence": 1, "stop_name": "雲林科技大學", "stop_status": 0, "estimate_seconds": 600},
+                {"direction": 0, "stop_sequence": 2, "stop_name": "斗六火車站", "stop_status": 0, "estimate_seconds": 1200},
             ],
         )
     )
@@ -386,9 +334,9 @@ def test_render_stop_on_route_found(use_provider):
 def test_render_stop_on_route_not_found(use_provider):
     use_provider(
         FakeBusProvider(
-            route_info={"201": {"id": 1, "go_dest": "高鐵雲林站", "back_dest": "雲林科技大學"}},
+            route_info={"201": {"id": "201", "go_dest": "高鐵雲林站", "back_dest": "雲林科技大學"}},
             route_estimate=[
-                {"GoBack": 1, "SeqNo": 1, "StopName": "雲林科技大學", "Value": 10},
+                {"direction": 0, "stop_sequence": 1, "stop_name": "雲林科技大學", "stop_status": 0, "estimate_seconds": 600},
             ],
         )
     )
@@ -404,12 +352,12 @@ def test_render_arrivals_to_destination_returns_all_sorted(use_provider):
     use_provider(
         FakeBusProvider(
             route_info={
-                "201": {"id": 1, "go_dest": "斗六火車站", "back_dest": "雲林科技大學"},
-                "301": {"id": 2, "go_dest": "斗六火車站", "back_dest": "雲林科技大學"},
+                "201": {"id": "201", "go_dest": "斗六火車站", "back_dest": "雲林科技大學"},
+                "301": {"id": "301", "go_dest": "斗六火車站", "back_dest": "雲林科技大學"},
             },
             route_estimate=[
-                {"GoBack": 1, "SeqNo": 1, "StopName": "雲林科技大學", "Value": 8},
-                {"GoBack": 1, "SeqNo": 2, "StopName": "斗六火車站", "Value": 20},
+                {"direction": 0, "stop_sequence": 1, "stop_name": "雲林科技大學", "stop_status": 0, "estimate_seconds": 480},
+                {"direction": 0, "stop_sequence": 2, "stop_name": "斗六火車站", "stop_status": 0, "estimate_seconds": 1200},
             ],
         )
     )
@@ -423,9 +371,9 @@ def test_render_arrivals_to_destination_no_routes(use_provider):
     """Returns 本站沒有直達 when destination not served."""
     use_provider(
         FakeBusProvider(
-            route_info={"201": {"id": 1, "go_dest": "高鐵雲林站", "back_dest": "雲林科技大學"}},
+            route_info={"201": {"id": "201", "go_dest": "高鐵雲林站", "back_dest": "雲林科技大學"}},
             route_estimate=[
-                {"GoBack": 1, "SeqNo": 1, "StopName": "雲林科技大學", "Value": 10},
+                {"direction": 0, "stop_sequence": 1, "stop_name": "雲林科技大學", "stop_status": 0, "estimate_seconds": 600},
             ],
         )
     )
@@ -437,11 +385,10 @@ def test_render_arrivals_to_destination_no_eta_row(use_provider):
     """Route serves destination but kiosk row missing → 無即時資料, still listed."""
     use_provider(
         FakeBusProvider(
-            route_info={"7000H": {"id": 1, "go_dest": "西螺", "back_dest": "雲林科技大學"}},
+            route_info={"7000D": {"id": "7000D", "go_dest": "西螺", "back_dest": "雲林科技大學"}},
             route_estimate=[
-                # stop sequence has kiosk but no ETA row matching kiosk for GoBack=1
-                {"GoBack": 1, "SeqNo": 1, "StopName": "別的站", "Value": 5},
-                {"GoBack": 1, "SeqNo": 2, "StopName": "西螺", "Value": 15},
+                {"direction": 0, "stop_sequence": 1, "stop_name": "別的站", "stop_status": 0, "estimate_seconds": 300},
+                {"direction": 0, "stop_sequence": 2, "stop_name": "西螺", "stop_status": 0, "estimate_seconds": 900},
             ],
         )
     )
@@ -451,24 +398,19 @@ def test_render_arrivals_to_destination_no_eta_row(use_provider):
 
 
 # ── geo-awareness ────────────────────────────────────────────────────────────
-#
-# `render_stop_on_route` must only count a direction as 有 when the destination
-# is at or after the kiosk's position in the stop sequence. A bus passing the
-# destination *before* reaching the kiosk cannot take a passenger boarding at
-# the kiosk there.
 
 
 def test_render_stop_on_route_rejects_upstream_destination(use_provider):
-    """`check_stop_on_route` is geo-aware too: upstream destination → 沒有."""
+    """`check_stop_on_route` is geo-aware: upstream destination → 沒有."""
     use_provider(
         FakeBusProvider(
             route_info={
-                "201": {"id": 1, "go_dest": "東邊終點", "back_dest": "西邊終點"},
+                "201": {"id": "201", "go_dest": "東邊終點", "back_dest": "西邊終點"},
             },
             route_estimate=[
                 # 虎尾 is at seq 1, kiosk at seq 2 — upstream from kiosk.
-                {"GoBack": 1, "SeqNo": 1, "StopName": "虎尾", "Value": 5},
-                {"GoBack": 1, "SeqNo": 2, "StopName": "雲林科技大學", "Value": 10},
+                {"direction": 0, "stop_sequence": 1, "stop_name": "虎尾", "stop_status": 0, "estimate_seconds": 300},
+                {"direction": 0, "stop_sequence": 2, "stop_name": "雲林科技大學", "stop_status": 0, "estimate_seconds": 600},
             ],
         )
     )
@@ -481,11 +423,11 @@ def test_render_stop_on_route_allows_kiosk_itself(use_provider):
     use_provider(
         FakeBusProvider(
             route_info={
-                "201": {"id": 1, "go_dest": "東邊終點", "back_dest": "西邊終點"},
+                "201": {"id": "201", "go_dest": "東邊終點", "back_dest": "西邊終點"},
             },
             route_estimate=[
-                {"GoBack": 1, "SeqNo": 1, "StopName": "雲林科技大學", "Value": 0},
-                {"GoBack": 1, "SeqNo": 2, "StopName": "斗六", "Value": 10},
+                {"direction": 0, "stop_sequence": 1, "stop_name": "雲林科技大學", "stop_status": 0, "estimate_seconds": 0},
+                {"direction": 0, "stop_sequence": 2, "stop_name": "斗六", "stop_status": 0, "estimate_seconds": 600},
             ],
         )
     )

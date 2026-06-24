@@ -156,7 +156,7 @@ class AgentTelemetry:
         self._cache_lookups = provider_meter.create_counter(
             "provider.cache.lookup",
             unit="{lookup}",
-            description=("Upstream-data cache lookups. Attributes: cache.name (e.g. ebus.route_info), cache.outcome (hit/miss)."),
+            description=("Upstream-data cache lookups. Attributes: cache.name (e.g. tdx.route_info), cache.outcome (hit/miss)."),
         )
 
         # ── Pipeline instrumentation (ASR / TTS stages) ───────────────────────

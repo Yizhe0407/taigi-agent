@@ -13,27 +13,13 @@ _STOP_SUFFIX = frozenset("站路街號市區鄉鎮村里")
 
 
 def _strip_paren(name: str) -> str:
-    """Remove parenthetical suffixes from stop names: 持法媽祖宮(頂溪) → 持法媽祖宮."""
+    """Remove parenthetical suffixes: 持法媽祖宮(頂溪) → 持法媽祖宮."""
     return _PAREN_RE.sub("", name).strip()
 
 
 def _mins_zh(n: int) -> str:
-    """Integer minutes → natural Chinese count; >= 100 stays Arabic for chat display."""
+    """Integer minutes → natural Chinese count; >= 100 stays Arabic."""
     return str(n) if n >= 100 else count_to_chinese(n)
-
-
-def _fmt_time_12h(hhmm: str) -> str:
-    """'HH:MM' → '下午1:16' style (12-hour Arabic with period prefix)."""
-    h, m = map(int, hhmm.split(":"))
-    if h == 12:
-        period, h12 = "中午", 12
-    elif h > 12:
-        period, h12 = "下午", h - 12
-    elif h == 0:
-        period, h12 = "凌晨", 12
-    else:
-        period, h12 = "上午", h
-    return f"{period}{h12}:{m:02d}"
 
 
 def _normalize_route_key(s: str) -> str:
@@ -42,7 +28,7 @@ def _normalize_route_key(s: str) -> str:
 
 
 def _lookup_route(route_info: dict, route: str) -> dict | None:
-    """Case-insensitive route lookup that ignores trailing 路 and fullwidth."""
+    """Case-insensitive route lookup ignoring trailing 路 and fullwidth."""
     key = _normalize_route_key(route)
     for name, info in route_info.items():
         if _normalize_route_key(name) == key:
@@ -93,15 +79,18 @@ def _as_int(value: object) -> int | None:
 def _stops_by_direction_with_seq(
     data: list[dict],
 ) -> dict[int, list[tuple[int, str]]]:
-    """Group route_estimate rows by GoBack, retaining (seq, stripped_name)."""
+    """Group route_estimate rows by direction, retaining (seq, stripped_name).
+
+    TDX fields: direction (0/1), stop_sequence (int), stop_name (str).
+    """
     by_direction: dict[int, list[tuple[int, str]]] = {}
     for stop in data:
-        gb = stop.get("GoBack", 1)
-        seq = _as_int(stop.get("SeqNo"))
+        direction = stop.get("direction", 0)
+        seq = stop.get("stop_sequence")
         if seq is None:
             continue
-        name = _strip_paren(stop.get("StopName", ""))
-        by_direction.setdefault(gb, []).append((seq, name))
+        name = _strip_paren(stop.get("stop_name", ""))
+        by_direction.setdefault(direction, []).append((seq, name))
     return by_direction
 
 
@@ -112,8 +101,8 @@ def _downstream_names(
     """Return stop names at or after the first kiosk-matching position.
 
     Returns None when kiosk doesn't appear in this direction — caller should
-    skip it (the bus on this direction doesn't pass through here at all).
-    Includes the kiosk itself so「有沒有停 X 」when X is the kiosk answers 有.
+    skip it.  Includes the kiosk itself so「有沒有停 X」when X is the kiosk
+    answers 有.
     """
     kiosk_seq = next(
         (s for s, n in stops if _name_matches(kiosk_stop, n)),
@@ -127,10 +116,11 @@ def _downstream_names(
 def _direction_label_from_info(
     route_info: dict[str, dict],
     route: str,
-    go_back: int,
+    direction: int,
 ) -> str:
+    """Return '往<dest>' label for the given TDX Direction (0=去程, 1=回程)."""
     info = route_info.get(route, {})
-    if go_back == 1:
+    if direction == 0:
         dest = info.get("go_dest", "")
         return f"往{dest}" if dest else "去程"
     dest = info.get("back_dest", "")
@@ -142,39 +132,35 @@ def iter_scoped_stop_etas(
     route_info: dict[str, dict],
     stop_name: str,
     go_back: int | None,
-) -> Iterator[tuple[dict, str, int, int]]:
-    """Yield (stop_row, route, route_id, stop_go_back) for ETA rows in kiosk scope.
+) -> Iterator[tuple[dict, str, str, int]]:
+    """Yield (stop_row, route, route_id, direction) for ETA rows in kiosk scope.
 
-    Shared scope filter for the kiosk arrival views: parses GoBack/xno, resolves
-    the route name, and applies the direction filter — explicit go_back when set,
-    otherwise drop terminal-direction rows for non-circular routes.
+    TDX fields: sub_route_name, direction (0/1), stop_status.
+    StopStatus 2 (交管不停靠) is silently skipped.
+    go_back parameter uses TDX Direction encoding: 0=去程, 1=回程.
     """
-    route_by_id = {info["id"]: name for name, info in route_info.items()}
     for stop in eta_data:
-        stop_go_back = _as_int(stop.get("GoBack")) or 1
-
-        route_id = _as_int(stop.get("xno"))
-        if route_id is None:
+        if stop.get("stop_status") == 2:
             continue
-
-        route = route_by_id.get(route_id)
-        if route is None:
+        stop_direction = stop.get("direction", 0)
+        sub_route_name = stop.get("sub_route_name")
+        if not sub_route_name or sub_route_name not in route_info:
             continue
 
         if go_back is not None:
-            if stop_go_back != go_back:
+            if stop_direction != go_back:
                 continue
-        elif _is_terminal_direction(stop_name, route_info, route, stop_go_back):
+        elif _is_terminal_direction(stop_name, route_info, sub_route_name, stop_direction):
             continue
 
-        yield stop, route, route_id, stop_go_back
+        yield stop, sub_route_name, sub_route_name, stop_direction
 
 
 def _is_terminal_direction(
     stop_name: str,
     route_info: dict[str, dict],
     route: str,
-    go_back: int,
+    direction: int,
 ) -> bool:
     """True when this stop is the non-circular terminus for this direction.
 
@@ -187,5 +173,5 @@ def _is_terminal_direction(
     is_circular = _name_matches(stop_name, go_dest) and _name_matches(stop_name, back_dest)
     if is_circular:
         return False
-    terminus = go_dest if go_back == 1 else back_dest
+    terminus = go_dest if direction == 0 else back_dest
     return _name_matches(stop_name, terminus)

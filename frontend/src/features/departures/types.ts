@@ -8,7 +8,6 @@ export type DepartureDecision =
   | "arriving_soon"
   | "can_wait"
   | "long_wait"
-  | "scheduled"
   | "not_departed"
   | "last_departed"
   | "unknown"
@@ -23,7 +22,7 @@ export type DepartureSummary = {
 export type DepartureRouteStatus = {
   id: string
   route: string
-  routeId: number
+  routeId: string
   direction: string
   goBack: number
   section: DepartureSection
@@ -59,7 +58,7 @@ export type RouteDirectionDetail = {
 
 export type DepartureRouteDetail = {
   route: string
-  routeId: number
+  routeId: string
   stopName: string
   directionFilter: number | null
   directions: RouteDirectionDetail[]

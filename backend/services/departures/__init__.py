@@ -8,7 +8,7 @@ cannot drift.
 Provider I/O is reached through the `BusProvider` Protocol; the active
 instance lives at module scope (`_provider`) and can be swapped via
 `set_provider()` — tests inject a fake, production wires the concrete
-`YunlinEbusProvider`.
+`TdxBusProvider`.
 """
 
 from services.departures.classification import (

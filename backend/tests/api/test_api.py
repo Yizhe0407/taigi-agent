@@ -41,11 +41,11 @@ def _snapshot_time() -> datetime:
 def _departure_snapshot() -> StopDepartureSnapshot:
     routes = (
         DepartureRouteStatus(
-            id="65036-2",
+            id="201-1",
             route="201",
-            route_id=65036,
+            route_id="201",
             direction="往高鐵雲林站",
-            go_back=2,
+            go_back=1,
             section=DepartureSection.AVAILABLE,
             decision=DepartureDecision.CAN_WAIT,
             status_text="約 8 分鐘後",
@@ -56,11 +56,11 @@ def _departure_snapshot() -> StopDepartureSnapshot:
             sort_minutes=15,
         ),
         DepartureRouteStatus(
-            id="15121-2",
+            id="101-1",
             route="101",
-            route_id=15121,
+            route_id="101",
             direction="往斗六棒球場",
-            go_back=2,
+            go_back=1,
             section=DepartureSection.LAST_DEPARTED,
             decision=DepartureDecision.LAST_DEPARTED,
             status_text="末班駛離",
@@ -73,7 +73,7 @@ def _departure_snapshot() -> StopDepartureSnapshot:
     )
     return StopDepartureSnapshot(
         stop_name="雲林科技大學",
-        direction_filter=2,
+        direction_filter=1,
         updated_at=_snapshot_time(),
         routes=routes,
         summary=DepartureSummary(
@@ -88,12 +88,12 @@ def _departure_snapshot() -> StopDepartureSnapshot:
 def _departure_route_detail() -> DepartureRouteDetail:
     return DepartureRouteDetail(
         route="201",
-        route_id=65036,
+        route_id="201",
         stop_name="雲林科技大學",
-        direction_filter=2,
+        direction_filter=1,
         directions=(
             RouteDirectionDetail(
-                go_back=2,
+                go_back=1,
                 label="往高鐵雲林站",
                 stops=(
                     RouteStopDetail(
@@ -181,7 +181,7 @@ def test_get_departures_here_returns_structured_snapshot(monkeypatch):
     assert response.status_code == 200
     assert response.json() == {
         "stopName": "雲林科技大學",
-        "directionFilter": 2,
+        "directionFilter": 1,
         "updatedAt": "2026-05-24T12:00:00+08:00",
         "summary": {
             "availableCount": 1,
@@ -191,11 +191,11 @@ def test_get_departures_here_returns_structured_snapshot(monkeypatch):
         },
         "routes": [
             {
-                "id": "65036-2",
+                "id": "201-1",
                 "route": "201",
-                "routeId": 65036,
+                "routeId": "201",
                 "direction": "往高鐵雲林站",
-                "goBack": 2,
+                "goBack": 1,
                 "section": "available",
                 "decision": "can_wait",
                 "statusText": "約 8 分鐘後",
@@ -204,11 +204,11 @@ def test_get_departures_here_returns_structured_snapshot(monkeypatch):
                 "scheduledTime": None,
             },
             {
-                "id": "15121-2",
+                "id": "101-1",
                 "route": "101",
-                "routeId": 15121,
+                "routeId": "101",
                 "direction": "往斗六棒球場",
-                "goBack": 2,
+                "goBack": 1,
                 "section": "last_departed",
                 "decision": "last_departed",
                 "statusText": "末班駛離",
@@ -247,12 +247,12 @@ def test_get_departure_route_detail_returns_structured_stops(monkeypatch):
     assert response.status_code == 200
     assert response.json() == {
         "route": "201",
-        "routeId": 65036,
+        "routeId": "201",
         "stopName": "雲林科技大學",
-        "directionFilter": 2,
+        "directionFilter": 1,
         "directions": [
             {
-                "goBack": 2,
+                "goBack": 1,
                 "label": "往高鐵雲林站",
                 "stops": [
                     {

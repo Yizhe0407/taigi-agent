@@ -60,7 +60,7 @@ class DepartureSummaryResponse(DepartureResponseModel):
 class DepartureRouteStatusResponse(DepartureResponseModel):
     id: str
     route: str
-    route_id: int = Field(alias="routeId")
+    route_id: str = Field(alias="routeId")
     direction: str
     go_back: int = Field(alias="goBack")
     section: DepartureSection
@@ -96,7 +96,7 @@ class RouteDirectionDetailResponse(DepartureResponseModel):
 
 class DepartureRouteDetailResponse(DepartureResponseModel):
     route: str
-    route_id: int = Field(alias="routeId")
+    route_id: str = Field(alias="routeId")
     stop_name: str = Field(alias="stopName")
     direction_filter: int | None = Field(alias="directionFilter")
     directions: list[RouteDirectionDetailResponse]

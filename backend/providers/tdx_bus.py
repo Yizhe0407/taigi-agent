@@ -1,0 +1,247 @@
+"""TDX (tdx.transportdata.tw) concrete `BusProvider` implementation.
+
+Covers both YunlinCounty city buses and intercity (公路客運) buses by querying
+the City and InterCity TDX endpoints in parallel and merging results.
+
+Internal row schema — all methods return flat dicts with these keys:
+
+  fetch_eta_at_stop / iter in iter_scoped_stop_etas:
+    sub_route_name  str    SubRouteName.Zh_tw
+    direction       int    0=去程 1=回程  (TDX Direction)
+    stop_status     int    0=正常 1=未發車 2=不停 3=末班過 4=今日停駛
+    estimate_seconds int|None  秒；None when stop_status != 0
+
+  fetch_route_estimate:
+    stop_name       str
+    stop_sequence   int
+    direction       int    0 / 1
+    stop_status     int
+    estimate_seconds int|None
+
+  load_route_info → {sub_route_name: {"id": sub_route_name, "go_dest": str, "back_dest": str}}
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from collections.abc import Callable
+
+from providers.bus import BusProvider
+from providers.http import get_http_client
+from telemetry import get_telemetry
+
+_TOKEN_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
+_BASE = "https://tdx.transportdata.tw/api/basic/v2/Bus"
+_CITY = "YunlinCounty"
+_TOKEN_BUFFER_SECONDS = 60.0
+
+_DEFAULT_ROUTE_INFO_TTL = 600.0
+_DEFAULT_ROUTE_ESTIMATE_TTL = 10.0
+
+
+def _zh(field: object) -> str:
+    """Extract Zh_tw from a TDX localised name dict {"Zh_tw": ..., "En": ...}."""
+    if isinstance(field, dict):
+        return str(field.get("Zh_tw") or "").strip()
+    return ""
+
+
+class TdxBusProvider(BusProvider):
+    """HTTP-backed `BusProvider` for tdx.transportdata.tw.
+
+    Authenticates via OAuth2 client_credentials; token is cached until near
+    expiry. Route-info cache lives on the instance and expires after
+    `route_info_ttl_seconds`. Route-estimate cache is short-lived (default 10 s).
+    """
+
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        *,
+        route_info_ttl_seconds: float | None = _DEFAULT_ROUTE_INFO_TTL,
+        route_estimate_ttl_seconds: float | None = _DEFAULT_ROUTE_ESTIMATE_TTL,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._route_info_ttl = route_info_ttl_seconds
+        self._route_estimate_ttl = route_estimate_ttl_seconds
+        self._clock = clock
+        # token cache
+        self._token: str = ""
+        self._token_expires_at: float = 0.0
+        # stop_name → (fetched_at, route_info_dict)
+        self._route_info_by_stop: dict[str, tuple[float, dict[str, dict]]] = {}
+        # sub_route_name → (fetched_at, rows)
+        self._route_estimate_cache: dict[str, tuple[float, list[dict]]] = {}
+
+    # ── Auth ──────────────────────────────────────────────────────────────────
+
+    async def _get_token(self) -> str:
+        if self._clock() < self._token_expires_at:
+            return self._token
+        http = get_http_client()
+        resp = await http.post(
+            _TOKEN_URL,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+            },
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        self._token = body["access_token"]
+        expires_in = float(body.get("expires_in", 3600))
+        self._token_expires_at = self._clock() + expires_in - _TOKEN_BUFFER_SECONDS
+        return self._token
+
+    async def _get(self, url: str, params: dict) -> list[dict]:
+        token = await self._get_token()
+        http = get_http_client()
+        resp = await http.get(
+            url,
+            params={**params, "$format": "JSON"},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ── Normalizers ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _norm_eta(row: dict) -> dict:
+        return {
+            "sub_route_name": _zh(row.get("SubRouteName")),
+            "direction": row.get("Direction", 0),
+            "stop_status": row.get("StopStatus", 1),
+            "estimate_seconds": row.get("EstimateTime"),
+        }
+
+    @staticmethod
+    def _norm_stop_eta(row: dict) -> dict:
+        return {
+            "stop_name": _zh(row.get("StopName")),
+            "stop_sequence": row.get("StopSequence"),
+            "direction": row.get("Direction", 0),
+            "stop_status": row.get("StopStatus", 1),
+            "estimate_seconds": row.get("EstimateTime"),
+        }
+
+    # ── BusProvider ───────────────────────────────────────────────────────────
+
+    async def fetch_routes_at_stop(self, stop_name: str) -> list[dict]:
+        """Unique subroutes at `stop_name` (city + intercity)."""
+        city, intercity = await self._stop_of_route(stop_name)
+        seen: set[str] = set()
+        result: list[dict] = []
+        for rec in city + intercity:
+            name = _zh(rec.get("SubRouteName"))
+            if name and name not in seen:
+                seen.add(name)
+                result.append({"sub_route_name": name, "direction": rec.get("Direction", 0)})
+        return result
+
+    async def fetch_eta_at_stop(self, stop_name: str) -> list[dict]:
+        city_rows, intercity_rows = await asyncio.gather(
+            self._get(
+                f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
+                {"$filter": f"StopName/Zh_tw eq '{stop_name}'"},
+            ),
+            self._get(
+                f"{_BASE}/EstimatedTimeOfArrival/InterCity",
+                {"$filter": f"StopName/Zh_tw eq '{stop_name}'"},
+            ),
+        )
+        return [self._norm_eta(r) for r in city_rows + intercity_rows]
+
+    async def fetch_route_estimate(self, sub_route_name: str) -> list[dict]:
+        cached = self._route_estimate_cache.get(sub_route_name)
+        hit = cached is not None and not self._expired(cached[0], self._route_estimate_ttl)
+        get_telemetry().record_cache_lookup(cache="tdx.route_estimate", hit=hit)
+        if hit:
+            return cached[1]
+
+        city_rows, intercity_rows = await asyncio.gather(
+            self._get(
+                f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
+                {"$filter": f"SubRouteName/Zh_tw eq '{sub_route_name}'"},
+            ),
+            self._get(
+                f"{_BASE}/EstimatedTimeOfArrival/InterCity",
+                {"$filter": f"SubRouteName/Zh_tw eq '{sub_route_name}'"},
+            ),
+        )
+        rows = [self._norm_stop_eta(r) for r in city_rows + intercity_rows]
+        self._route_estimate_cache[sub_route_name] = (self._clock(), rows)
+        return rows
+
+    async def load_route_info(self, stop_name: str) -> dict[str, dict]:
+        cached = self._route_info_by_stop.get(stop_name)
+        hit = cached is not None and not self._expired(cached[0], self._route_info_ttl)
+        get_telemetry().record_cache_lookup(cache="tdx.route_info", hit=hit)
+        if hit:
+            return cached[1]
+
+        city, intercity = await self._stop_of_route(stop_name)
+        info = self._build_route_info(city + intercity)
+        self._route_info_by_stop[stop_name] = (self._clock(), info)
+        return info
+
+    async def aclose(self) -> None:
+        pass  # shared http client; lifecycle managed by api lifespan
+
+    # ── Internal ──────────────────────────────────────────────────────────────
+
+    async def _stop_of_route(self, stop_name: str) -> tuple[list[dict], list[dict]]:
+        """Fetch StopOfRoute for both City and InterCity filtered by stop name."""
+        return await asyncio.gather(
+            self._get(
+                f"{_BASE}/StopOfRoute/City/{_CITY}",
+                {"$filter": f"Stops/any(s: s/StopName/Zh_tw eq '{stop_name}')"},
+            ),
+            self._get(
+                f"{_BASE}/StopOfRoute/InterCity",
+                {"$filter": f"Stops/any(s: s/StopName/Zh_tw eq '{stop_name}')"},
+            ),
+        )
+
+    @staticmethod
+    def _build_route_info(records: list[dict]) -> dict[str, dict]:
+        """Build sub_route_name → {id, go_dest, back_dest} from StopOfRoute records.
+
+        Terminal names are derived from the last stop (by StopSequence) of each
+        direction. direction=0 terminal → go_dest; direction=1 terminal → back_dest.
+        """
+        terminals: dict[tuple[str, int], str] = {}
+        for rec in records:
+            name = _zh(rec.get("SubRouteName"))
+            if not name:
+                continue
+            direction = rec.get("Direction", 0)
+            stops = rec.get("Stops") or []
+            if not stops:
+                continue
+            ordered = sorted(stops, key=lambda s: s.get("StopSequence", 0))
+            terminal = _zh(ordered[-1].get("StopName"))
+            if terminal:
+                terminals[(name, direction)] = terminal
+
+        all_names = {name for name, _ in terminals}
+        return {
+            name: {
+                "id": name,
+                "go_dest": terminals.get((name, 0), ""),
+                "back_dest": terminals.get((name, 1), ""),
+            }
+            for name in all_names
+        }
+
+    def _expired(self, fetched_at: float, ttl: float | None) -> bool:
+        if ttl is None or ttl <= 0:
+            return False
+        return (self._clock() - fetched_at) >= ttl

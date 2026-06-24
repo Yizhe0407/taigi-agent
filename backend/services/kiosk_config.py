@@ -38,11 +38,11 @@ class KioskConfig:
 
     @property
     def go_back(self) -> int | None:
-        """Translate direction label to ebus GoBack int (1=去程, 2=回程, None=both)."""
+        """Translate direction label to TDX Direction int (0=去程, 1=回程, None=both)."""
         if self.direction == "去程":
-            return 1
+            return 0
         if self.direction == "回程":
-            return 2
+            return 1
         return None
 
 
@@ -99,5 +99,5 @@ def kiosk_stop_name() -> str:
 
 
 def kiosk_go_back_filter() -> int | None:
-    """Current kiosk direction filter as an ebus GoBack int (None = both)."""
+    """Current kiosk direction filter as TDX Direction int (0=去程, 1=回程, None=both)."""
     return get_kiosk_config().go_back

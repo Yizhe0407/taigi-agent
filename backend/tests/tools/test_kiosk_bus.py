@@ -33,4 +33,4 @@ def test_get_stop_arrival_statuses_here_passes_direction_filter(monkeypatch):
     monkeypatch.setattr(kiosk_bus.departures, "render_stop_arrival_statuses", fake_render)
 
     assert asyncio.run(kiosk_bus.get_stop_arrival_statuses_here()) == "ok"
-    assert calls == [("雲林科技大學", 2)]
+    assert calls == [("雲林科技大學", 1)]  # 回程 = direction 1 in TDX encoding
