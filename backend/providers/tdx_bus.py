@@ -2,32 +2,48 @@
 
 Covers both YunlinCounty city buses and intercity (公路客運) buses.
 
-Route classification:
+## Circular-route correctness
+
+TDX returns one EstimatedTimeOfArrival row per stop *occurrence*.  Circular
+routes (e.g., Y02: 斗六火車站 seq=1 → … → 斗六火車站 seq=10) produce two rows
+for the same stop name — one for the boarding point (seq=1) and one for the
+arriving bus completing the loop (seq=10).
+
+To avoid showing the irrelevant arrival row, `load_route_info` extracts the
+StopUID of the *first* occurrence of the kiosk stop in each route direction
+(the boarding point) from the `StopOfRoute` payload.  Subsequent calls to
+`fetch_eta_at_stop` query TDX using those UIDs instead of the stop name, so
+TDX only returns rows for the boarding-point stops.
+
+The UID set is cached alongside route_info.  A name-based fallback with
+min-sequence dedup handles the cold-start window where `load_route_info` and
+`fetch_eta_at_stop` are first called concurrently.
+
+## Route classification
+
   Intercity: sub_route_name matches ^7\\d{3} (7000D, 7120, 7123A, …)
   City:      everything else (101, 201, 701, Y01, …)
 
-fetch_route_estimate only queries the relevant endpoint (not both) to halve
-request volume and avoid 429 rate limits. fetch_eta_at_stop and _stop_of_route
-still query both because the caller doesn't know which routes are at the stop.
-All parallel gather calls use return_exceptions=True so a 429 or timeout on
-one endpoint degrades gracefully instead of killing the whole call.
+`fetch_route_estimate` only queries the relevant endpoint to halve request
+volume and avoid 429 rate limits.
 
-Internal row schema — all methods return flat dicts with these keys:
+## Internal row schema
 
-  fetch_eta_at_stop / iter in iter_scoped_stop_etas:
-    sub_route_name  str    SubRouteName.Zh_tw
+  fetch_eta_at_stop rows:
+    sub_route_name  str
     direction       int    0=去程 1=回程  (TDX Direction)
     stop_status     int    0=正常 1=未發車 2=不停 3=末班過 4=今日停駛
-    estimate_seconds int|None  秒；None when stop_status != 0
+    estimate_seconds int|None
+    stop_sequence   int|None
 
-  fetch_route_estimate:
+  fetch_route_estimate rows:
     stop_name       str
-    stop_sequence   int
-    direction       int    0 / 1
+    stop_sequence   int|None
+    direction       int
     stop_status     int
     estimate_seconds int|None
 
-  load_route_info → {sub_route_name: {"id": sub_route_name, "go_dest": str, "back_dest": str}}
+  load_route_info → {sub_route_name: {"id": str, "go_dest": str, "back_dest": str}}
 """
 
 from __future__ import annotations
@@ -76,13 +92,7 @@ def _safe_list(result: list[dict] | BaseException) -> list[dict]:
 
 
 class TdxBusProvider(BusProvider):
-    """HTTP-backed `BusProvider` for tdx.transportdata.tw.
-
-    Authenticates via OAuth2 client_credentials; token is cached until near
-    expiry. Route-info cache lives on the instance and expires after
-    `route_info_ttl_seconds`. Route-estimate cache expires after
-    `route_estimate_ttl_seconds` (default 30 s — matches TDX update cadence).
-    """
+    """HTTP-backed `BusProvider` for tdx.transportdata.tw."""
 
     def __init__(
         self,
@@ -103,6 +113,8 @@ class TdxBusProvider(BusProvider):
         self._token_expires_at: float = 0.0
         # stop_name → (fetched_at, route_info_dict)
         self._route_info_by_stop: dict[str, tuple[float, dict[str, dict]]] = {}
+        # stop_name → set of boarding StopUIDs (first occurrence of that stop in each route)
+        self._kiosk_uids: dict[str, set[str]] = {}
         # sub_route_name → (fetched_at, rows)
         self._route_estimate_cache: dict[str, tuple[float, list[dict]]] = {}
 
@@ -177,23 +189,17 @@ class TdxBusProvider(BusProvider):
         return result
 
     async def fetch_eta_at_stop(self, stop_name: str) -> list[dict]:
-        results = await asyncio.gather(
-            self._get(
-                f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
-                {"$filter": f"StopName/Zh_tw eq '{stop_name}'"},
-            ),
-            self._get(
-                f"{_BASE}/EstimatedTimeOfArrival/InterCity",
-                {"$filter": f"StopName/Zh_tw eq '{stop_name}'"},
-            ),
-            return_exceptions=True,
-        )
-        city_rows = _safe_list(results[0])
-        intercity_rows = _safe_list(results[1])
-        if isinstance(results[0], BaseException) and isinstance(results[1], BaseException):
-            raise results[0]
-        all_rows = [self._norm_eta(r) for r in city_rows + intercity_rows]
-        return self._dedup_by_min_sequence(all_rows)
+        """ETA rows for every subroute at `stop_name`.
+
+        Uses StopUID filtering when boarding UIDs are already cached from a
+        prior `load_route_info` call.  Falls back to stop-name filtering with
+        min-sequence dedup during the cold-start window when both methods are
+        called concurrently for the first time.
+        """
+        uids = self._kiosk_uids.get(stop_name)
+        if uids:
+            return await self._fetch_eta_by_uids(uids)
+        return await self._fetch_eta_by_name(stop_name)
 
     async def fetch_route_estimate(self, sub_route_name: str) -> list[dict]:
         cached = self._route_estimate_cache.get(sub_route_name)
@@ -226,12 +232,50 @@ class TdxBusProvider(BusProvider):
             return cached[1]
 
         city, intercity = await self._stop_of_route(stop_name)
-        info = self._build_route_info(city + intercity)
+        info, boarding_uids = self._build_route_info(city + intercity, stop_name)
         self._route_info_by_stop[stop_name] = (self._clock(), info)
+        if boarding_uids:
+            self._kiosk_uids[stop_name] = boarding_uids
         return info
 
     async def aclose(self) -> None:
         pass  # shared http client; lifecycle managed by api lifespan
+
+    # ── ETA fetch helpers ──────────────────────────────────────────────────────
+
+    async def _fetch_eta_by_uids(self, uids: set[str]) -> list[dict]:
+        """Query by StopUID — precise, no dedup needed."""
+        uid_filter = " or ".join(f"StopUID eq '{uid}'" for uid in uids)
+        results = await asyncio.gather(
+            self._get(f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}", {"$filter": uid_filter}),
+            self._get(f"{_BASE}/EstimatedTimeOfArrival/InterCity", {"$filter": uid_filter}),
+            return_exceptions=True,
+        )
+        city_rows = _safe_list(results[0])
+        intercity_rows = _safe_list(results[1])
+        if isinstance(results[0], BaseException) and isinstance(results[1], BaseException):
+            raise results[0]
+        return [self._norm_eta(r) for r in city_rows + intercity_rows]
+
+    async def _fetch_eta_by_name(self, stop_name: str) -> list[dict]:
+        """Fallback: query by stop name and dedup by min sequence."""
+        results = await asyncio.gather(
+            self._get(
+                f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
+                {"$filter": f"StopName/Zh_tw eq '{stop_name}'"},
+            ),
+            self._get(
+                f"{_BASE}/EstimatedTimeOfArrival/InterCity",
+                {"$filter": f"StopName/Zh_tw eq '{stop_name}'"},
+            ),
+            return_exceptions=True,
+        )
+        city_rows = _safe_list(results[0])
+        intercity_rows = _safe_list(results[1])
+        if isinstance(results[0], BaseException) and isinstance(results[1], BaseException):
+            raise results[0]
+        all_rows = [self._norm_eta(r) for r in city_rows + intercity_rows]
+        return self._dedup_by_min_sequence(all_rows)
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
@@ -251,13 +295,20 @@ class TdxBusProvider(BusProvider):
         return _safe_list(results[0]), _safe_list(results[1])
 
     @staticmethod
-    def _build_route_info(records: list[dict]) -> dict[str, dict]:
-        """Build sub_route_name → {id, go_dest, back_dest} from StopOfRoute records.
+    def _build_route_info(records: list[dict], kiosk_stop: str) -> tuple[dict[str, dict], set[str]]:
+        """Build route_info and collect boarding StopUIDs.
 
-        Terminal names are derived from the last stop (by StopSequence) of each
-        direction. direction=0 terminal → go_dest; direction=1 terminal → back_dest.
+        For each (subroute, direction), the *first* stop occurrence of
+        `kiosk_stop` in the ordered stop list is the boarding point.  Its
+        StopUID is added to `boarding_uids` so that future ETA queries can
+        use UID filtering instead of name filtering, avoiding circular-route
+        duplicate rows.
+
+        Returns (route_info, boarding_uids).
         """
         terminals: dict[tuple[str, int], str] = {}
+        boarding_uids: set[str] = set()
+
         for rec in records:
             name = _zh(rec.get("SubRouteName"))
             if not name:
@@ -267,12 +318,22 @@ class TdxBusProvider(BusProvider):
             if not stops:
                 continue
             ordered = sorted(stops, key=lambda s: s.get("StopSequence", 0))
+
+            # Last stop = terminal for direction label
             terminal = _zh(ordered[-1].get("StopName"))
             if terminal:
                 terminals[(name, direction)] = terminal
 
+            # First occurrence of kiosk stop = boarding point → collect its UID
+            for stop in ordered:
+                if _zh(stop.get("StopName")) == kiosk_stop:
+                    uid = stop.get("StopUID")
+                    if uid:
+                        boarding_uids.add(uid)
+                    break  # only the first occurrence matters
+
         all_names = {name for name, _ in terminals}
-        return {
+        route_info = {
             name: {
                 "id": name,
                 "go_dest": terminals.get((name, 0), ""),
@@ -280,17 +341,11 @@ class TdxBusProvider(BusProvider):
             }
             for name in all_names
         }
+        return route_info, boarding_uids
 
     @staticmethod
     def _dedup_by_min_sequence(rows: list[dict]) -> list[dict]:
-        """Keep one row per (sub_route_name, direction) — prefer lowest StopSequence.
-
-        Circular routes (e.g., Y02) have the kiosk as both the first and last stop.
-        TDX returns one ETA row per stop occurrence, so we get two rows: seq=1
-        (departure, boarding-relevant) and seq=N (arrival of the same bus after
-        completing the loop). Keeping the minimum-sequence row ensures the kiosk
-        shows the departure status rather than the distant arrival time.
-        """
+        """Fallback dedup: keep one row per (sub_route_name, direction) by min StopSequence."""
         best: dict[tuple[str, int], dict] = {}
         for row in rows:
             key = (row.get("sub_route_name", ""), row.get("direction", 0))

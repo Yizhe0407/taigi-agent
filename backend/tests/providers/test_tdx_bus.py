@@ -1,7 +1,7 @@
 """Tests for the TdxBusProvider.
 
 Covers token caching, response normalisation, route-info construction,
-and estimate caching. HTTP is monkey-patched so no real network calls occur.
+estimate caching, and the UID-based ETA path.
 """
 
 from __future__ import annotations
@@ -24,8 +24,6 @@ class _FakeResp:
 
 
 def _patch_http(monkeypatch, token_resp: dict, api_resp):
-    """Replace the shared httpx client with a fake that returns preset payloads."""
-
     class FakeClient:
         async def post(self, url, **kwargs):
             return _FakeResp(token_resp)
@@ -44,16 +42,16 @@ _STOP_OF_ROUTE = [
         "SubRouteName": {"Zh_tw": "201"},
         "Direction": 0,
         "Stops": [
-            {"StopSequence": 1, "StopName": {"Zh_tw": "高鐵雲林站"}},
-            {"StopSequence": 2, "StopName": {"Zh_tw": "雲林科技大學"}},
+            {"StopUID": "YUN-A", "StopSequence": 1, "StopName": {"Zh_tw": "高鐵雲林站"}},
+            {"StopUID": "YUN-B", "StopSequence": 2, "StopName": {"Zh_tw": "雲林科技大學"}},
         ],
     },
     {
         "SubRouteName": {"Zh_tw": "201"},
         "Direction": 1,
         "Stops": [
-            {"StopSequence": 1, "StopName": {"Zh_tw": "雲林科技大學"}},
-            {"StopSequence": 2, "StopName": {"Zh_tw": "高鐵雲林站"}},
+            {"StopUID": "YUN-C", "StopSequence": 1, "StopName": {"Zh_tw": "雲林科技大學"}},
+            {"StopUID": "YUN-D", "StopSequence": 2, "StopName": {"Zh_tw": "高鐵雲林站"}},
         ],
     },
 ]
@@ -61,6 +59,19 @@ _STOP_OF_ROUTE = [
 _ETA_ROWS = [
     {"SubRouteName": {"Zh_tw": "201"}, "Direction": 0, "StopStatus": 0, "EstimateTime": 300},
     {"SubRouteName": {"Zh_tw": "201"}, "Direction": 1, "StopStatus": 1, "EstimateTime": None},
+]
+
+# Circular route: kiosk (斗六火車站) is both seq=1 (departure) and seq=10 (arrival).
+_CIRCULAR_STOP_OF_ROUTE = [
+    {
+        "SubRouteName": {"Zh_tw": "Y02"},
+        "Direction": 0,
+        "Stops": [
+            {"StopUID": "YUN-Y02-1", "StopSequence": 1, "StopName": {"Zh_tw": "斗六火車站"}},
+            {"StopUID": "YUN-Y02-5", "StopSequence": 5, "StopName": {"Zh_tw": "高鐵雲林站"}},
+            {"StopUID": "YUN-Y02-10", "StopSequence": 10, "StopName": {"Zh_tw": "斗六火車站"}},
+        ],
+    },
 ]
 
 
@@ -72,6 +83,75 @@ def test_load_route_info_builds_terminals(monkeypatch):
     assert info["201"]["id"] == "201"
     assert info["201"]["go_dest"] == "雲林科技大學"
     assert info["201"]["back_dest"] == "高鐵雲林站"
+
+
+def test_load_route_info_collects_boarding_uids(monkeypatch):
+    """After load_route_info, boarding UIDs for the kiosk stop are cached."""
+    _patch_http(monkeypatch, _TOKEN, _STOP_OF_ROUTE)
+    provider = TdxBusProvider("id", "secret")
+    asyncio.run(provider.load_route_info("雲林科技大學"))
+    uids = provider._kiosk_uids.get("雲林科技大學")
+    # 雲林科技大學 is seq=2 dir=0 (UID=YUN-B) and seq=1 dir=1 (UID=YUN-C)
+    assert uids == {"YUN-B", "YUN-C"}
+
+
+def test_load_route_info_circular_route_captures_first_occurrence(monkeypatch):
+    """For a circular route, only the first (seq=1) StopUID is collected, not seq=10."""
+    _patch_http(monkeypatch, _TOKEN, _CIRCULAR_STOP_OF_ROUTE)
+    provider = TdxBusProvider("id", "secret")
+    asyncio.run(provider.load_route_info("斗六火車站"))
+    uids = provider._kiosk_uids.get("斗六火車站")
+    assert "YUN-Y02-1" in uids, "seq=1 UID should be collected (boarding point)"
+    assert "YUN-Y02-10" not in uids, "seq=10 UID must NOT be collected (arrival point)"
+
+
+def test_fetch_eta_at_stop_uses_uid_filter_when_cached(monkeypatch):
+    """When boarding UIDs are cached, fetch_eta_at_stop queries by StopUID."""
+    get_params = []
+
+    class TrackingClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            get_params.append(kwargs.get("params", {}))
+            return _FakeResp(_ETA_ROWS)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: TrackingClient())
+    provider = TdxBusProvider("id", "secret")
+    # Pre-populate UIDs so the UID path is taken (skip cold-start fallback)
+    provider._kiosk_uids["斗六火車站"] = {"YUN-Y02-1", "YUN-Y02-5"}
+
+    asyncio.run(provider.fetch_eta_at_stop("斗六火車站"))
+
+    # Both City and InterCity requests should use StopUID in their filter
+    assert all("StopUID" in p.get("$filter", "") for p in get_params)
+    assert all("StopName" not in p.get("$filter", "") for p in get_params)
+
+
+def test_fetch_eta_at_stop_fallback_deduplicates_circular(monkeypatch):
+    """Cold-start fallback: name query + min-sequence dedup handles circular routes."""
+    circular_eta = [
+        {"SubRouteName": {"Zh_tw": "Y02"}, "Direction": 0, "StopStatus": 3, "EstimateTime": None, "StopSequence": 1},
+        {"SubRouteName": {"Zh_tw": "Y02"}, "Direction": 0, "StopStatus": 0, "EstimateTime": 27000, "StopSequence": 10},
+    ]
+
+    class FixedClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            return _FakeResp(circular_eta if "City" in url else [])
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: FixedClient())
+    provider = TdxBusProvider("id", "secret")
+    # No UIDs cached → fallback path
+    rows = asyncio.run(provider.fetch_eta_at_stop("斗六火車站"))
+
+    y02 = [r for r in rows if r["sub_route_name"] == "Y02"]
+    assert len(y02) == 1
+    assert y02[0]["stop_status"] == 3
+    assert y02[0]["stop_sequence"] == 1
 
 
 def test_load_route_info_caches_per_stop(monkeypatch):
@@ -87,12 +167,9 @@ def test_load_route_info_caches_per_stop(monkeypatch):
 
     monkeypatch.setattr(tdx_bus, "get_http_client", lambda: CountingClient())
     provider = TdxBusProvider("id", "secret")
-
     asyncio.run(provider.load_route_info("雲林科技大學"))
     asyncio.run(provider.load_route_info("雲林科技大學"))  # cache hit
-
-    # Two parallel calls (City + InterCity) on first fetch, none on second.
-    assert len(calls) == 2
+    assert len(calls) == 2  # City + InterCity on first fetch only
 
 
 def test_load_route_info_refetches_after_ttl(monkeypatch):
@@ -109,26 +186,21 @@ def test_load_route_info_refetches_after_ttl(monkeypatch):
     monkeypatch.setattr(tdx_bus, "get_http_client", lambda: CountingClient())
     fake_now = [1000.0]
     provider = TdxBusProvider("id", "secret", route_info_ttl_seconds=60.0, clock=lambda: fake_now[0])
-
     asyncio.run(provider.load_route_info("雲林科技大學"))
-    assert len(calls) == 2  # City + InterCity
-
-    fake_now[0] += 30  # within TTL
+    assert len(calls) == 2
+    fake_now[0] += 30
     asyncio.run(provider.load_route_info("雲林科技大學"))
-    assert len(calls) == 2  # still cached
-
-    fake_now[0] += 60  # past TTL
+    assert len(calls) == 2
+    fake_now[0] += 60
     asyncio.run(provider.load_route_info("雲林科技大學"))
-    assert len(calls) == 4  # re-fetched
+    assert len(calls) == 4
 
 
 def test_fetch_eta_at_stop_normalises_fields(monkeypatch):
     _patch_http(monkeypatch, _TOKEN, _ETA_ROWS)
     provider = TdxBusProvider("id", "secret")
     rows = asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))
-
-    # City and InterCity both return the same _ETA_ROWS (dir=0 + dir=1).
-    # After dedup by min sequence, 2 unique (sub_route_name, direction) rows remain.
+    # No UIDs cached → fallback; City + InterCity both return same 2 rows → dedup → 2 unique rows
     assert len(rows) == 2
     r = next(r for r in rows if r["direction"] == 0)
     assert r["sub_route_name"] == "201"
@@ -150,13 +222,11 @@ def test_fetch_route_estimate_caches_within_ttl(monkeypatch):
     monkeypatch.setattr(tdx_bus, "get_http_client", lambda: CountingClient())
     fake_now = [0.0]
     provider = TdxBusProvider("id", "secret", route_estimate_ttl_seconds=10.0, clock=lambda: fake_now[0])
-
     asyncio.run(provider.fetch_route_estimate("201"))
     fetch1 = len(calls)
-
-    fake_now[0] += 5  # within TTL
+    fake_now[0] += 5
     asyncio.run(provider.fetch_route_estimate("201"))
-    assert len(calls) == fetch1  # served from cache
+    assert len(calls) == fetch1
 
 
 def test_fetch_route_estimate_refetches_after_ttl(monkeypatch):
@@ -173,13 +243,11 @@ def test_fetch_route_estimate_refetches_after_ttl(monkeypatch):
     monkeypatch.setattr(tdx_bus, "get_http_client", lambda: CountingClient())
     fake_now = [0.0]
     provider = TdxBusProvider("id", "secret", route_estimate_ttl_seconds=10.0, clock=lambda: fake_now[0])
-
     asyncio.run(provider.fetch_route_estimate("201"))
     fetch1 = len(calls)
-
-    fake_now[0] += 11  # past TTL
+    fake_now[0] += 11
     asyncio.run(provider.fetch_route_estimate("201"))
-    assert len(calls) > fetch1  # re-fetched
+    assert len(calls) > fetch1
 
 
 def test_token_is_cached(monkeypatch):
@@ -195,11 +263,9 @@ def test_token_is_cached(monkeypatch):
 
     monkeypatch.setattr(tdx_bus, "get_http_client", lambda: CountingClient())
     provider = TdxBusProvider("id", "secret")
-
     asyncio.run(provider.fetch_eta_at_stop("A"))
     asyncio.run(provider.fetch_eta_at_stop("B"))
-
-    assert len(post_calls) == 1  # token reused
+    assert len(post_calls) == 1
 
 
 def test_fetch_routes_at_stop_deduplicates(monkeypatch):
@@ -207,12 +273,10 @@ def test_fetch_routes_at_stop_deduplicates(monkeypatch):
     provider = TdxBusProvider("id", "secret")
     routes = asyncio.run(provider.fetch_routes_at_stop("雲林科技大學"))
     names = [r["sub_route_name"] for r in routes]
-    # 201 appears in both City and InterCity response, and both directions — only once in output
     assert names.count("201") == 1
 
 
 def test_fetch_route_estimate_city_uses_single_endpoint(monkeypatch):
-    """City route (201) should only query the City endpoint — not InterCity."""
     calls = []
 
     class CountingClient:
@@ -226,13 +290,11 @@ def test_fetch_route_estimate_city_uses_single_endpoint(monkeypatch):
     monkeypatch.setattr(tdx_bus, "get_http_client", lambda: CountingClient())
     provider = TdxBusProvider("id", "secret")
     asyncio.run(provider.fetch_route_estimate("201"))
-
     assert len(calls) == 1
     assert "City" in calls[0]
 
 
 def test_fetch_route_estimate_intercity_uses_single_endpoint(monkeypatch):
-    """Intercity route (7123A) should only query the InterCity endpoint."""
     calls = []
 
     class CountingClient:
@@ -246,13 +308,11 @@ def test_fetch_route_estimate_intercity_uses_single_endpoint(monkeypatch):
     monkeypatch.setattr(tdx_bus, "get_http_client", lambda: CountingClient())
     provider = TdxBusProvider("id", "secret")
     asyncio.run(provider.fetch_route_estimate("7123A"))
-
     assert len(calls) == 1
     assert "InterCity" in calls[0]
 
 
 def test_fetch_eta_at_stop_degrades_when_one_endpoint_fails(monkeypatch):
-    """If one endpoint returns 429/error, results from the other are still used."""
     import httpx
 
     class PartialClient:
@@ -267,40 +327,10 @@ def test_fetch_eta_at_stop_degrades_when_one_endpoint_fails(monkeypatch):
     monkeypatch.setattr(tdx_bus, "get_http_client", lambda: PartialClient())
     provider = TdxBusProvider("id", "secret")
     rows = asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))
-    # City returned 2 rows, InterCity failed — should still get city rows
     assert len(rows) == 2
 
 
-def test_fetch_eta_at_stop_deduplicates_circular_route(monkeypatch):
-    """Circular routes return two rows for the kiosk stop; keep the lower-sequence one."""
-    circular_eta = [
-        # seq=1: departure point — 末班已過
-        {"SubRouteName": {"Zh_tw": "Y02"}, "Direction": 0, "StopStatus": 3, "EstimateTime": None, "StopSequence": 1},
-        # seq=10: arrival point — 7.5h away (irrelevant for boarding)
-        {"SubRouteName": {"Zh_tw": "Y02"}, "Direction": 0, "StopStatus": 0, "EstimateTime": 27000, "StopSequence": 10},
-    ]
-
-    class FixedClient:
-        async def post(self, url, **kwargs):
-            return _FakeResp(_TOKEN)
-
-        async def get(self, url, **kwargs):
-            if "City" in url:
-                return _FakeResp(circular_eta)
-            return _FakeResp([])  # InterCity: nothing
-
-    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: FixedClient())
-    provider = TdxBusProvider("id", "secret")
-    rows = asyncio.run(provider.fetch_eta_at_stop("斗六火車站"))
-
-    y02_rows = [r for r in rows if r["sub_route_name"] == "Y02"]
-    assert len(y02_rows) == 1, "should keep only one row per route+direction"
-    assert y02_rows[0]["stop_status"] == 3, "should keep seq=1 (末班已過), not seq=10 (7.5h)"
-    assert y02_rows[0]["stop_sequence"] == 1
-
-
 def test_fetch_eta_at_stop_raises_when_both_endpoints_fail(monkeypatch):
-    """If both endpoints fail, the exception propagates."""
     import httpx
 
     class FailingClient:
