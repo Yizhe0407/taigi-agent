@@ -20,34 +20,27 @@
 
 ## Now
 
-- [ ] 數位站務員腳本與狀態機：`tasks/station-attendant.md`
-- [ ] 首頁 stale / offline / error 狀態：`tasks/departure-dashboard.md`
-- [ ] Demo 主流程改寫：`tasks/demo-report.md`
-
-## Next
-
-- [ ] TTS 播報與 route card highlight 同步：`tasks/tts.md`
-- [ ] ASR 短指令 intent set 與 test set：`tasks/asr.md`
-- [ ] 使用者試用與量化評估設計：`tasks/evaluation.md`
+- [ ] Mic permission 拒絕引導：`tasks/asr.md`
+- [ ] Demo 腳本與報告素材：`tasks/demo-report.md`
+- [ ] Demo 前路線資料驗證：`tasks/route-planning.md`
+- [ ] 站務員視覺狀態機：`tasks/station-attendant.md`（blocked，等組員 3D 模型）
 
 ## Later
 
-- [ ] 路線規劃與 ebus 即時狀態整合評估：`tasks/route-planning.md`
-- [ ] QR share：`tasks/qr-share.md`
+- [ ] 使用者試用與量化評估：`tasks/evaluation.md`（報告素材）
 - [ ] POI 與在地知識：`tasks/backlog.md`
 
 ## Workstreams
 
 | 狀態 | Workstream | 任務 |
 |------|------------|------|
-| In progress | 離站決策首頁 | `tasks/departure-dashboard.md` |
-| Not started | 數位站務員 | `tasks/station-attendant.md` |
-| In progress | ASR 短指令 | `tasks/asr.md` |
-| In progress | TTS 台語播報 | `tasks/tts.md` |
-| In progress | 路線規劃 | `tasks/route-planning.md` |
-| Deferred | QR share | `tasks/qr-share.md` |
-| Not started | 評估與使用者試用 | `tasks/evaluation.md` |
+| Done | 離站決策首頁 | `tasks/departure-dashboard.md` |
+| Done | TTS 台語播報 | `tasks/tts.md` |
+| Done | ASR 短指令 | `tasks/asr.md`（剩 mic permission）|
+| Done | 路線規劃 | `tasks/route-planning.md`（剩資料驗證）|
+| Blocked | 數位站務員 | `tasks/station-attendant.md`（等組員模型）|
 | Not started | Demo 與報告 | `tasks/demo-report.md` |
+| Not started | 評估與使用者試用 | `tasks/evaluation.md` |
 | Backlog | 延伸項目 | `tasks/backlog.md` |
 
 ## 已完成基礎

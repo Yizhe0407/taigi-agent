@@ -21,8 +21,6 @@ In progress。核心互動流程已完成；視覺狀態機等待組員提供 3D
 
 ## 待辦
 
-- [ ] 首頁摘要開場白：「要去哪？」改為先播報當前離站狀態摘要再問
-- [ ] 播報同步 highlight：TTS 唸到某路線時，對應 route card 高亮
 - [ ] **站務員視覺狀態機（idle/speaking/listening/thinking/error）**：blocked，等待組員提供 3D 模型與狀態切換 API
 
 ## 驗收

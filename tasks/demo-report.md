@@ -6,23 +6,21 @@
 
 ## 狀態
 
-Not started。需要依新版主軸重寫 demo flow 與報告素材。
+Not started。功能已完成，需要腳本與報告素材。
 
-## Demo 主流程
+## Demo 主流程（功能已完成）
 
-- [ ] 站牌狀態首頁：目前可搭、未發車、末班已過
-- [ ] 數位站務員播報首頁摘要
-- [ ] 單一路線查詢與播報
-- [ ] 資料錯誤或 ASR 失敗 fallback
-- [ ] 路線規劃作為 secondary 展示，不喧賓奪主
+- [x] 站牌狀態首頁：目前可搭、未發車、末班已過
+- [x] 單一路線查詢與台語播報
+- [x] ASR 語音輸入
+- [x] 資料錯誤 fallback（background error banner）
+- [x] 路線規劃作為 secondary 展示
 
-## 交付物
+## 待辦
 
 - [ ] Demo 腳本 3 分鐘版
 - [ ] Demo 腳本 5 分鐘版
-- [ ] Demo 腳本 10 分鐘版
 - [ ] 架構圖
-- [ ] 時序圖
 - [ ] 書面報告
 - [ ] Demo 預演至少 3 次
 
@@ -30,4 +28,3 @@ Not started。需要依新版主軸重寫 demo flow 與報告素材。
 
 - `docs/product-positioning.md`
 - `docs/architecture.md`
-- `tasks/evaluation.md`
