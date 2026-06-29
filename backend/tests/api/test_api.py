@@ -54,6 +54,7 @@ def _departure_snapshot() -> StopDepartureSnapshot:
             scheduled_time=None,
             sort_priority=10,
             sort_minutes=15,
+            car_id=None,
         ),
         DepartureRouteStatus(
             id="101-1",
@@ -69,6 +70,7 @@ def _departure_snapshot() -> StopDepartureSnapshot:
             scheduled_time=None,
             sort_priority=300,
             sort_minutes=9999,
+            car_id=None,
         ),
     )
     return StopDepartureSnapshot(
@@ -202,6 +204,7 @@ def test_get_departures_here_returns_structured_snapshot(monkeypatch):
                 "decisionText": "可以等",
                 "minutes": 8,
                 "scheduledTime": None,
+                "carId": None,
             },
             {
                 "id": "101-1",
@@ -215,6 +218,7 @@ def test_get_departures_here_returns_structured_snapshot(monkeypatch):
                 "decisionText": "末班已過",
                 "minutes": None,
                 "scheduledTime": None,
+                "carId": None,
             },
         ],
     }

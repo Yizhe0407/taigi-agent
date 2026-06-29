@@ -43,7 +43,7 @@ export function heroStatusState(
   route: DepartureRouteStatus | null,
 ): DepartureDisplayState {
   if (!route) return "pending"
-  if (route.decision === "not_departed" || route.decision === "scheduled") {
+  if (route.decision === "not_departed") {
     return "pending"
   }
   if (route.decision === "last_departed" || route.decision === "unknown") {

@@ -277,7 +277,7 @@ def test_router_canned_response_for_remote_destination():
 def test_router_canned_response_for_timetable_query():
     session = make_session([])
     reply = asyncio.run(session.respond("201路完整時刻表"))
-    assert reply == "時刻表查不了，要查到站時間嗎？"
+    assert reply == "時刻表查不了，只能查下一班到站時間喔。"
     assert session.client.chat.completions.calls == []
 
 

@@ -127,7 +127,7 @@ def test_remote_destination_does_not_fire_for_local_destination(router: IntentRo
 def test_timetable_fires_for_schedule_queries(router: IntentRouter, empty_state: ConvState, user_input: str):
     decision = router.classify(user_input, empty_state)
     assert decision.intent == Intent.TIMETABLE_UNSUPPORTED
-    assert decision.canned_response == "時刻表查不了，要查到站時間嗎？"
+    assert decision.canned_response == "時刻表查不了，只能查下一班到站時間喔。"
 
 
 @pytest.mark.parametrize(
