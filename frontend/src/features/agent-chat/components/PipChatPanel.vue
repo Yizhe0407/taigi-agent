@@ -1,9 +1,10 @@
 <script setup lang="ts">
+import { ref, watch, nextTick, onMounted } from "vue"
 import { Send, X } from "@lucide/vue"
 
 import type { PipChatMessage } from "../types"
 
-defineProps<{
+const props = defineProps<{
   messages: PipChatMessage[]
   isSending: boolean
   heightPx: number
@@ -16,6 +17,20 @@ defineEmits<{
   send: []
   keydown: [event: KeyboardEvent]
 }>()
+
+const inputRef = ref<HTMLInputElement | null>(null)
+
+watch(() => props.isSending, (isSending) => {
+  if (!isSending) {
+    nextTick(() => {
+      inputRef.value?.focus()
+    })
+  }
+})
+
+onMounted(() => {
+  inputRef.value?.focus()
+})
 </script>
 
 <template>
@@ -55,9 +70,10 @@ defineEmits<{
     </div>
     <div class="py-2.5 px-3 border-t-2 border-kiosk-line flex gap-2 items-center shrink-0">
       <input
+        ref="inputRef"
         v-model="userInput"
         type="text"
-        class="flex-1 h-10 border-2 border-kiosk-line rounded-full px-3.5 text-sm font-[inherit] bg-kiosk-soft outline-none focus:border-kiosk-accent"
+        class="flex-1 min-w-0 h-10 border-2 border-kiosk-line rounded-full px-3.5 text-sm font-[inherit] bg-kiosk-soft outline-none focus:border-kiosk-accent"
         placeholder="輸入問題…"
         :disabled="isSending"
         @keydown="$emit('keydown', $event)"

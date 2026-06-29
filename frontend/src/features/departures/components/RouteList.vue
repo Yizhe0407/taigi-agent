@@ -39,7 +39,7 @@ function bgClass(routeCode: string): string {
     <button
       v-for="route in routes"
       :key="route.id"
-      class="grid shrink-0 grid-cols-[76px_minmax(0,1fr)_minmax(10rem,max-content)_24px] items-center gap-3.5 px-3.5 py-3 rounded-[20px] min-h-[72px] cursor-pointer text-left font-[inherit] text-kiosk-ink w-full border-0 bg-kiosk-accent-soft max-[1180px]:grid-cols-[68px_minmax(0,1fr)_22px] max-[1180px]:gap-y-1.5 max-[1180px]:min-h-[88px] max-[420px]:grid-cols-[58px_minmax(0,1fr)_18px] max-[420px]:gap-x-2.5 max-[420px]:p-3 max-[340px]:grid-cols-[52px_minmax(0,1fr)]"
+      class="grid shrink-0 grid-cols-[76px_minmax(0,1fr)_minmax(10rem,max-content)_24px] items-center content-center gap-3.5 px-3.5 py-3 rounded-[20px] min-h-[72px] cursor-pointer text-left font-[inherit] text-kiosk-ink w-full border-0 bg-kiosk-accent-soft max-[1180px]:grid-cols-[68px_minmax(0,1fr)_22px] max-[1180px]:gap-y-1.5 max-[1180px]:min-h-[88px] max-[420px]:grid-cols-[58px_minmax(0,1fr)_18px] max-[420px]:gap-x-2.5 max-[420px]:p-3 max-[340px]:grid-cols-[52px_minmax(0,1fr)]"
       @click="$emit('select', route)"
     >
       <div
@@ -47,9 +47,9 @@ function bgClass(routeCode: string): string {
         :class="bgClass(route.route)"
       >{{ route.route }}</div>
 
-      <div class="col-start-2 row-start-1 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2">
-        <div class="justify-self-end whitespace-nowrap text-base text-kiosk-muted font-medium">往</div>
-        <div class="overflow-hidden [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [overflow-wrap:anywhere] text-[22px] font-bold leading-[1.15] text-kiosk-ink max-[420px]:text-lg">{{ route.direction.replace(/^往/, '') }}</div>
+      <div class="col-start-2 row-start-1 flex items-baseline gap-2 min-w-0">
+        <span class="whitespace-nowrap text-base text-kiosk-muted font-medium shrink-0">往</span>
+        <span class="overflow-hidden [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [overflow-wrap:anywhere] text-[22px] font-bold leading-[1.15] text-kiosk-ink max-[420px]:text-lg">{{ route.direction.replace(/^往/, '') }}</span>
       </div>
 
       <div class="col-start-3 row-start-1 justify-self-center flex flex-row items-center gap-2 max-[1180px]:col-start-2 max-[1180px]:row-start-2 max-[1180px]:justify-self-start max-[1180px]:self-start max-[340px]:col-start-1 max-[340px]:col-span-2 max-[340px]:justify-self-center">
