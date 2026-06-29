@@ -130,6 +130,7 @@ const routeTextClass = computed(() => {
       :bg-class="routeBgClass"
       :border-class="routeBorderClass"
       :text-class="routeTextClass"
+      :car-id="route.carId"
     />
   </div>
 </template>

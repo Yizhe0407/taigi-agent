@@ -69,6 +69,7 @@ class DepartureRouteStatusResponse(DepartureResponseModel):
     decision_text: str = Field(alias="decisionText")
     minutes: int | None
     scheduled_time: str | None = Field(alias="scheduledTime")
+    car_id: str | None = Field(alias="carId")
 
 
 class StopDepartureSnapshotResponse(DepartureResponseModel):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TypeVar
 
 from providers.bus import BusProvider
@@ -15,9 +15,9 @@ from services.departures.normalize import (
     _lookup_route,
     _name_matches,
     _stops_by_direction_with_seq,
-    iter_scoped_stop_etas,
 )
 from services.departures.provider import get_provider
+from services.departures.snapshot import DepartureSnapshotUnavailable, build_departure_snapshot
 
 _T = TypeVar("_T")
 _QUERY_FAILED = "查詢失敗，請稍後再試。"
@@ -42,6 +42,13 @@ def _mark_incoming(status_text: str) -> str:
     """Relative-time ETA (ends with 後) → append 來車 so the reader knows this is
     the bus arriving at the kiosk, not the travel time to the destination."""
     return f"{status_text}來車" if status_text.endswith("後") else status_text
+
+
+def _with_schedule(status_text: str, scheduled_time: str | None) -> str:
+    """Append next scheduled arrival time when bus hasn't departed yet."""
+    if scheduled_time:
+        return f"{status_text}（預計 {scheduled_time}）"
+    return status_text
 
 
 async def _resolve_route_estimate(
@@ -92,7 +99,8 @@ async def render_arrivals(
     results = []
     for stop in matches:
         stop_direction = stop.get("direction", 0)
-        status_text = _mark_incoming(_classify_stop(stop, now).status_text)
+        c = _classify_stop(stop, now)
+        status_text = _with_schedule(_mark_incoming(c.status_text), c.scheduled_time)
         # Single-direction query: direction is already implied by kiosk config;
         # label only adds noise for TTS and short-response constraints.
         if go_back is None:
@@ -109,35 +117,19 @@ async def render_stop_arrival_statuses(
     go_back: int | None = None,
 ) -> str:
     """Render every route currently serving `stop_name` grouped by section."""
-    provider = get_provider()
     try:
-        eta_data, route_info = await asyncio.gather(
-            provider.fetch_eta_at_stop(stop_name),
-            provider.load_route_info(stop_name),
-        )
-    except Exception:
+        snapshot = await build_departure_snapshot(stop_name, go_back)
+    except DepartureSnapshotUnavailable:
         return _QUERY_FAILED
 
     sections: dict[str, list[str]] = {label: [] for label in _SECTION_GROUP_LABEL.values()}
-    seen: set[str] = set()
-    now = datetime.now(TAIPEI_TZ)
-
-    for stop, route, _route_id, stop_direction in iter_scoped_stop_etas(eta_data, route_info, stop_name, go_back):
-        c = _classify_stop(stop, now)
-        # UNKNOWN rows are skipped — the agent's kiosk-style output only
-        # surfaces the three actionable groups (matches the legacy renderer).
-        group = _SECTION_GROUP_LABEL.get(c.section)
+    for r in snapshot.routes:
+        group = _SECTION_GROUP_LABEL.get(r.section)
         if group is None:
             continue
+        sections[group].append(f"{r.route} {r.direction}：{_with_schedule(r.status_text, r.scheduled_time)}")
 
-        label = _direction_label_from_info(route_info, route, stop_direction)
-        line = f"{route} {label}：{c.status_text}"
-        if line in seen:
-            continue
-        seen.add(line)
-        sections[group].append(line)
-
-    if not seen:
+    if not any(sections.values()):
         return f"{stop_name} 目前無到站狀態資料"
 
     results = [f"{stop_name} 目前到站狀態："]
@@ -202,6 +194,28 @@ async def render_stop_on_route(
     return f"沒有，{route} 不停{stop_name}。"
 
 
+def _dest_arrival_text(
+    dest_rows: list[dict],
+    kiosk_row: dict,
+    downstream: list[str],
+    destination: str,
+    now: datetime,
+) -> str:
+    """Build ', 預計 HH:MM 抵達X（車程約N分鐘）' suffix, or ', 共N站' fallback."""
+    if dest_rows:
+        dest_est = dest_rows[0].get("estimate_seconds")
+        if dest_est is not None:
+            dest_arrival = now + timedelta(seconds=dest_est)
+            kiosk_est = kiosk_row.get("estimate_seconds")
+            travel_str = ""
+            if kiosk_est is not None and dest_est > kiosk_est:
+                travel_min = round((dest_est - kiosk_est) / 60)
+                travel_str = f"，車程約 {travel_min} 分鐘"
+            return f"，預計 {dest_arrival.strftime('%H:%M')} 抵達{destination}{travel_str}"
+
+    return ""
+
+
 async def _check_route_arrivals(
     route_name: str,
     route_id: str,
@@ -211,10 +225,10 @@ async def _check_route_arrivals(
     destination: str,
     route_info: dict,
     now: datetime,
-) -> tuple[list[tuple[str, int]], set[str]]:
+) -> tuple[list[tuple[str, int, DepartureSection]], set[str]]:
     """Fetch estimate for one route; return (hits, all_downstream_stop_names).
 
-    hits: list of (display_text, sort_minutes) for directions that serve destination.
+    hits: list of (display_text, sort_minutes, section).
     all_downstream: union of all downstream stop names seen (used for fuzzy remap).
     """
     try:
@@ -222,7 +236,7 @@ async def _check_route_arrivals(
     except Exception:
         return [], set()
 
-    hits: list[tuple[str, int]] = []
+    hits: list[tuple[str, int, DepartureSection]] = []
     all_downstream: set[str] = set()
     for direction, stops in _stops_by_direction_with_seq(data).items():
         if go_back is not None and direction != go_back:
@@ -241,10 +255,13 @@ async def _check_route_arrivals(
         kiosk_rows = [row for row in data if kiosk_stop in row.get("stop_name", "") and row.get("direction", 0) == direction]
         if kiosk_rows:
             c = _classify_stop(kiosk_rows[0], now)
-            status_text = _mark_incoming(c.status_text)
-            hits.append((f"{route_name} {dir_label}：{status_text}", c.sort_minutes))
+            status_text = _with_schedule(_mark_incoming(c.status_text), c.scheduled_time)
+
+            dest_rows = [row for row in data if _name_matches(destination, row.get("stop_name", "")) and row.get("direction") == direction]
+            dest_suffix = _dest_arrival_text(dest_rows, kiosk_rows[0], downstream, destination, now)
+            hits.append((f"{route_name} {dir_label}：{status_text}{dest_suffix}", c.sort_minutes, c.section))
         else:
-            hits.append((f"{route_name} {dir_label}：無即時資料", 9999))
+            hits.append((f"{route_name} {dir_label}：無即時資料", 9999, DepartureSection.UNKNOWN))
 
     return hits, all_downstream
 
@@ -312,10 +329,12 @@ async def render_arrivals_to_destination(
         return f"本站沒有直達{destination}的路線"
 
     raw.sort(key=lambda x: x[1])
-    real_time = [(d, m) for d, m in raw if m < 9999]
-    if real_time:
-        return "\n".join(d for d, _ in real_time)
-    return "\n".join(d for d, _ in raw)
+    # Return only the highest-priority group so LLM sees one consistent situation.
+    for section in (DepartureSection.AVAILABLE, DepartureSection.NOT_DEPARTED, DepartureSection.LAST_DEPARTED):
+        group = [d for d, _, s in raw if s == section]
+        if group:
+            return "\n".join(group)
+    return "\n".join(d for d, _, __ in raw)
 
 
 async def render_routes_at_stop(stop_name: str) -> str:

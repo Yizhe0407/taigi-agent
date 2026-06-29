@@ -67,7 +67,7 @@ _TOKEN_BUFFER_SECONDS = 60.0
 
 _DEFAULT_ROUTE_INFO_TTL = 600.0
 _DEFAULT_ROUTE_ESTIMATE_TTL = 30.0  # TDX updates ~30 s; 10 s caused 429 rate-limit hits
-_DEFAULT_ETA_TTL = 30.0  # cache fetch_eta_at_stop; without this every frontend poll hits TDX
+_DEFAULT_ETA_TTL = 60.0  # must exceed wait_for(12s) + warmup_sleep(25s) = 37s to break 429 cascade
 _MAX_RETRIES = 1  # retries on HTTP 429; Retry-After is 20-40 s so 3 retries = 60-120 s blocking
 
 _INTERCITY_RE = re.compile(r"^7\d{3}")
@@ -125,6 +125,11 @@ class TdxBusProvider(BusProvider):
         self._route_estimate_cache: dict[str, tuple[float, list[dict]]] = {}
         # stop_name → (fetched_at, rows)
         self._eta_cache: dict[str, tuple[float, list[dict]]] = {}
+        # per-key locks prevent concurrent cache-miss storms (thundering herd)
+        self._eta_locks: dict[str, asyncio.Lock] = {}
+        # intercity-only ETA cache (used by HybridBusProvider to skip city endpoint)
+        self._intercity_eta_cache: dict[str, tuple[float, list[dict]]] = {}
+        self._intercity_eta_locks: dict[str, asyncio.Lock] = {}
 
     # ── Auth ──────────────────────────────────────────────────────────────────
 
@@ -217,18 +222,25 @@ class TdxBusProvider(BusProvider):
         if hit:
             return cached[1]
 
-        uids = self._kiosk_uids.get(stop_name)
-        try:
-            rows = await (self._fetch_eta_by_uids(uids) if uids else self._fetch_eta_by_name(stop_name))
-        except Exception:
-            if cached is not None:
-                # Serve stale data and refresh timestamp to prevent immediate retry storm.
-                _log.warning("TDX ETA fetch failed; serving stale cache for %s", stop_name)
-                self._eta_cache[stop_name] = (self._clock(), cached[1])
+        lock = self._eta_locks.setdefault(stop_name, asyncio.Lock())
+        async with lock:
+            # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
+            cached = self._eta_cache.get(stop_name)
+            if cached is not None and not self._expired(cached[0], self._eta_ttl):
                 return cached[1]
-            raise
-        self._eta_cache[stop_name] = (self._clock(), rows)
-        return rows
+
+            uids = self._kiosk_uids.get(stop_name)
+            try:
+                fetch = self._fetch_eta_by_uids(uids) if uids else self._fetch_eta_by_name(stop_name)
+                rows = await asyncio.wait_for(fetch, timeout=12.0)
+            except Exception:
+                if cached is not None:
+                    _log.warning("TDX ETA fetch failed; serving stale cache for %s", stop_name)
+                    self._eta_cache[stop_name] = (self._clock(), cached[1])
+                    return cached[1]
+                raise
+            self._eta_cache[stop_name] = (self._clock(), rows)
+            return rows
 
     async def fetch_route_estimate(self, sub_route_name: str) -> list[dict]:
         cached = self._route_estimate_cache.get(sub_route_name)
@@ -274,6 +286,67 @@ class TdxBusProvider(BusProvider):
             self._kiosk_uids[stop_name] = boarding_uids
         return info
 
+    async def load_route_terminals(self, route_name: str) -> dict[str, str]:
+        """Return {go_dest, back_dest} from TDX StopOfRoute filtered by route name.
+
+        Used to supplement ebus data when ebus encodes rare CJK characters as '?'.
+        """
+        filter_expr = f"SubRouteName/Zh_tw eq '{route_name}'"
+        results = await asyncio.gather(
+            self._get(f"{_BASE}/StopOfRoute/City/{_CITY}", {"$filter": filter_expr}),
+            self._get(f"{_BASE}/StopOfRoute/InterCity", {"$filter": filter_expr}),
+            return_exceptions=True,
+        )
+        records = _safe_list(results[0]) + _safe_list(results[1])
+        terminals: dict[int, str] = {}
+        for rec in records:
+            direction = rec.get("Direction", 0)
+            stops = rec.get("Stops") or []
+            if not stops:
+                continue
+            ordered = sorted(stops, key=lambda s: s.get("StopSequence", 0))
+            terminal = _zh(ordered[-1].get("StopName"))
+            if terminal and "?" not in terminal:
+                terminals[direction] = terminal
+        return {
+            "go_dest": terminals.get(0, ""),
+            "back_dest": terminals.get(1, ""),
+        }
+
+    async def fetch_intercity_eta_at_stop(self, stop_name: str) -> list[dict]:
+        """ETA rows for intercity (7xxx) routes only — queries InterCity endpoint only.
+
+        Used by HybridBusProvider so city-route ETA can be served by ebus while
+        this method handles the smaller intercity subset, halving TDX call volume.
+        Same lock / stale-on-error semantics as fetch_eta_at_stop.
+        """
+        cached = self._intercity_eta_cache.get(stop_name)
+        hit = cached is not None and not self._expired(cached[0], self._eta_ttl)
+        if hit:
+            return cached[1]
+
+        lock = self._intercity_eta_locks.setdefault(stop_name, asyncio.Lock())
+        async with lock:
+            cached = self._intercity_eta_cache.get(stop_name)
+            if cached is not None and not self._expired(cached[0], self._eta_ttl):
+                return cached[1]
+
+            uids = self._kiosk_uids.get(stop_name)
+            try:
+                fetch = self._fetch_intercity_eta_by_uids(uids) if uids else self._fetch_intercity_eta_by_name(stop_name)
+                rows = await asyncio.wait_for(fetch, timeout=12.0)
+            except Exception:
+                if cached is not None:
+                    _log.warning(
+                        "TDX intercity ETA fetch failed; serving stale cache for %s",
+                        stop_name,
+                    )
+                    self._intercity_eta_cache[stop_name] = (self._clock(), cached[1])
+                    return cached[1]
+                raise
+            self._intercity_eta_cache[stop_name] = (self._clock(), rows)
+            return rows
+
     async def aclose(self) -> None:
         pass  # shared http client; lifecycle managed by api lifespan
 
@@ -311,6 +384,24 @@ class TdxBusProvider(BusProvider):
         if isinstance(results[0], BaseException) and isinstance(results[1], BaseException):
             raise results[0]
         all_rows = [self._norm_eta(r) for r in city_rows + intercity_rows]
+        return self._dedup_by_min_sequence(all_rows)
+
+    async def _fetch_intercity_eta_by_uids(self, uids: set[str]) -> list[dict]:
+        """Query InterCity ETA by StopUID — intercity routes only."""
+        uid_filter = " or ".join(f"StopUID eq '{uid}'" for uid in uids)
+        raw = await self._get(
+            f"{_BASE}/EstimatedTimeOfArrival/InterCity",
+            {"$filter": uid_filter},
+        )
+        return [self._norm_eta(r) for r in raw]
+
+    async def _fetch_intercity_eta_by_name(self, stop_name: str) -> list[dict]:
+        """Fallback: InterCity ETA by stop name with min-sequence dedup."""
+        raw = await self._get(
+            f"{_BASE}/EstimatedTimeOfArrival/InterCity",
+            {"$filter": f"StopName/Zh_tw eq '{stop_name}'"},
+        )
+        all_rows = [self._norm_eta(r) for r in raw]
         return self._dedup_by_min_sequence(all_rows)
 
     # ── Internal ──────────────────────────────────────────────────────────────

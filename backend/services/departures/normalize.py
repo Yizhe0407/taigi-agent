@@ -170,8 +170,10 @@ def _is_terminal_direction(
     info = route_info.get(route, {})
     go_dest = info.get("go_dest", "")
     back_dest = info.get("back_dest", "")
-    is_circular = _name_matches(stop_name, go_dest) and _name_matches(stop_name, back_dest)
+    # Require both termini non-empty: empty string is a substring of everything,
+    # so "" would cause a false-positive circular match.
+    is_circular = go_dest and back_dest and _name_matches(stop_name, go_dest) and _name_matches(stop_name, back_dest)
     if is_circular:
         return False
     terminus = go_dest if direction == 0 else back_dest
-    return _name_matches(stop_name, terminus)
+    return bool(terminus) and _name_matches(stop_name, terminus)

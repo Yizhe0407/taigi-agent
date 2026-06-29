@@ -13,7 +13,7 @@ In progress。核心互動流程已完成；視覺狀態機等待組員提供 3D
 - [x] PIP 虛擬站務員子母畫面：4:5 肖像、4 角位置、3 尺寸、移動模式、對話面板
 - [x] PIP 對話接 `/api/chat` 後端
 - [x] Hero 操作按鈕：「需要幫忙嗎？讓小芸幫您」
-- [x] 開啟 PIP 時自動問候「要去哪？」並 TTS 播放
+- [x] 開啟 PIP 時自動問候「請問您欲前往哪裡？」並 TTS 播放
 - [x] `ttsState` / `mouthAmplitude` 說話狀態已從 `useTts` 取出
 - [x] `isSending` 追蹤 thinking 狀態
 - [x] TTS 播放 + 字幕 typewriter 動畫同步（`speakWithAnimation`）

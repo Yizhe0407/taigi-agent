@@ -12,12 +12,16 @@ _provider: BusProvider | None = None
 
 
 def _make_default_provider() -> BusProvider:
+    from providers.ebus import EbusBusProvider
+    from providers.hybrid import HybridBusProvider
     from providers.tdx_bus import TdxBusProvider
 
-    return TdxBusProvider(
+    tdx = TdxBusProvider(
         client_id=os.environ.get("TDX_CLIENT_ID", ""),
         client_secret=os.environ.get("TDX_CLIENT_SECRET", ""),
     )
+    ebus = EbusBusProvider()
+    return HybridBusProvider(ebus=ebus, tdx=tdx)
 
 
 def get_provider() -> BusProvider:

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from dotenv import load_dotenv
 
@@ -18,7 +20,24 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor  # noqa:
 from config import parse_cors_origins  # noqa: E402
 from providers.http import aclose_http_client  # noqa: E402
 from services.departures import get_provider  # noqa: E402
+from services.kiosk_config import kiosk_stop_name  # noqa: E402
 from telemetry import configure_telemetry  # noqa: E402
+
+_log = logging.getLogger(__name__)
+_ETA_WARMUP_INTERVAL = 25.0  # slightly under ETA cache TTL (30 s)
+
+
+async def _eta_warmup_loop(stop_name: str) -> None:
+    """Keep fetch_eta_at_stop cache warm so user requests never trigger TDX calls."""
+    provider = get_provider()
+    while True:
+        try:
+            await provider.load_route_info(stop_name)  # warms _kiosk_uids (TTL 600 s)
+            await provider.fetch_eta_at_stop(stop_name)
+        except Exception as exc:
+            _log.warning("ETA cache warmup failed for %s: %s", stop_name, exc)
+        await asyncio.sleep(_ETA_WARMUP_INTERVAL)
+
 
 from .admin import router as admin_router  # noqa: E402
 from .asr import router as asr_router  # noqa: E402
@@ -31,11 +50,30 @@ from .tts import router as tts_router  # noqa: E402
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    yield
+    stop_name = kiosk_stop_name()
     provider = get_provider()
-    if hasattr(provider, "aclose"):
-        await provider.aclose()
-    await aclose_http_client()
+    # Pre-fetch ebus route map + discover routes at this stop so warmup loop is cold-cache-free.
+    if hasattr(provider, "warmup"):
+        try:
+            await provider.warmup(stop_name)
+        except Exception as exc:
+            _log.warning("provider warmup failed: %s", exc)
+    elif hasattr(provider, "warmup_route_map"):
+        try:
+            await provider.warmup_route_map()
+        except Exception as exc:
+            _log.warning("ebus route map warmup failed: %s", exc)
+    warmup_task = asyncio.create_task(_eta_warmup_loop(stop_name))
+    try:
+        yield
+    finally:
+        warmup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await warmup_task
+        provider = get_provider()
+        if hasattr(provider, "aclose"):
+            await provider.aclose()
+        await aclose_http_client()
 
 
 app = FastAPI(title="Taigi Bus Agent API", lifespan=_lifespan)

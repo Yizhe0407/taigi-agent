@@ -51,6 +51,7 @@ class DepartureRouteStatus:
     scheduled_time: str | None
     sort_priority: int
     sort_minutes: int  # minutes-from-now for sorting; not exposed in API response
+    car_id: str | None
 
 
 @dataclass(frozen=True)
@@ -107,7 +108,7 @@ def _summary(routes: tuple[DepartureRouteStatus, ...]) -> DepartureSummary:
 
 
 def _sort_key(route: DepartureRouteStatus) -> tuple[int, int, str, int]:
-    return (route.sort_priority, route.sort_minutes, route.route, route.go_back)
+    return (route.sort_minutes, route.sort_priority, route.route, route.go_back)
 
 
 def _stop_detail_from_row(stop: dict, kiosk_stop_name: str, now: datetime) -> RouteStopDetail | None:
@@ -172,6 +173,7 @@ async def build_departure_snapshot(
                 scheduled_time=c.scheduled_time,
                 sort_priority=c.sort_priority,
                 sort_minutes=c.sort_minutes,
+                car_id=stop.get("car_id") or None,
             )
         )
 

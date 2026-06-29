@@ -31,6 +31,7 @@ export type DepartureRouteStatus = {
   decisionText: string
   minutes: number | null
   scheduledTime: string | null
+  carId: string | null
 }
 
 export type StopDepartureSnapshot = {

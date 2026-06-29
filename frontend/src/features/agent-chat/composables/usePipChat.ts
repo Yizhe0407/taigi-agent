@@ -64,7 +64,7 @@ export function usePipChat(isOpen: Readonly<Ref<boolean>>) {
     try {
       sessionId.value = await createChatSession()
       if (!messages.value.length) {
-        const welcomeText = "要去哪？"
+        const welcomeText = "請問您欲前往哪裡？"
         messages.value = [{ id: "welcome", role: "assistant", text: welcomeText }]
         speakWithAnimation(welcomeText)
       }
@@ -166,7 +166,7 @@ export function usePipChat(isOpen: Readonly<Ref<boolean>>) {
     const lastMessage = [...messages.value]
       .reverse()
       .find((message) => message.role === "assistant")
-    return lastMessage?.text ?? "要去哪？"
+    return lastMessage?.text ?? "請問您欲前往哪裡？"
   })
 
   watch(

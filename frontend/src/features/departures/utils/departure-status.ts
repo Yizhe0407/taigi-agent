@@ -18,9 +18,25 @@ export function formatMinutes(minutes: number): string {
   return m === 0 ? `${h} 小時` : `${h} 小時 ${m} 分`
 }
 
+/** Returns minutes until HH:MM time string, or null if unparseable/past. */
+export function minutesUntilScheduledTime(scheduledTime: string): number | null {
+  const match = scheduledTime.match(/^(\d{2}):(\d{2})$/)
+  if (!match) return null
+  const now = new Date()
+  const target = new Date(now)
+  target.setHours(+match[1], +match[2], 0, 0)
+  const diff = Math.round((target.getTime() - now.getTime()) / 60000)
+  return diff >= 0 ? diff : null
+}
+
 export function departureMinutesLabel(route: DepartureRouteStatus): string {
-  if (route.minutes === null) return route.statusText
-  return formatMinutes(route.minutes)
+  if (route.minutes !== null) return formatMinutes(route.minutes)
+  if (route.scheduledTime) {
+    const mins = minutesUntilScheduledTime(route.scheduledTime)
+    if (mins !== null && mins < 60) return formatMinutes(mins)
+    return route.scheduledTime
+  }
+  return route.statusText
 }
 
 export function heroStatusState(

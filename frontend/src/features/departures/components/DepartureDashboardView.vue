@@ -21,6 +21,7 @@ const {
   routes,
   nextBest,
   isAllClosed,
+  secondsUntilRefresh,
 } = useDepartureSnapshot()
 const { now } = useNow()
 const nowText = computed(() => formatTaipeiHourMinute(now.value))
@@ -91,6 +92,7 @@ const lastUpdatedText = computed(() => {
           :routes="routes"
           :is-loading="isLoading"
           :route-colors="routeColorAssignments"
+          :seconds-until-refresh="secondsUntilRefresh"
           @select="selectedRoute = $event"
         />
       </div>

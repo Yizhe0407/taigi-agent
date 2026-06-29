@@ -49,7 +49,7 @@
 - 前端基礎：Vue、Tailwind、shadcn-vue、Lucide、Kiosk shell、PIP overlay、route planner full-page flow。
 - 路線規劃：OTP graph、TDX stop index、coordinate planner、MapCN route view model、`POST /api/route-plans`；無班次錯誤顯示、地圖自動定位、站牌方向標示。
 - 後台管理：`/admin` 站牌切換 UI；runtime `KioskConfig` singleton；`/api/admin/kiosk` GET/PUT、`/api/admin/stops`；不需重啟即可切換站牌與方向。
-- **公車資料來源切換至 TDX**：`providers/yunlin_ebus.py` 整個替換為 `providers/tdx_bus.py`；同時查 City/YunlinCounty + InterCity 兩個 endpoint；TDX Direction 0/1 取代舊 ebus GoBack 1/2；`route_id` 全層改為 SubRouteName string；`_classify_stop` 改讀 `stop_status`/`estimate_seconds`，移除 `ComeTime` scheduled 邏輯。
+- **公車資料來源雙 provider 架構**：`providers/hybrid.py` 為唯一線上 `BusProvider` runtime；路線目錄（`load_route_info`、`fetch_routes_at_stop`）由 TDX 提供，ETA（`fetch_eta_at_stop`、`fetch_route_estimate`）由 ebus.yunlin.gov.tw 主力，ebus 空值時 fallback 至 TDX intercity。TDX Direction 0/1，`route_id` 全層為 SubRouteName string，`_classify_stop` 讀 `stop_status`/`estimate_seconds`。
 - 語音基礎：ASR proxy、前端錄音、TTS proxy、台語文字處理、分段播放；ASR 錯誤訊息不外洩原始 Python exception。
 - 方向過濾 auto-detect：`_is_terminal_direction()` 自動過濾終點到站方向；admin 設定「去回程都有」時啟動，設定單方向時直接照設定過濾；循環路線不過濾。
 

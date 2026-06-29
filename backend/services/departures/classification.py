@@ -30,7 +30,7 @@ class StopClassification:
     status_text: str
     decision_text: str
     minutes: int | None
-    scheduled_time: str | None  # always None for TDX; kept for API schema compat
+    scheduled_time: str | None  # HH:MM of next scheduled departure (ebus ComeTime); None for TDX
     sort_priority: int
     sort_minutes: int
 
@@ -73,17 +73,41 @@ def _classify_stop(stop: dict, now: datetime) -> StopClassification:
             sort_minutes=9999,
         )
 
-    if stop_status in (1, 4):
-        text = "今日未營運" if stop_status == 4 else "未發車"
+    if stop_status == 4:
+        return StopClassification(
+            section=DepartureSection.UNKNOWN,
+            decision=DepartureDecision.UNKNOWN,
+            status_text="今日未營運",
+            decision_text="今日未營運",
+            minutes=None,
+            scheduled_time=None,
+            sort_priority=400,
+            sort_minutes=9999,
+        )
+
+    if stop_status == 1:
+        scheduled_time = stop.get("scheduled_time")
+        sched_minutes: int | None = None
+        sort_mins = 9999
+        if scheduled_time:
+            try:
+                h, m = map(int, scheduled_time.split(":"))
+                target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+                diff = round((target - now).total_seconds() / 60)
+                if diff >= 0:
+                    sched_minutes = diff
+                    sort_mins = diff
+            except (ValueError, AttributeError):
+                pass
         return StopClassification(
             section=DepartureSection.NOT_DEPARTED,
             decision=DepartureDecision.NOT_DEPARTED,
-            status_text=text,
+            status_text="未發車",
             decision_text="尚未發車",
-            minutes=None,
-            scheduled_time=None,
+            minutes=sched_minutes,
+            scheduled_time=scheduled_time,
             sort_priority=200,
-            sort_minutes=9999,
+            sort_minutes=sort_mins,
         )
 
     if stop_status == 0 and estimate_seconds is not None:

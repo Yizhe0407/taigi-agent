@@ -7,6 +7,7 @@ const props = defineProps<{
   bgClass: string
   borderClass: string
   textClass: string
+  carId?: string | null
 }>()
 
 const CURRENT_STOP_BORDER_CLASS = "border-[#D86A1F] bg-[#D86A1F]"
@@ -15,6 +16,7 @@ const DEFAULT_STOP_FILL_CLASS = "bg-white"
 function stopStatusLabel(stop: RouteStopDetail): string {
   if (stop.isCurrentStop) return "本站"
   if (stop.minutes !== null) return formatMinutes(stop.minutes)
+  if (stop.scheduledTime) return stop.scheduledTime
   return stop.statusText
 }
 </script>
@@ -41,38 +43,42 @@ function stopStatusLabel(stop: RouteStopDetail): string {
       </div>
       <!-- Info -->
       <div class="px-3 py-2.5 bg-white border-2 border-kiosk-line rounded-[14px] flex items-center justify-between gap-3 my-2">
-        <div class="flex items-center gap-3 min-w-0 flex-1">
-          <div class="w-7 shrink-0">
-            <span
-              class="text-[13px] font-bold tabular-nums tracking-[0.05em]"
-              :class="s.isCurrentStop ? 'text-[#D86A1F]' : textClass"
-            >
-              {{ String(s.seq).padStart(2, '0') }}
-            </span>
-          </div>
-          <div class="min-w-0">
-            <div
-              class="text-lg font-extrabold tracking-[-0.01em] flex items-baseline gap-2"
-              :class="s.isCurrentStop ? 'text-[#D86A1F]' : 'text-kiosk-ink'"
-            >
-              {{ s.name }}
+          <div class="flex items-center gap-3 min-w-0 flex-1">
+            <div class="w-7 shrink-0">
               <span
-                v-if="i === stops.length - 1"
-                class="text-[11px] font-bold text-white bg-kiosk-ink px-2 py-[2px] rounded-full tracking-[0.05em]"
-              >終點</span>
+                class="text-[13px] font-bold tabular-nums tracking-[0.05em]"
+                :class="s.isCurrentStop ? 'text-[#D86A1F]' : textClass"
+              >
+                {{ String(s.seq).padStart(2, '0') }}
+              </span>
+            </div>
+            <div class="min-w-0">
+              <div
+                class="text-lg font-extrabold tracking-[-0.01em] flex items-baseline gap-2"
+                :class="s.isCurrentStop ? 'text-[#D86A1F]' : 'text-kiosk-ink'"
+              >
+                {{ s.name }}
+                <span
+                  v-if="i === stops.length - 1"
+                  class="text-[11px] font-bold text-white bg-kiosk-ink px-2 py-[2px] rounded-full tracking-[0.05em]"
+                >終點</span>
+              </div>
             </div>
           </div>
-        </div>
-        <div class="text-sm font-bold text-kiosk-muted shrink-0 font-mono tabular-nums">
-          <span
-            v-if="s.isCurrentStop"
-            class="inline-flex items-center gap-1.5 py-[5px] px-[11px] bg-kiosk-accent-soft text-kiosk-accent rounded-full text-xs font-bold"
-          >
-            <span class="w-[7px] h-[7px] rounded-full bg-kiosk-accent" />
-            {{ stopStatusLabel(s) }}
-          </span>
-          <span v-else>{{ stopStatusLabel(s) }}</span>
-        </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <span
+              v-if="s.isCurrentStop"
+              class="inline-flex items-center gap-1.5 py-[5px] px-[11px] bg-kiosk-accent-soft text-kiosk-accent rounded-full text-xs font-bold"
+            >
+              <span class="w-[7px] h-[7px] rounded-full bg-kiosk-accent" />
+              {{ stopStatusLabel(s) }}
+            </span>
+            <span v-else class="text-sm font-bold text-kiosk-muted font-mono tabular-nums">{{ stopStatusLabel(s) }}</span>
+            <span
+              v-if="s.isCurrentStop && props.carId"
+              class="text-sm font-mono font-bold text-kiosk-ink border-2 border-kiosk-line bg-white rounded-lg px-2.5 py-0.5 tracking-widest shrink-0"
+            >{{ props.carId }}</span>
+          </div>
       </div>
     </div>
   </div>

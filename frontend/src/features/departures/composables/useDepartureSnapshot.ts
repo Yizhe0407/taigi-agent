@@ -1,16 +1,27 @@
 import { useQuery } from "@tanstack/vue-query"
-import { computed } from "vue"
+import { computed, onUnmounted, ref } from "vue"
 
 import { UI_FALLBACK_MESSAGES } from "@/lib/api-messages"
 
 import { DeparturesApiError, fetchDeparturesHere } from "../api/departures"
 
-export function useDepartureSnapshot(refreshMs = 60_000) {
+const REFRESH_MS = 15_000
+
+export function useDepartureSnapshot() {
   const query = useQuery({
     queryKey: ["departures", "here"],
     queryFn: ({ signal }) => fetchDeparturesHere(signal),
-    refetchInterval: refreshMs,
+    refetchInterval: REFRESH_MS,
     retry: false,
+  })
+
+  const now = ref(Date.now())
+  const ticker = setInterval(() => { now.value = Date.now() }, 1000)
+  onUnmounted(() => clearInterval(ticker))
+
+  const secondsUntilRefresh = computed(() => {
+    const elapsed = now.value - query.dataUpdatedAt.value
+    return Math.max(0, Math.round((REFRESH_MS - elapsed) / 1000))
   })
 
   const snapshot = computed(() => query.data.value ?? null)
@@ -28,10 +39,12 @@ export function useDepartureSnapshot(refreshMs = 60_000) {
     () => !!errorMessage.value && !!snapshot.value,
   )
 
-  const routes = computed(() => snapshot.value?.routes ?? [])
-  const nextBest = computed(
-    () => routes.value.find((route) => route.section === "available") ?? null,
+  const routes = computed(() =>
+    (snapshot.value?.routes ?? []).filter(
+      (r) => r.section === "available" || r.section === "not_departed",
+    ),
   )
+  const nextBest = computed(() => routes.value[0] ?? null)
 
   /**
    * True when the last bus of every route has departed and no route is still
@@ -52,5 +65,6 @@ export function useDepartureSnapshot(refreshMs = 60_000) {
     routes,
     nextBest,
     isAllClosed,
+    secondsUntilRefresh,
   }
 }

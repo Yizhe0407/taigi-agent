@@ -19,7 +19,7 @@ backend/
   api/             # FastAPI app 與 HTTP endpoints
   agent/           # Agent harness、LLM client、tool dispatch、prompt、context、telemetry
   pipeline/        # Mandarin -> HanloFlow -> Taibun 等文字處理 pipeline
-  providers/       # 外部資料來源 adapter：ebus、OTP、TDX Moovo
+  providers/       # 外部資料來源 adapter：ebus、TDX bus、OTP、TDX Moovo、HybridBusProvider
   services/        # 領域模型、分類、決策、provider facade
   tools/           # Agent 可見的 str facade
   scripts/         # GTFS / stop metadata 更新流程
@@ -51,8 +51,10 @@ backend/
 ### 領域層
 
 - `providers/bus.py`：`BusProvider` Protocol（TDX-native flat dict schema；`sub_route_name`/`direction`/`stop_status`/`estimate_seconds` 等欄位）。
-- `providers/http.py`：process-wide 共用 `httpx.AsyncClient`（連線池重用）；TTS/ASR/OTP/TDX 都透過它發請求，各呼叫點自帶 per-request timeout，app shutdown 時由 lifespan 關閉。
+- `providers/http.py`：process-wide 共用 `httpx.AsyncClient`（連線池重用）；TTS/ASR/OTP/TDX/ebus 都透過它發請求，各呼叫點自帶 per-request timeout，app shutdown 時由 lifespan 關閉。
+- `providers/ebus.py`：ebus.yunlin.gov.tw `BusProvider` 實作。提供 ComeTime（scheduled_time）與即時 estimate_seconds。無觀測到的 rate limit，所有路線並行抓取。route estimate 結果快取 30 s。
 - `providers/tdx_bus.py`：TDX `BusProvider` 實作。同時查 `City/YunlinCounty`（市區公車）與 `InterCity`（公路客運）兩個 endpoint 並合併。OAuth2 token 自動快取。route_id 以 SubRouteName string 為主鍵。
+- `providers/hybrid.py`：`HybridBusProvider`，線上唯一 `BusProvider` runtime 實例。路線目錄（`load_route_info`、`fetch_routes_at_stop`）由 TDX 提供；ETA（`fetch_eta_at_stop`、`fetch_route_estimate`）由 ebus 主力，ebus 空值時才 fallback 至 TDX intercity。
 - `providers/otp.py`：OpenTripPlanner GraphQL provider。
 - `providers/moovo.py`：TDX bike provider。
 - `services/kiosk_config.py`：Runtime kiosk 設定 singleton（stop_name、direction、lat/lon）；持久化至 `.agent_state/kiosk_config.json`，預設雲林科技大學／回程。所有需要站牌資訊的模組從此讀取，不用 env var。
@@ -84,6 +86,6 @@ frontend/
 
 ## 已知技術債
 
-- TDX API 是外部契約；若 TDX 欄位或 endpoint 改版，主要修補點是 `backend/providers/tdx_bus.py`。
+- TDX API 與 ebus API 都是外部契約；TDX 欄位或 endpoint 改版修 `providers/tdx_bus.py`，ebus 改版修 `providers/ebus.py`，路由邏輯改版修 `providers/hybrid.py`。
 - Chat session 持久化在 `.agent_state/sessions.db`，目前仍綁單機檔案；scale out 需改外部 KV / Redis。
 - Backend runtime 採 async 單一路徑；HTTP-facing providers、services、AgentSession tool dispatch 與 LLM client 都是 async。GTFS 更新腳本可用同步 requests，不屬於線上 API 路徑。

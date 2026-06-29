@@ -16,4 +16,4 @@ TIMETABLE_RE = re.compile(
     r"|從.{1,20}到.{1,20}(要|大概|大約)?.{0,5}幾分鐘?)"
 )
 
-TIMETABLE_CANNED_RESPONSE = "時刻表查不了，要查到站時間嗎？"
+TIMETABLE_CANNED_RESPONSE = "時刻表查不了，只能查下一班到站時間喔。"

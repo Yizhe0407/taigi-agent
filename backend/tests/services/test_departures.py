@@ -6,6 +6,7 @@ import pytest
 from providers.bus import BusProvider
 from services import departures
 from services.departures import provider as _departures_provider
+from services.departures.normalize import _is_terminal_direction
 
 
 def _updated_at() -> datetime:
@@ -102,30 +103,32 @@ def test_build_departure_snapshot_classifies_and_sorts_routes(use_provider):
     assert snapshot.direction_filter == 1
     assert snapshot.updated_at == _updated_at()
     assert snapshot.summary.available_count == 3
-    assert snapshot.summary.not_departed_count == 2
+    assert snapshot.summary.not_departed_count == 1  # only stop_status=1; status=4 → unknown
     assert snapshot.summary.last_departed_count == 1
+    assert snapshot.summary.unknown_count == 1  # stop_status=4 (今日未營運)
     assert [route.route for route in snapshot.routes] == [
         "201",
         "301",
         "302",
         "7000D",
-        "7101",
         "101",
+        "7101",
     ]
     assert [route.decision for route in snapshot.routes] == [
         "arriving_soon",
         "can_wait",
         "long_wait",
         "not_departed",
-        "not_departed",
         "last_departed",
+        "unknown",
     ]
     assert snapshot.routes[0].status_text == "即將到站"
     assert snapshot.routes[1].decision_text == "可以等"
     assert snapshot.routes[2].decision_text == "等待較久"
     assert snapshot.routes[3].section == "not_departed"
-    assert snapshot.routes[4].status_text == "今日未營運"
-    assert snapshot.routes[5].section == "last_departed"
+    assert snapshot.routes[4].section == "last_departed"
+    assert snapshot.routes[5].status_text == "今日未營運"
+    assert snapshot.routes[5].section == "unknown"
 
 
 def test_build_departure_snapshot_applies_direction_filter(use_provider):
@@ -433,3 +436,63 @@ def test_render_stop_on_route_allows_kiosk_itself(use_provider):
     )
     result = asyncio.run(departures.render_stop_on_route("201", "雲林科技大學", "雲林科技大學"))
     assert result.startswith("有")
+
+
+# ── _is_terminal_direction ────────────────────────────────────────────────────
+
+
+def test_is_terminal_direction_empty_go_dest_not_circular():
+    """Empty go_dest must NOT trigger the circular-route exception.
+
+    Before the fix, _name_matches(stop, "") returned True (empty string is
+    a substring of everything), causing is_circular=True and skipping the
+    terminal filter for direction=1 even when back_dest matched the kiosk.
+    """
+    route_info = {
+        "201A": {"id": "201A", "go_dest": "", "back_dest": "斗六火車站"},
+    }
+    # Direction 1 ends at the kiosk → should be treated as terminal
+    assert _is_terminal_direction("斗六火車站", route_info, "201A", 1) is True
+
+
+def test_is_terminal_direction_empty_go_dest_direction0_not_filtered():
+    """Direction 0 with empty go_dest should NOT be filtered (unknown terminus)."""
+    route_info = {
+        "201A": {"id": "201A", "go_dest": "", "back_dest": "斗六火車站"},
+    }
+    assert _is_terminal_direction("斗六火車站", route_info, "201A", 0) is False
+
+
+def test_is_terminal_direction_both_empty_not_filtered():
+    """Both termini empty → neither direction filtered (safe fallback)."""
+    route_info = {"X": {"id": "X", "go_dest": "", "back_dest": ""}}
+    assert _is_terminal_direction("斗六火車站", route_info, "X", 0) is False
+    assert _is_terminal_direction("斗六火車站", route_info, "X", 1) is False
+
+
+def test_is_terminal_direction_circular_both_match():
+    """Genuine circular route (kiosk matches both termini) → not filtered."""
+    route_info = {
+        "Y01": {"id": "Y01", "go_dest": "斗六火車站", "back_dest": "斗六火車站"},
+    }
+    assert _is_terminal_direction("斗六火車站", route_info, "Y01", 0) is False
+    assert _is_terminal_direction("斗六火車站", route_info, "Y01", 1) is False
+
+
+def test_snapshot_filters_inbound_when_back_dest_matches_kiosk(use_provider):
+    """Route with empty go_dest and back_dest=kiosk: direction=1 filtered, direction=0 shown."""
+    use_provider(
+        FakeBusProvider(
+            route_info={
+                "201A": {"id": "201A", "go_dest": "", "back_dest": "斗六火車站"},
+            },
+            eta_at_stop=[
+                {"sub_route_name": "201A", "direction": 0, "stop_status": 0, "estimate_seconds": 420},
+                {"sub_route_name": "201A", "direction": 1, "stop_status": 0, "estimate_seconds": 1260},
+            ],
+        )
+    )
+    snapshot = asyncio.run(departures.build_departure_snapshot("斗六火車站", updated_at=_updated_at()))
+    route_ids = [(r.route, r.go_back) for r in snapshot.routes]
+    assert ("201A", 0) in route_ids  # outbound shown
+    assert ("201A", 1) not in route_ids  # inbound to kiosk filtered
