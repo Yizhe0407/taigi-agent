@@ -1,0 +1,17 @@
+# Python virtual env + bytecode
+.venv/
+__pycache__/
+*.py[cod]
+
+# Tool caches
+.ruff_cache/
+.pyright/
+.pytest_cache/
+.uv-cache/
+
+# Agent runtime state (transcripts + compacted tool results)
+.agent_state/
+
+# OTP build inputs / graph — large binary artifacts, keep folder placeholder only
+otp/data/*
+!otp/data/.gitkeep

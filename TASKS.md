@@ -1,89 +1,61 @@
-# 進度表
+# 任務總覽
 
-> 開始一個項目時改成 🏗️，完成後改成 ✅。
+本檔只放目前優先順序與任務索引。具體工作拆在 `tasks/`，穩定決策放在 `docs/`。
 
----
+狀態標記：
+- `Done`：已完成
+- `In progress`：正在推進或核心已完成但仍有收尾
+- `Deferred`：刻意延後
+- `Not started`：尚未開始
 
-## Agent Harness 核心
+## 產品主軸
 
-| 狀態 | 項目 |
-|------|------|
-| ✅ | `AgentSession`：I/O 無關的 messages + tool-call loop |
-| ✅ | CLI loop：外層 input loop 呼叫 `AgentSession` |
-| ✅ | LLM client（OpenAI-compatible，env 設定） |
-| ✅ | Tool dispatcher（TOOL_SCHEMAS + TOOL_HANDLERS） |
-| ✅ | System prompt 組裝（`agent/prompt.py`） |
-| ✅ | Prompt grounding（正向約束防止 LLM 補充訓練資料、能力邊界明確化） |
-| ✅ | 非思考模式（vLLM `extra_body={"chat_template_kwargs": {"enable_thinking": False}}`） |
-| ✅ | Context 防守（LLM call 前 sliding-window trim + overflow retry） |
-| ✅ | Token 計數（tiktoken cl100k_base token budget 取代 message count） |
-| ✅ | Kiosk input enricher：路線號預取與 regex 防誤觸 |
-| ✅ | 錯誤處理強化（LLM retry、context overflow retry、JSON parse 保護、tool call 上限） |
-| ✅ | Harness tests：context exchange 完整性、tool error、tool round limit |
-| ✅ | Context compact：transcript + 摘要 / 長 tool result 壓縮 |
-| ✅ | 可觀測性：LLM latency、tool latency、tool error、retry、tool routing trace |
+作品名稱：**台語友善固定站牌離站決策系統**
 
-## 公車工具（雲林 ebus）
+副標：**為低數位門檻使用者轉譯即時公車資訊**
 
-| 狀態 | 項目 |
-|------|------|
-| ✅ | `get_next_arrivals`：即時到站時間 |
-| ✅ | `get_stop_arrival_statuses_here`：本站全部路線目前到站狀態 |
-| ✅ | `get_route_stops`：本站停靠路線的站牌列表（從 estimate endpoint 重組） |
-| ✅ | `get_routes_at_stop`：站名查停靠路線 |
-| ✅ | 站名縮寫對照（`_ALIASES`） |
-| ✅ | stop-based route cache：從 `/api/stop/route?stop_name=KIOSK_STOP` 解析 route id |
-| ⬜ | `get_nearby_stops`：附近站牌（需 GPS 座標） |
+第一優先是固定站牌離站決策：把即時到站、方向、未發車與末班駛離轉成「現在可不可以搭、要不要等、哪些方向已經沒車」的可行動資訊。
 
-## 路線規劃（OTP）
+數位虛擬人定位為「數位站務員」：負責台語播報、引導與畫面重點同步，不作為自由聊天主體。地圖路線規劃、QR share、任意目的地查詢降為後續或展示輔助。
 
-| 狀態 | 項目 |
-|------|------|
-| ⬜ | OTP Docker 跑起來（GTFS + OSM graph build） |
-| ⬜ | `plan_route`：從 A 到 B 的完整轉乘建議 |
-| ⬜ | 跨縣市轉運引導（斗六火車站 / 雲林高鐵站 / 斗六轉運站） |
+## Now
 
-## POI 與在地知識
+- [ ] Demo 腳本與報告素材：`tasks/demo-report.md`
+- [ ] 站務員視覺狀態機：`tasks/station-attendant.md`（blocked，等組員 3D 模型）
 
-| 狀態 | 項目 |
-|------|------|
-| ⬜ | 雲科 + 斗六周邊 POI 資料集（餐廳 / 景點 / 醫療） |
-| ⬜ | `search_poi`：附近店家 / 景點查詢 |
-| ⬜ | 校園知識（雲科系所 / 行政 / 活動） |
+## Later
 
-## 語音接入
+- [ ] 使用者試用與量化評估：`tasks/evaluation.md`（報告素材）
+- [ ] POI 與在地知識：`tasks/backlog.md`
 
-| 狀態 | 項目 |
-|------|------|
-| ⬜ | ASR 接入（打字 → 語音輸入）|
-| ⬜ | TTS 接入（文字輸出 → 語音輸出，Piper 台語模型）|
-| ⬜ | LiveKit 整合（WebRTC 傳輸）|
-| ⬜ | ASR 地名 hotword injection（雲林地名字典）|
-| ⬜ | TTS text normalization（公車代號 / 英文 / 數字）|
+## Workstreams
 
-## 量化評估（論文用）
+| 狀態 | Workstream | 任務 |
+|------|------------|------|
+| Done | 離站決策首頁 | `tasks/departure-dashboard.md` |
+| Done | TTS 台語播報 | `tasks/tts.md` |
+| Done | ASR 短指令 | `tasks/asr.md` |
+| Done | 路線規劃 | `tasks/route-planning.md` |
+| Blocked | 數位站務員 | `tasks/station-attendant.md`（等組員模型）|
+| Not started | Demo 與報告 | `tasks/demo-report.md` |
+| Not started | 評估與使用者試用 | `tasks/evaluation.md` |
+| Backlog | 延伸項目 | `tasks/backlog.md` |
 
-| 狀態 | 項目 |
-|------|------|
-| ⬜ | Tool routing 正確率（intent → 正確 tool 命中率）|
-| ⬜ | First-audio latency（接語音後，p50 / p95）|
-| ⬜ | ASR 地名辨識率（自建 test set ≥ 100 句）|
-| ⬜ | TTS 自然度 MOS 評分（N ≥ 10 主觀評分）|
+## 已完成基礎
 
-## 使用者試用
+- Agent harness：`AgentSession`、`IntentRouter`（Python regex 意圖分類）、`ConvState`（顯式對話狀態）、LLM client、tool dispatcher、prompt grounding、context cap（MAX_EXCHANGES=5）、tool round limit、telemetry。
+- ebus 工具：本站到站狀態、停靠路線、路線站序、stop-scoped route lookup、站名縮寫。
+- 離站決策：資料模型、決策分類、`/api/departures/here`、route detail API、首頁 dashboard。
+- 前端基礎：Vue、Tailwind、shadcn-vue、Lucide、Kiosk shell、PIP overlay、route planner full-page flow。
+- 路線規劃：OTP graph、TDX stop index、coordinate planner、MapCN route view model、`POST /api/route-plans`；無班次錯誤顯示、地圖自動定位、站牌方向標示。
+- 後台管理：`/admin` 站牌切換 UI；runtime `KioskConfig` singleton；`/api/admin/kiosk` GET/PUT、`/api/admin/stops`；不需重啟即可切換站牌與方向。
+- **公車資料來源雙 provider 架構**：`providers/hybrid.py` 為唯一線上 `BusProvider` runtime；路線目錄（`load_route_info`、`fetch_routes_at_stop`）由 TDX 提供，ETA（`fetch_eta_at_stop`、`fetch_route_estimate`）由 ebus.yunlin.gov.tw 主力，ebus 空值時 fallback 至 TDX intercity。TDX Direction 0/1，`route_id` 全層為 SubRouteName string，`_classify_stop` 讀 `stop_status`/`estimate_seconds`。
+- 語音基礎：ASR proxy、前端錄音、TTS proxy、台語文字處理、分段播放；ASR 錯誤訊息不外洩原始 Python exception。
+- 方向過濾 auto-detect：`_is_terminal_direction()` 自動過濾終點到站方向；admin 設定「去回程都有」時啟動，設定單方向時直接照設定過濾；循環路線不過濾。
 
-| 狀態 | 項目 |
-|------|------|
-| ⬜ | 訪談腳本 + 同意書 |
-| ⬜ | 學生試用（N ≥ 10）|
-| ⬜ | 長輩試用（N ≥ 5）|
-| ⬜ | SUS 問卷整理 |
+## 文件
 
-## Demo 與報告
-
-| 狀態 | 項目 |
-|------|------|
-| ⬜ | Demo 腳本（3 / 5 / 10 分鐘三版）|
-| ⬜ | 架構圖 / 時序圖（Mermaid）|
-| ⬜ | 書面報告 |
-| ⬜ | Demo 預演 ≥ 3 次 |
+- 產品定位：`docs/product-positioning.md`
+- 架構與目錄：`docs/architecture.md`
+- 路線規劃邊界：`docs/route-planning.md`
+- 可觀測性：`docs/observability.md`

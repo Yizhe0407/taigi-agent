@@ -1,0 +1,141 @@
+@import "tailwindcss";
+
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  overflow: hidden;
+}
+
+/* Kiosk design tokens — exposed to Tailwind as bg-kiosk-bg / text-kiosk-ink / font-tc / font-mono utilities. */
+@theme {
+  --font-tc: "Noto Sans TC", "PingFang TC", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", system-ui, monospace;
+
+  --color-kiosk-bg: #F4EFE3;
+  --color-kiosk-soft: #FBF7EC;
+  --color-kiosk-dim: #EBE7DA;
+  --color-kiosk-line: #E5DFCF;
+  --color-kiosk-line2: #C8C2B2;
+  --color-kiosk-mute2: #A8A29A;
+  --color-kiosk-muted: #6E685D;
+  --color-kiosk-faded: #9C968A;
+  --color-kiosk-ink: #161412;
+
+  --color-kiosk-accent: #D86A1F;
+  --color-kiosk-accent-soft: #FCE5D2;
+
+  --color-kiosk-ok: #0F7D4E;
+  --color-kiosk-ok-soft: #D7EBDD;
+  --color-kiosk-info: #1F5BBF;
+  --color-kiosk-info-soft: #DCE4F5;
+  --color-kiosk-warn: #B85A12;
+  --color-kiosk-warn-soft: #FDF0E6;
+  --color-kiosk-err: #C92A2A;
+  --color-kiosk-err-soft: #FEE8E8;
+}
+
+/* shadcn-vue tokens — only the ones actually referenced by components/ui/* and feature views. */
+@theme inline {
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+}
+
+/* PIP voice state animations */
+@keyframes pip-glow {
+  0%, 100% { box-shadow: 0 24px 48px rgba(0,0,0,0.22), 0 4px 12px rgba(0,0,0,0.10), 0 0 0 0px rgba(216,106,31,0.8); }
+  50%       { box-shadow: 0 24px 48px rgba(0,0,0,0.22), 0 4px 12px rgba(0,0,0,0.10), 0 0 0 8px rgba(216,106,31,0); }
+}
+@keyframes voice-wave {
+  0%, 100% { height: 3px; }
+  50%       { height: 14px; }
+}
+.pip-listening {
+  animation: pip-glow 1.4s ease-out infinite;
+}
+.voice-bar {
+  width: 3px;
+  height: 3px;
+  border-radius: 9999px;
+  background-color: #D86A1F;
+  animation: voice-wave 0.75s ease-in-out infinite;
+}
+
+@keyframes pip-dot-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30%           { transform: translateY(-5px); opacity: 1; }
+}
+.pip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: white;
+  animation: pip-dot-bounce 1.1s ease-in-out infinite;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  /*
+   * Single-screen kiosk app — no element should ever show a scrollbar, including
+   * Teleport'd portals outside the root container. Apply universally instead of
+   * scoping to a marker class.
+   */
+  * {
+    scrollbar-width: none;
+  }
+  *::-webkit-scrollbar {
+    display: none;
+  }
+}

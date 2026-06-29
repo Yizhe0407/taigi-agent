@@ -1,9 +1,11 @@
-.venv/
-__pycache__/
-*.py[cod]
-.ruff_cache/
-.pyright/
-.pytest_cache/
+# Secrets / runtime
 .env
 *.log
-.agent_state/
+
+# Tool stores that land at repo root (regardless of which stack ran them)
+.pnpm-store/
+.playwright-mcp/
+
+# Screenshot artifacts dropped at repo root by Playwright / dev scripts
+/frontend-*.png
+/route-planner-*.png
