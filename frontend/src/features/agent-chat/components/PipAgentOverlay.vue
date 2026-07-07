@@ -143,6 +143,10 @@ watch(
     if (open) {
       if (webrtcState.value === "connecting") webrtcDisconnect()
       if (webrtcState.value !== "connected") {
+        // Suppress REST TTS before ensureSession: the voice pipeline owns the
+        // welcome greeting. Without this the welcome is spoken twice (REST +
+        // WebRTC). The webrtcState watcher takes over after connect starts.
+        suppressTts.value = true
         await ensureSession() // wait for session before sending offer (ensureSession never throws)
         if (!props.open) return // closed while awaiting session
         void webrtcConnect()
