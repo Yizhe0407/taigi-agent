@@ -2,10 +2,10 @@
 
 ## 目前狀態（2026-07-07）
 
-- Phase 1–4 完成：backend/voice/ 三個 custom services、pipeline+barge-in、前端 useWebRTC 遷移、REST voice 清理。
-- 2026-07-07 深度審查完成：發現 5 個高優先問題（pipeline 洩漏、session race、STT 吃掉語音開頭、idle 自殺、thinking 卡死），清單見下方「審查發現」。修完再繼續 Phase 5。
-- Phase 5 進行中：平板 AEC 實測、barge-in 延遲 <200ms 驗證、斷線重連 fallback、telemetry 整合、architecture.md voice 段落更新——皆未完。
-- 阻塞：無。約 30 個未 commit 檔案全屬此計劃，建議先 commit Phase 1–4。
+- Phase 1–4 完成並 commit（ce027de）。
+- 2026-07-07 深度審查發現 13 項問題（見下方「審查發現」）→ 四路並行修復完成：#1-#13 全修（#9 改為 bot 說話時才 interrupt；#12 pre-commit 順手修）。fresh-context 複審 2 findings（renegotiation 孤兒 session、假測試）也已修。pytest 250 綠、ruff 乾淨、typecheck 綠。
+- 下一步：Phase 5 — 平板 AEC 實測、barge-in 延遲 <200ms 驗證、斷線重連 fallback（含 ICE failed 時 pcId 未清的重連路徑）、telemetry 整合、architecture.md voice 段落更新。
+- 阻塞：無。
 
 ## 審查發現（2026-07-07，已對照 pipecat 1.4.0 原始碼驗證）
 

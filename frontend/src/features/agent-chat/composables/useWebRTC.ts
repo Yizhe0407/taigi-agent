@@ -6,6 +6,7 @@ export function useWebRTC(
   onTranscript: (text: string) => void,
   onReply: (text: string) => void,
   sessionId?: Readonly<Ref<string | null>>,
+  onCancelled?: () => void,
 ) {
   const state = ref<WebRTCState>("disconnected")
   const mouthAmplitude = ref(0)
@@ -118,9 +119,11 @@ export function useWebRTC(
     const dc = pc.createDataChannel("app-messages", { ordered: true })
     dc.onmessage = (evt) => {
       try {
-        const msg = JSON.parse(evt.data as string) as { type: string; text: string }
-        if (msg.type === "transcript") onTranscript(msg.text)
-        else if (msg.type === "agent_reply") onReply(msg.text)
+        const msg = JSON.parse(evt.data as string) as { type: string; text?: string }
+        if (msg.type === "transcript") onTranscript(msg.text ?? "")
+        else if (msg.type === "agent_reply") onReply(msg.text ?? "")
+        else if (msg.type === "agent_cancelled") onCancelled?.()
+        // unknown types: silently ignored (forward-compat)
       } catch {}
     }
 

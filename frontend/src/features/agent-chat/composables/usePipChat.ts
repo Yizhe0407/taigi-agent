@@ -66,27 +66,35 @@ export function usePipChat(
     displayedAgentText.value = ""
   }
 
-  async function ensureSession() {
-    if (sessionId.value) return
+  // ponytail: in-flight promise reuse so two concurrent callers share one POST
+  let _ensureSessionInflight: Promise<void> | null = null
 
-    try {
-      sessionId.value = await createChatSession()
-      if (!messages.value.length) {
-        const welcomeText = "請問您欲前往哪裡？"
-        messages.value = [{ id: "welcome", role: "assistant", text: welcomeText }]
-        speakWithAnimation(welcomeText)
+  async function ensureSession(): Promise<void> {
+    if (sessionId.value) return
+    if (_ensureSessionInflight) return _ensureSessionInflight
+    _ensureSessionInflight = (async () => {
+      try {
+        sessionId.value = await createChatSession()
+        if (!messages.value.length) {
+          const welcomeText = "請問您欲前往哪裡？"
+          messages.value = [{ id: "welcome", role: "assistant", text: welcomeText }]
+          speakWithAnimation(welcomeText)
+        }
+      } catch {
+        if (!messages.value.length) {
+          messages.value = [
+            {
+              id: "session-error",
+              role: "assistant",
+              text: UI_FALLBACK_MESSAGES.agentOffline,
+            },
+          ]
+        }
+      } finally {
+        _ensureSessionInflight = null
       }
-    } catch {
-      if (!messages.value.length) {
-        messages.value = [
-          {
-            id: "session-error",
-            role: "assistant",
-            text: UI_FALLBACK_MESSAGES.agentOffline,
-          },
-        ]
-      }
-    }
+    })()
+    return _ensureSessionInflight
   }
 
   async function scrollToBottom() {
@@ -175,6 +183,7 @@ export function usePipChat(
     ttsState,
     mouthAmplitude,
     cancelTts,
+    ensureSession,
     sendMessage,
     handleKeydown,
   }

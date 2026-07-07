@@ -50,7 +50,14 @@ async def webrtc_offer(body: dict) -> dict:
         raise HTTPException(status_code=422, detail=f"Invalid request body: {exc}") from exc
 
     async def _start_pipeline(connection) -> None:
-        """Spin up voice pipeline in background so this endpoint returns immediately."""
+        """Spin up voice pipeline in background so this endpoint returns immediately.
+
+        Session resolution stays inside this callback on purpose: pipecat only
+        invokes it for NEW connections. Renegotiations (existing pc_id) never
+        reach here, so resolving the session earlier would create an orphaned
+        session per renegotiation. Store failures are logged by the handler
+        and by the pipeline done-callback below.
+        """
         from voice.pipeline import run_voice_pipeline
 
         store = _get_store()

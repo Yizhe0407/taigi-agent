@@ -29,6 +29,7 @@ const {
   ttsState,
   mouthAmplitude,
   cancelTts,
+  ensureSession,
   sendMessage,
   handleKeydown,
 } = usePipChat(toRef(props, "open"), suppressTts)
@@ -52,7 +53,23 @@ function resetIdleTimeout() {
   }, 60000)
 }
 
-onUnmounted(() => clearIdleTimeout())
+// 30s safety fuse: if no reply/cancelled arrives, auto-reset thinking state
+let thinkingFuse: number | null = null
+
+function clearThinkingFuse() {
+  if (thinkingFuse !== null) { clearTimeout(thinkingFuse); thinkingFuse = null }
+}
+
+function startThinkingFuse() {
+  clearThinkingFuse()
+  thinkingFuse = window.setTimeout(() => {
+    isWebRTCThinking.value = false
+    lastUserText.value = ""
+    resetIdleTimeout()
+  }, 30_000)
+}
+
+onUnmounted(() => { clearIdleTimeout(); clearThinkingFuse() })
 
 const {
   state: webrtcState,
@@ -65,9 +82,11 @@ const {
     clearDisplayedText()
     clearIdleTimeout()
     isWebRTCThinking.value = true
+    startThinkingFuse()
     messages.value.push({ id: `wrtc-user-${Date.now()}`, role: "user", text })
   },
   (text) => {
+    clearThinkingFuse()
     messages.value.push({ id: `wrtc-reply-${Date.now()}`, role: "assistant", text })
     clearDisplayedText()
     lastUserText.value = ""
@@ -77,6 +96,12 @@ const {
   },
   // Share the existing chat session so voice and text have the same conversation context.
   sessionId,
+  () => {
+    clearThinkingFuse()
+    isWebRTCThinking.value = false
+    lastUserText.value = ""
+    resetIdleTimeout()
+  },
 )
 
 
@@ -114,10 +139,14 @@ watch(
 
 watch(
   () => props.open,
-  (open) => {
+  async (open) => {
     if (open) {
       if (webrtcState.value === "connecting") webrtcDisconnect()
-      if (webrtcState.value !== "connected") void webrtcConnect()
+      if (webrtcState.value !== "connected") {
+        await ensureSession() // wait for session before sending offer (ensureSession never throws)
+        if (!props.open) return // closed while awaiting session
+        void webrtcConnect()
+      }
       resetIdleTimeout()
     } else {
       showChat.value = false

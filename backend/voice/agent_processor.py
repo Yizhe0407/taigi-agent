@@ -71,6 +71,8 @@ class TaigiBusAgentProcessor(FrameProcessor):
                 reply = await respond_in_session(self.session_id, text)
             except LookupError:
                 _log.warning("Chat session %s not found", self.session_id)
+                if self._send_event:
+                    self._send_event({"type": "agent_cancelled"})
                 return
 
             _log.info("Agent reply: %s", reply)
@@ -82,6 +84,8 @@ class TaigiBusAgentProcessor(FrameProcessor):
 
         except asyncio.CancelledError:
             _log.info("Agent inference task was cancelled due to interruption.")
+            if self._send_event:
+                self._send_event({"type": "agent_cancelled"})
             raise
         except Exception:
             _log.exception("Agent processing error")
@@ -89,3 +93,5 @@ class TaigiBusAgentProcessor(FrameProcessor):
             await self.push_frame(LLMFullResponseStartFrame(), direction)
             await self.push_frame(TextFrame(text=error_reply), direction)
             await self.push_frame(LLMFullResponseEndFrame(), direction)
+            if self._send_event:
+                self._send_event({"type": "agent_reply", "text": error_reply, "role": "assistant"})

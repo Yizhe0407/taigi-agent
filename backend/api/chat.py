@@ -29,6 +29,7 @@ router = APIRouter()
 
 
 _store: ChatSessionStore | None = None
+_session_locks: dict[str, asyncio.Lock] = {}  # ponytail: module-level dict, pop on delete to avoid unbounded growth
 
 
 def _get_store() -> ChatSessionStore:
@@ -83,16 +84,19 @@ async def respond_in_session(session_id: str, message: str) -> str:
     """Load session, respond to message, and save updated history.
 
     Raises LookupError if the session does not exist.
+    Serializes concurrent calls on the same session_id to prevent lost updates.
     """
     store = _get_store()
-    # SQLite I/O is synchronous — run it off the event loop
-    messages = await asyncio.to_thread(store.load_messages, session_id)
-    if messages is None:
-        raise LookupError(session_id)
+    lock = _session_locks.setdefault(session_id, asyncio.Lock())
+    async with lock:
+        # SQLite I/O is synchronous — run it off the event loop
+        messages = await asyncio.to_thread(store.load_messages, session_id)
+        if messages is None:
+            raise LookupError(session_id)
 
-    session = _rehydrate_session(messages)
-    reply = await session.respond(message)
-    await asyncio.to_thread(store.save_messages, session_id, session.messages)
+        session = _rehydrate_session(messages)
+        reply = await session.respond(message)
+        await asyncio.to_thread(store.save_messages, session_id, session.messages)
     return reply
 
 
@@ -137,3 +141,4 @@ async def send_chat_message(session_id: str, body: ChatMessageRequest) -> object
 def delete_chat_session(session_id: str) -> None:
     """Explicitly end a chat session and free its row."""
     _get_store().delete(session_id)
+    _session_locks.pop(session_id, None)
