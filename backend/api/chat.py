@@ -79,6 +79,23 @@ def _rehydrate_session(messages: list[dict]) -> AgentSession:
     return session
 
 
+async def respond_in_session(session_id: str, message: str) -> str:
+    """Load session, respond to message, and save updated history.
+
+    Raises LookupError if the session does not exist.
+    """
+    store = _get_store()
+    # SQLite I/O is synchronous — run it off the event loop
+    messages = await asyncio.to_thread(store.load_messages, session_id)
+    if messages is None:
+        raise LookupError(session_id)
+
+    session = _rehydrate_session(messages)
+    reply = await session.respond(message)
+    await asyncio.to_thread(store.save_messages, session_id, session.messages)
+    return reply
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -103,17 +120,8 @@ def create_chat_session() -> object:
 )
 async def send_chat_message(session_id: str, body: ChatMessageRequest) -> object:
     """Append a user message, run the agent, persist updated history."""
-    store = _get_store()
-
     try:
-        # SQLite I/O is synchronous — run it off the event loop so a slow disk
-        # can't stall other in-flight requests.
-        messages = await asyncio.to_thread(store.load_messages, session_id)
-        if messages is None:
-            raise LookupError(session_id)
-        session = _rehydrate_session(messages)
-        reply = await session.respond(body.message)
-        await asyncio.to_thread(store.save_messages, session_id, session.messages)
+        reply = await respond_in_session(session_id, body.message)
     except LookupError as error:
         raise HTTPException(status_code=404, detail="對話階段不存在或已過期，請重新開始") from error
     except Exception as error:

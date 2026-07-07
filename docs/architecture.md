@@ -18,6 +18,7 @@ backend/
   config.py        # Settings（lru_cache singleton）、make_agent_session、_make_llm_client
   api/             # FastAPI app 與 HTTP endpoints
   agent/           # Agent harness、LLM client、tool dispatch、prompt、context、telemetry
+  voice/           # Pipecat WebRTC 語音全雙工 pipeline（VAD, STT, TTS, Agent Processor）
   pipeline/        # Mandarin -> HanloFlow -> Taibun 等文字處理 pipeline
   providers/       # 外部資料來源 adapter：ebus、TDX bus、OTP、TDX Moovo、HybridBusProvider
   services/        # 領域模型、分類、決策、provider facade
@@ -35,8 +36,16 @@ backend/
 - `api/departures.py`：`/api/departures/here` 與路線詳情。
 - `api/route_plans.py`：`/api/route-plans` 與 `/api/kiosk`（含 direction）。
 - `api/moovo.py`：`/api/moovo/*`。
-- `api/asr.py`：Qwen3-ASR proxy。
-- `api/tts.py`：HanloFlow -> Taibun -> Piper TTS proxy。
+- `api/asr.py`：Breeze ASR proxy（提供給文字模式與語音模組共用的辨識邏輯）。
+- `api/tts.py`：HanloFlow -> Taibun -> Piper TTS proxy（REST 模式 fallback）。
+- `api/voice.py`：`/api/voice/offer`，處理 WebRTC SDP 交換並在背景啟動語音 pipeline，支援 session_id 綁定。
+
+### Voice Pipeline (WebRTC)
+
+- `voice/pipeline.py`：Pipecat 語音管線組裝（SmallWebRTCTransport、VAD、中斷處理）與連線生命週期管理。
+- `voice/stt_breeze.py`：繼承 Pipecat `STTService`，搭配 VAD 收集完整語句後呼叫 ASR 轉文字。
+- `voice/agent_processor.py`：將原本的 `AgentSession` 封裝為 Pipecat 的 `FrameProcessor`，介接文字與語音的資料流。
+- `voice/tts_taigi.py`：繼承 Pipecat `TTSService`，封裝原有的文字前處理與 Piper TTS，輸出 PCM 音訊流供 WebRTC 播放。
 
 ### Agent
 
@@ -81,7 +90,7 @@ frontend/
 - `features/departures/`：離站決策首頁、路線詳情、route colors、輪詢與顯示狀態。
 - `features/route-planner/`：MapCN destination picker、路線規劃 request、指定時間 wheel；地圖顯示當前站牌名稱與方向。
 - `features/admin/`：後台站牌切換 UI（`/admin`）；地圖搜尋選站、方向設定、即時套用；無密碼保護，設定立即生效。
-- `features/agent-chat/`：PIP 對話 session / send / scroll 狀態。
+- `features/agent-chat/`：PIP 對話 session 管理。整合 WebRTC 語音串流、打字動畫、與共用對話上下文 (Shared Session)，並保留 REST fallback 機制。
 - `components/ui/`：shadcn-vue 與 MapCN Vue copy-paste UI components。
 
 ## 已知技術債

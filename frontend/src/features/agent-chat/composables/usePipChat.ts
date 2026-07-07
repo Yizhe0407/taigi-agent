@@ -1,5 +1,4 @@
 import {
-  computed,
   nextTick,
   onBeforeUnmount,
   ref,
@@ -26,7 +25,10 @@ function nextMessageId(): string {
   return `${Date.now()}-${messageCounter}`
 }
 
-export function usePipChat(isOpen: Readonly<Ref<boolean>>) {
+export function usePipChat(
+  isOpen: Readonly<Ref<boolean>>,
+  suppressTts: Readonly<Ref<boolean>> = ref(false),
+) {
   const sessionId = ref<string | null>(null)
   const messages = ref<PipChatMessage[]>([])
   const userInput = ref("")
@@ -50,7 +52,13 @@ export function usePipChat(isOpen: Readonly<Ref<boolean>>) {
   }
 
   function speakWithAnimation(text: string) {
-    void speakTts(text).then(durationMs => void animateText(text, durationMs ?? undefined))
+    if (suppressTts.value) {
+      // WebRTC is active — TTS is handled by the voice pipeline.
+      // Only run the typewriter animation, don't call REST TTS.
+      void animateText(text)
+    } else {
+      void speakTts(text).then(durationMs => void animateText(text, durationMs ?? undefined))
+    }
   }
 
   function clearDisplayedText() {
@@ -129,73 +137,45 @@ export function usePipChat(isOpen: Readonly<Ref<boolean>>) {
     }
   }
 
-  async function sendVoiceMessage(text: string) {
-    const message = text.trim()
-    if (!message || isSending.value) return
-
-    await ensureSession()
-    if (!sessionId.value) return
-
-    const id = nextMessageId()
-    messages.value.push({ id, role: "user", text: message })
-    await scrollToBottom()
-
-    isSending.value = true
-    try {
-      const reply = await sendChatMessage(sessionId.value, message)
-      messages.value.push({ id: `${id}-reply`, role: "assistant", text: reply })
-      speakWithAnimation(reply)
-    }
-    catch (error) {
-      const msg = error instanceof ChatApiError ? error.message : UI_FALLBACK_MESSAGES.agentNoReply
-      messages.value.push({ id: `${id}-error`, role: "assistant", text: `（${msg}）` })
-      void animateText(`（${msg}）`)
-    }
-    finally {
-      isSending.value = false
-      await scrollToBottom()
+  function reset() {
+    typewriterToken++
+    displayedAgentText.value = ""
+    cancelTts()
+    isSending.value = false
+    showChat.value = false
+    messages.value = []
+    if (sessionId.value) {
+      void deleteChatSession(sessionId.value)
+      sessionId.value = null
     }
   }
-
-  function toggleChat() {
-    showChat.value = !showChat.value
-    if (showChat.value) void ensureSession()
-  }
-
-  const lastAgentText = computed(() => {
-    const lastMessage = [...messages.value]
-      .reverse()
-      .find((message) => message.role === "assistant")
-    return lastMessage?.text ?? "請問您欲前往哪裡？"
-  })
 
   watch(
     isOpen,
     (open) => {
       if (open) void ensureSession()
+      else reset()
     },
     { immediate: true },
   )
 
   onBeforeUnmount(() => {
+    // Safety net if component unmounts without going through close path
     if (sessionId.value) void deleteChatSession(sessionId.value)
   })
 
   return {
+    sessionId,
     messages,
     userInput,
     isSending,
     showChat,
-    lastAgentText,
     displayedAgentText,
     clearDisplayedText,
     ttsState,
     mouthAmplitude,
     cancelTts,
-    ensureSession,
     sendMessage,
-    sendVoiceMessage,
     handleKeydown,
-    toggleChat,
   }
 }

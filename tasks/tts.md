@@ -1,5 +1,7 @@
 # TTS 台語播報
 
+> **⚠️ DEPRECATED**: 此文件描述的 REST TTS 架構（由前端 fetch + Web Audio API 排序播放），已被 **Pipecat WebRTC 架構** 與後端串流 TTS 取代（僅保留文字模式 fallback）。
+> 最新語音架構與實作狀態，請參閱 [`pipecat_webrtc_plan.md`](./pipecat_webrtc_plan.md)。
 ## 目標
 
 把結構化離站決策轉成可聽懂的台語播報，降低閱讀負擔。

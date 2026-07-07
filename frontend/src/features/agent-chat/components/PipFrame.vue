@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from "vue"
-import { Mic, MicOff, Settings, X } from "@lucide/vue"
+import { Settings, X } from "@lucide/vue"
 
 import type { TtsState } from "../composables/useTts"
-import type { VoiceState } from "../composables/useVoiceInput"
-import type { PipCorner, PipSize } from "../types"
+import type { PipCorner, PipSize, VoiceState, WebRTCState } from "../types"
 import Live2DAvatar from "./Live2DAvatar.vue"
 import PipMoveOverlay from "./PipMoveOverlay.vue"
 import PipSettingsOverlay from "./PipSettingsOverlay.vue"
@@ -17,12 +16,13 @@ const props = defineProps<{
   isSending: boolean
   showChat: boolean
   voiceState: VoiceState
-  micDenied: boolean
   ttsState: TtsState
   mouthAmplitude: number
   moveMode: boolean
   settingsMode: boolean
   corner: PipCorner
+  webrtcState?: WebRTCState | null
+  lastUserText?: string
 }>()
 
 const bubbleRef = ref<HTMLElement | null>(null)
@@ -103,58 +103,37 @@ const emit = defineEmits<{
     />
 
     <template v-else>
-      <!-- Last agent text bubble — md/lg only -->
+      <!-- Bubble area — md/lg only -->
       <div
-        v-if="size !== 'sm' && (lastAgentText || isSending || ttsState === 'loading')"
-        class="absolute bottom-[72px] left-2.5 right-2.5 z-[2]"
+        v-if="size !== 'sm'"
+        class="absolute bottom-5 left-2.5 right-2.5 z-[2] flex flex-col items-center gap-1.5 pointer-events-none"
       >
         <!-- Thinking indicator -->
-        <div v-if="(isSending || ttsState === 'loading') && !lastAgentText" class="bg-white/15 backdrop-blur-md py-3.5 px-4 rounded-xl flex items-center gap-2.5">
-          <span v-for="i in 3" :key="i" class="pip-dot" :style="`animation-delay:${(i - 1) * 0.18}s`" />
-          <span class="text-white/80 text-[15px] font-semibold">小芸思考中…</span>
+        <div 
+          v-if="(isSending || ttsState === 'loading') && !lastAgentText"
+          class="bg-white/95 backdrop-blur-md border-2 border-kiosk-ink/10 py-2.5 px-4 rounded-[18px] shadow-[0_8px_24px_rgba(0,0,0,0.15)] flex items-center justify-center gap-2.5 min-w-[120px]"
+        >
+          <span v-for="i in 3" :key="i" class="pip-dot !bg-kiosk-accent !w-1.5 !h-1.5" :style="`animation-delay:${(i - 1) * 0.18}s`" />
+          <span class="text-kiosk-ink text-[14px] font-bold">思考中</span>
         </div>
-        <!-- Text bubble -->
-        <div v-else ref="bubbleRef" class="bg-white/15 backdrop-blur-md py-2.5 px-3 rounded-xl max-h-[120px] overflow-y-auto">
-          <div class="text-white text-[16px] font-semibold leading-[1.45]">{{ lastAgentText }}</div>
+
+        <!-- Single Transcript Panel -->
+        <div 
+          v-if="lastAgentText" 
+          ref="bubbleRef" 
+          class="bg-white/95 backdrop-blur-md border-2 border-kiosk-ink/10 py-3 px-4 rounded-[18px] shadow-[0_8px_24px_rgba(0,0,0,0.15)] w-full max-h-[100px] overflow-y-auto pointer-events-auto"
+        >
+          <div class="text-kiosk-ink text-[15px] font-bold leading-[1.45] text-center">{{ lastAgentText }}</div>
+        </div>
+        <div 
+          v-else-if="lastUserText && webrtcState != null"
+          class="bg-white/95 backdrop-blur-md border-2 border-kiosk-ink/10 py-3 px-4 rounded-[18px] shadow-[0_8px_24px_rgba(0,0,0,0.15)] w-full max-h-[100px] overflow-y-auto pointer-events-auto"
+        >
+          <div class="text-kiosk-ink/70 text-[15px] font-bold leading-[1.45] text-center">「{{ lastUserText }}」</div>
         </div>
       </div>
 
-      <!-- Voice pill button -->
-      <button
-        class="absolute bottom-3 left-3 right-3 h-[52px] z-[3] rounded-[16px] border-0 font-[inherit] flex items-center justify-center gap-2 transition-colors duration-200"
-        :class="{
-          'bg-red-500 text-white shadow-[0_4px_20px_rgba(239,68,68,0.45)] cursor-pointer': voiceState === 'recording',
-          'bg-kiosk-accent text-white shadow-[0_4px_20px_rgba(216,106,31,0.45)] cursor-default': voiceState === 'transcribing',
-          'bg-white/10 backdrop-blur-md text-white/40 border border-white/15 cursor-default': micDenied && voiceState === 'idle',
-          'bg-white/20 backdrop-blur-md text-white border border-white/30 cursor-pointer': !micDenied && voiceState === 'idle',
-        }"
-        :disabled="voiceState === 'transcribing' || micDenied"
-        @click="emit('toggle-voice')"
-      >
-        <template v-if="voiceState === 'recording'">
-          <div class="flex items-end gap-[3px]">
-            <span v-for="i in 4" :key="i" class="voice-bar" :style="`animation-delay: ${(i - 1) * 0.15}s`" />
-          </div>
-          <span class="text-[16px] font-bold">說完後再按一次</span>
-        </template>
-        <template v-else-if="voiceState === 'transcribing'">
-          <span class="text-[16px] font-bold">辨識中…</span>
-        </template>
-        <template v-else-if="micDenied">
-          <MicOff class="size-[20px]" :stroke-width="2.2" />
-          <span class="text-[16px] font-bold">請至瀏覽器設定開啟麥克風</span>
-        </template>
-        <template v-else-if="ttsState !== 'idle'">
-          <div class="flex items-end gap-[3px]">
-            <span v-for="i in 4" :key="i" class="voice-bar" :style="`animation-delay: ${(i - 1) * 0.15}s`" />
-          </div>
-          <span class="text-[16px] font-bold">說話中…</span>
-        </template>
-        <template v-else>
-          <Mic class="size-[20px]" :stroke-width="2.2" />
-          <span class="text-[16px] font-bold">點這裡說話</span>
-        </template>
-      </button>
+
     </template>
   </div>
 </template>

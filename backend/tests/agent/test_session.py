@@ -270,7 +270,7 @@ def test_router_canned_response_skips_llm_call():
 def test_router_canned_response_for_remote_destination():
     session = make_session([])
     reply = asyncio.run(session.respond("我要去台中怎麼搭"))
-    assert reply == "這段要用地圖規劃比較準喔。"
+    assert reply == "這個要用地圖規劃比較準喔。"
     assert session.client.chat.completions.calls == []
 
 

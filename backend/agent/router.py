@@ -122,7 +122,7 @@ class IntentRouter:
         if _is_remote_destination(text):
             return Decision(
                 intent=Intent.REMOTE_DESTINATION,
-                canned_response="這段要用地圖規劃比較準喔。",
+                canned_response="這個要用地圖規劃比較準喔。",
                 next_state=replace(state, last_intent=Intent.REMOTE_DESTINATION),
             )
 

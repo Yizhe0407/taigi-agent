@@ -1,5 +1,7 @@
 export type PipCorner = "tl" | "tr" | "bl" | "br"
+export type WebRTCState = "disconnected" | "connecting" | "connected" | "error"
 export type PipSize = "sm" | "md" | "lg"
+export type VoiceState = "idle" | "recording" | "transcribing"
 
 export const PIP_SIZES: Record<PipSize, { w: number; h: number }> = {
   sm: { w: 220, h: 275 },

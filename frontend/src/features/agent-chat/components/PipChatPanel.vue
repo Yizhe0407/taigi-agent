@@ -19,6 +19,7 @@ defineEmits<{
 }>()
 
 const inputRef = ref<HTMLInputElement | null>(null)
+const bodyRef = ref<HTMLElement | null>(null)
 
 watch(() => props.isSending, (isSending) => {
   if (!isSending) {
@@ -26,6 +27,12 @@ watch(() => props.isSending, (isSending) => {
       inputRef.value?.focus()
     })
   }
+})
+
+watch(() => props.messages.length, () => {
+  nextTick(() => {
+    if (bodyRef.value) bodyRef.value.scrollTop = bodyRef.value.scrollHeight
+  })
 })
 
 onMounted(() => {
@@ -48,7 +55,7 @@ onMounted(() => {
         <X class="size-[18px]" :stroke-width="2.6" />
       </button>
     </div>
-    <div class="flex-1 p-4 flex flex-col gap-2.5 overflow-y-auto">
+    <div ref="bodyRef" class="flex-1 p-4 flex flex-col gap-2.5 overflow-y-auto">
       <div
         v-for="msg in messages"
         :key="msg.id"

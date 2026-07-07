@@ -46,6 +46,7 @@ from .departures import router as departures_router  # noqa: E402
 from .moovo import router as moovo_router  # noqa: E402
 from .route_plans import router as route_plans_router  # noqa: E402
 from .tts import router as tts_router  # noqa: E402
+from .voice import router as voice_router  # noqa: E402
 
 
 @asynccontextmanager
@@ -83,7 +84,7 @@ if cors_origins:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
-        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["*"],
         expose_headers=["*"],
     )
@@ -95,6 +96,7 @@ app.include_router(route_plans_router)
 app.include_router(moovo_router)
 app.include_router(asr_router)
 app.include_router(tts_router)
+app.include_router(voice_router)
 
 # ── Observability ─────────────────────────────────────────────────────────────
 # configure_telemetry() is idempotent; safe to call here and in make_agent_session().

@@ -1,5 +1,7 @@
 # ASR 短指令
 
+> **⚠️ DEPRECATED**: 此文件描述的 REST ASR 架構與前端 VAD 實作，已被 **Pipecat WebRTC 架構** 取代。
+> 最新語音架構與實作狀態，請參閱 [`pipecat_webrtc_plan.md`](./pipecat_webrtc_plan.md)。
 ## 目標
 
 ASR 只支援固定站牌場景的短指令輔助，例如「二○一路」、「往斗六」、「還有車無」。不承擔開放式目的地理解。

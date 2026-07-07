@@ -96,7 +96,7 @@ def test_route_only_preserves_last_destination(router: IntentRouter):
 def test_remote_destination_fires_for_cross_county_queries(router: IntentRouter, empty_state: ConvState, user_input: str):
     decision = router.classify(user_input, empty_state)
     assert decision.intent == Intent.REMOTE_DESTINATION
-    assert decision.canned_response == "這段要用地圖規劃比較準喔。"
+    assert decision.canned_response == "這個要用地圖規劃比較準喔。"
 
 
 def test_remote_destination_transfer_keyword_alone_triggers(router: IntentRouter, empty_state: ConvState):

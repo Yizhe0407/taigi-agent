@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, toRef, watch } from "vue"
+import { computed, ref, toRef, watch, onUnmounted } from "vue"
 
 import { usePipChat } from "@/features/agent-chat/composables/usePipChat"
-import { useVoiceInput } from "@/features/agent-chat/composables/useVoiceInput"
+import { useWebRTC } from "@/features/agent-chat/composables/useWebRTC"
 
 import PipChatPanel from "./PipChatPanel.vue"
 import PipFrame from "./PipFrame.vue"
@@ -16,7 +16,10 @@ const size = ref<PipSize>("lg")
 const moveMode = ref(false)
 const settingsMode = ref(false)
 
+const suppressTts = ref(false)
+
 const {
+  sessionId,
   messages,
   userInput,
   isSending,
@@ -27,34 +30,105 @@ const {
   mouthAmplitude,
   cancelTts,
   sendMessage,
-  sendVoiceMessage,
   handleKeydown,
-} = usePipChat(toRef(props, "open"))
+} = usePipChat(toRef(props, "open"), suppressTts)
 
-function onVoiceError(msg: string) {
-  messages.value.push({ id: `voice-err-${Date.now()}`, role: "assistant", text: `（${msg}）` })
+const lastUserText = ref("")
+const isWebRTCThinking = ref(false)
+
+let idleTimeout: number | null = null
+
+function clearIdleTimeout() {
+  if (idleTimeout) {
+    clearTimeout(idleTimeout)
+    idleTimeout = null
+  }
 }
 
-const { voiceState, micDenied, toggle: toggleVoiceRaw } = useVoiceInput(sendVoiceMessage, onVoiceError)
+function resetIdleTimeout() {
+  clearIdleTimeout()
+  idleTimeout = window.setTimeout(() => {
+    emit('close')
+  }, 60000)
+}
+
+onUnmounted(() => clearIdleTimeout())
+
+const {
+  state: webrtcState,
+  mouthAmplitude: webrtcAmplitude,
+  connect: webrtcConnect,
+  disconnect: webrtcDisconnect,
+} = useWebRTC(
+  (text) => {
+    lastUserText.value = text
+    clearDisplayedText()
+    clearIdleTimeout()
+    isWebRTCThinking.value = true
+    messages.value.push({ id: `wrtc-user-${Date.now()}`, role: "user", text })
+  },
+  (text) => {
+    messages.value.push({ id: `wrtc-reply-${Date.now()}`, role: "assistant", text })
+    clearDisplayedText()
+    lastUserText.value = ""
+    isWebRTCThinking.value = false
+    resetIdleTimeout()
+    displayedAgentText.value = text
+  },
+  // Share the existing chat session so voice and text have the same conversation context.
+  sessionId,
+)
+
+
+// Use WebRTC audio amplitude when connected, otherwise TTS amplitude
+const activeMouthAmplitude = computed(() =>
+  webrtcState.value === "connected" ? webrtcAmplitude.value : mouthAmplitude.value
+)
 
 function toggleVoice() {
-  if (voiceState.value === "idle") {
+  if (webrtcState.value === "disconnected" || webrtcState.value === "error") {
     cancelTts()
     clearDisplayedText()
+    void webrtcConnect()
+  } else {
+    // connected or connecting → abort/disconnect
+    webrtcDisconnect()
   }
-  toggleVoiceRaw()
 }
+
+// Map WebRTC state → VoiceState for PipFrame's visual indicators.
+// 'recording' keeps the pip-listening border animation active whenever we're live.
+const voiceState = computed<"idle" | "recording" | "transcribing">(() => {
+  if (webrtcState.value === "connecting") return "transcribing"
+  if (webrtcState.value === "connected") return "recording"
+  return "idle"
+})
+
+watch(
+  webrtcState,
+  (state) => {
+    suppressTts.value = state === "connected" || state === "connecting"
+  },
+  { immediate: true }
+)
 
 watch(
   () => props.open,
   (open) => {
-    if (!open) {
+    if (open) {
+      if (webrtcState.value === "connecting") webrtcDisconnect()
+      if (webrtcState.value !== "connected") void webrtcConnect()
+      resetIdleTimeout()
+    } else {
       showChat.value = false
       moveMode.value = false
       settingsMode.value = false
       cancelTts()
       clearDisplayedText()
-      if (voiceState.value === "recording") toggleVoiceRaw()
+      webrtcDisconnect()
+      lastUserText.value = ""
+      isWebRTCThinking.value = false
+      clearIdleTimeout()
     }
   },
 )
@@ -125,12 +199,13 @@ const dirClass = computed(() =>
         :height="frameSize.h"
         :size="size"
         :last-agent-text="displayedAgentText"
-        :is-sending="isSending"
+        :is-sending="isSending || isWebRTCThinking"
         :show-chat="showChat"
         :voice-state="voiceState"
-        :mic-denied="micDenied"
         :tts-state="ttsState"
-        :mouth-amplitude="mouthAmplitude"
+        :mouth-amplitude="activeMouthAmplitude"
+        :webrtc-state="webrtcState"
+        :last-user-text="lastUserText"
         :move-mode="moveMode"
         :settings-mode="settingsMode"
         :corner="corner"
