@@ -75,7 +75,10 @@ export function usePipChat(
     _ensureSessionInflight = (async () => {
       try {
         sessionId.value = await createChatSession()
-        if (!messages.value.length) {
+        // Voice mode (suppressTts): the pipeline announces the welcome itself over
+        // the data channel — text and audio arrive together. Only greet locally
+        // in text-only mode, otherwise the subtitle shows seconds before the voice.
+        if (!messages.value.length && !suppressTts.value) {
           const welcomeText = "請問您欲前往哪裡？"
           messages.value = [{ id: "welcome", role: "assistant", text: welcomeText }]
           speakWithAnimation(welcomeText)

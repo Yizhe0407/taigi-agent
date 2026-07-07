@@ -46,35 +46,45 @@ export function useWebRTC(
 
   function setupRemoteAmplitude(stream: MediaStream) {
     const ctx = audioCtx!
-    void ctx.resume().then(() => {
-      if (destroyed) return
-      const src = ctx.createMediaStreamSource(stream)
-      const analyser = ctx.createAnalyser()
-      analyser.fftSize = 512
-      analyser.smoothingTimeConstant = 0.2
-      analyser.minDecibels = -70
-      analyser.maxDecibels = -20
-      // Only connect to analyser for amplitude measurement.
-      // Do NOT connect to ctx.destination — the WebRTC track already handles playback.
-      src.connect(analyser)
+    // Build the graph and start the loop immediately — do NOT gate on resume().
+    // connect() runs after async work (session POST, getUserMedia, ICE), so the
+    // user-activation window may have expired and resume() can stay pending
+    // forever; gating on it left the mouth frozen. A suspended context just
+    // reads zeros until resume succeeds.
+    const src = ctx.createMediaStreamSource(stream)
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 512
+    analyser.smoothingTimeConstant = 0.2
+    analyser.minDecibels = -70
+    analyser.maxDecibels = -20
+    // Only connect to analyser for amplitude measurement.
+    // Do NOT connect to ctx.destination — the WebRTC track already handles playback.
+    src.connect(analyser)
 
-      const binHz = ctx.sampleRate / analyser.fftSize
-      const lowBin = Math.max(0, Math.round(300 / binHz))
-      const highBin = Math.min(analyser.frequencyBinCount - 1, Math.round(3400 / binHz))
-      const binCount = highBin - lowBin + 1
-      const buf = new Uint8Array(analyser.frequencyBinCount)
-      const NOISE_FLOOR = 0.22
+    void ctx.resume().catch(() => {})
+    if (ctx.state !== "running") {
+      // Chrome exempts pages with live mic capture from the autoplay policy, so
+      // resume() usually succeeds — but if it doesn't, retry on the next touch.
+      const retry = () => void ctx.resume().catch(() => {})
+      document.addEventListener("pointerdown", retry, { once: true })
+    }
 
-      function tick() {
-        analyser.getByteFrequencyData(buf)
-        let sum = 0
-        for (let i = lowBin; i <= highBin; i++) sum += buf[i]
-        const avg = sum / (binCount * 255)
-        if (!destroyed) mouthAmplitude.value = avg < NOISE_FLOOR ? 0 : Math.min(1, (avg - NOISE_FLOOR) * 3.5)
-        analyserRafId = requestAnimationFrame(tick)
-      }
+    const binHz = ctx.sampleRate / analyser.fftSize
+    const lowBin = Math.max(0, Math.round(300 / binHz))
+    const highBin = Math.min(analyser.frequencyBinCount - 1, Math.round(3400 / binHz))
+    const binCount = highBin - lowBin + 1
+    const buf = new Uint8Array(analyser.frequencyBinCount)
+    const NOISE_FLOOR = 0.22
+
+    function tick() {
+      analyser.getByteFrequencyData(buf)
+      let sum = 0
+      for (let i = lowBin; i <= highBin; i++) sum += buf[i]
+      const avg = sum / (binCount * 255)
+      if (!destroyed) mouthAmplitude.value = avg < NOISE_FLOOR ? 0 : Math.min(1, (avg - NOISE_FLOOR) * 3.5)
       analyserRafId = requestAnimationFrame(tick)
-    })
+    }
+    analyserRafId = requestAnimationFrame(tick)
   }
 
   let connectId = 0
@@ -107,7 +117,10 @@ export function useWebRTC(
     // Create AudioContext inside user gesture so it starts un-suspended
     if (!audioCtx || audioCtx.state === "closed") audioCtx = new AudioContext()
 
-    pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] })
+    // No STUN: the backend runs on the same host/LAN, so host candidates suffice.
+    // A STUN server the kiosk can't reach makes ICE gathering stall until the
+    // 3 s timeout below — that was the bulk of the audio start-up delay.
+    pc = new RTCPeerConnection({ iceServers: [] })
 
     localStream.getTracks().forEach(t => {
       const sender = pc!.addTrack(t, localStream!)

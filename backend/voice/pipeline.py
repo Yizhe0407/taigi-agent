@@ -177,6 +177,10 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
                     "client_ready not received within 3 s for session %s — sending welcome anyway",
                     session_id,
                 )
+            # Single source of truth for the welcome: the server announces the text on
+            # the data channel (subtitle/chat) at the same moment it queues the audio,
+            # so the subtitle can no longer appear seconds before the voice.
+            webrtc_connection.send_app_message({"type": "agent_reply", "text": _WELCOME_TEXT, "role": "assistant"})
             # ponytail: TTSSpeakFrame is the canonical standalone-utterance signal for TTS
             # services (tts_service.py:752); TextFrame relies on sentence aggregator flush.
             await task.queue_frame(TTSSpeakFrame(text=_WELCOME_TEXT))
