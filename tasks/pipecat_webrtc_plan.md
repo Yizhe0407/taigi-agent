@@ -4,6 +4,7 @@
 
 - Phase 1–4 完成並 commit（ce027de）。
 - 2026-07-07 深度審查發現 13 項問題（見下方「審查發現」）→ 四路並行修復完成：#1-#13 全修（#9 改為 bot 說話時才 interrupt；#12 pre-commit 順手修）。fresh-context 複審 2 findings（renegotiation 孤兒 session、假測試）也已修。pytest 250 綠、ruff 乾淨、typecheck 綠。
+- Phase 5：telemetry 整合完成——session connect/disconnect + active_sessions、barge-in counter、語音輪延遲 histogram、`voice.tts` stage 耗時、pipeline 異常路徑 `log_diagnostic`，見 `docs/observability.md`。
 - 下一步：Phase 5 — 平板 AEC 實測、barge-in 延遲 <200ms 驗證、斷線重連 fallback（含 ICE failed 時 pcId 未清的重連路徑）、telemetry 整合、architecture.md voice 段落更新。
 - 阻塞：無。
 

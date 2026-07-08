@@ -17,6 +17,7 @@ from opentelemetry.trace import Status, StatusCode
 _AGENT_INSTRUMENTATION_NAME = "taigi_bus_agent.agent"
 _PIPELINE_INSTRUMENTATION_NAME = "taigi_bus_agent.pipeline"
 _PROVIDER_INSTRUMENTATION_NAME = "taigi_bus_agent.provider"
+_DEPARTURES_INSTRUMENTATION_NAME = "taigi_bus_agent.departures"
 
 # Recommended bucket boundaries from OTel HTTP semantic conventions spec.
 # https://opentelemetry.io/docs/specs/semconv/http/http-metrics/
@@ -158,6 +159,28 @@ class AgentTelemetry:
             unit="{lookup}",
             description=("Upstream-data cache lookups. Attributes: cache.name (e.g. tdx.route_info), cache.outcome (hit/miss)."),
         )
+        self._provider_fallbacks = provider_meter.create_counter(
+            "provider.fallback",
+            unit="{call}",
+            description=(
+                "HybridBusProvider ebus→TDX fallback outcomes. Attributes: "
+                "provider.operation (eta/route_estimate), provider.outcome "
+                "(ebus_hit/tdx_fallback/both_empty)."
+            ),
+        )
+
+        # ── Departures instrumentation (decision classification) ──────────────
+        departures_meter = metrics.get_meter(_DEPARTURES_INSTRUMENTATION_NAME)
+        self._departure_decisions = departures_meter.create_counter(
+            "departures.decision",
+            unit="{decision}",
+            description=(
+                "Departure decisions produced by _classify_stop, plus rows dropped "
+                "by the terminal-direction auto-filter. Attribute: departures.decision "
+                "(arriving_soon/can_wait/long_wait/not_departed/last_departed/unknown/"
+                "filtered_terminal_direction)."
+            ),
+        )
 
         # ── Pipeline instrumentation (ASR / TTS stages) ───────────────────────
         pipeline_meter = metrics.get_meter(_PIPELINE_INSTRUMENTATION_NAME)
@@ -175,6 +198,28 @@ class AgentTelemetry:
             "pipeline.tts.audio_bytes",
             unit="By",
             description="Size of the concatenated WAV returned by the TTS endpoint.",
+        )
+
+        # ── Voice (pipecat WebRTC pipeline) instrumentation ───────────────────
+        self._voice_sessions = pipeline_meter.create_counter(
+            "pipeline.voice.session",
+            unit="{session}",
+            description="WebRTC voice session connect/disconnect events. Attributes: pipeline.outcome (connected/disconnected).",
+        )
+        self._voice_active_sessions = pipeline_meter.create_up_down_counter(
+            "pipeline.voice.active_sessions",
+            unit="{session}",
+            description="Number of currently active WebRTC voice sessions.",
+        )
+        self._voice_barge_in = pipeline_meter.create_counter(
+            "pipeline.voice.barge_in",
+            unit="{interruption}",
+            description="Times the user interrupted (barge-in) the bot while it was speaking.",
+        )
+        self._voice_turn_duration = pipeline_meter.create_histogram(
+            "pipeline.voice.turn.duration",
+            unit="s",
+            description=("Latency from user utterance transcription (STT output) to the first TTS audio frame produced for the reply."),
         )
 
     # ── Span helpers ──────────────────────────────────────────────────────────
@@ -321,6 +366,27 @@ class AgentTelemetry:
             },
         )
 
+    def record_provider_fallback(self, *, operation: str, outcome: str) -> None:
+        """Record a HybridBusProvider ebus→TDX fallback decision.
+
+        `operation` identifies the call site (eta/route_estimate); `outcome`
+        is ebus_hit/tdx_fallback/both_empty. A silent ebus outage shows up as
+        a rising tdx_fallback (and eventually both_empty) rate here.
+        """
+        self._provider_fallbacks.add(
+            1,
+            {
+                "provider.operation": operation,
+                "provider.outcome": outcome,
+            },
+        )
+
+    # ── Departures metrics ─────────────────────────────────────────────────────
+
+    def record_departure_decision(self, *, decision: str) -> None:
+        """Record one departure decision classification (or a terminal-direction filter drop)."""
+        self._departure_decisions.add(1, {"departures.decision": decision})
+
     # ── Pipeline metrics ──────────────────────────────────────────────────────
 
     def record_pipeline_stage(self, duration_s: float, *, stage: str, outcome: str) -> None:
@@ -346,3 +412,19 @@ class AgentTelemetry:
     def record_tts_audio_bytes(self, n_bytes: int) -> None:
         """Record size of the synthesized WAV returned to the frontend."""
         self._tts_audio_bytes.record(n_bytes)
+
+    def record_voice_session(self, *, outcome: str) -> None:
+        """Record a WebRTC voice session connect/disconnect event."""
+        self._voice_sessions.add(1, {"pipeline.outcome": outcome})
+
+    def record_voice_active_sessions(self, delta: int) -> None:
+        """Adjust the currently-active WebRTC voice session gauge (+1 connect, -1 disconnect)."""
+        self._voice_active_sessions.add(delta)
+
+    def record_voice_barge_in(self) -> None:
+        """Record one user barge-in (interrupting the bot mid-speech)."""
+        self._voice_barge_in.add(1)
+
+    def record_voice_turn_latency(self, duration_s: float) -> None:
+        """Record latency from STT transcription to the first TTS audio frame."""
+        self._voice_turn_duration.record(duration_s)

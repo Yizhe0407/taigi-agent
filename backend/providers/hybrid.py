@@ -12,6 +12,7 @@ import logging
 
 from providers.ebus import EbusBusProvider
 from providers.tdx_bus import TdxBusProvider
+from telemetry import get_telemetry
 
 _log = logging.getLogger(__name__)
 
@@ -77,7 +78,9 @@ class HybridBusProvider:
         """ebus for all routes; TDX fallback if route not in ebus."""
         result = await self._ebus.fetch_route_estimate(sub_route_name)
         if result is not None:
+            get_telemetry().record_provider_fallback(operation="route_estimate", outcome="ebus_hit")
             return result
+        get_telemetry().record_provider_fallback(operation="route_estimate", outcome="tdx_fallback")
         return await self._tdx.fetch_route_estimate(sub_route_name)
 
     async def fetch_eta_at_stop(self, stop_name: str) -> list[dict]:
@@ -86,14 +89,18 @@ class HybridBusProvider:
             route_info = await self._ebus.find_routes_at_stop(stop_name)
             rows = await self._ebus.fetch_eta_rows_for_stop(stop_name, list(route_info))
             if rows:
+                get_telemetry().record_provider_fallback(operation="eta", outcome="ebus_hit")
                 return rows
         except Exception as exc:
             _log.warning("ebus fetch_eta_at_stop failed for %s: %s", stop_name, exc)
         _log.warning("ebus returned nothing for %s; falling back to TDX", stop_name)
         try:
-            return await self._tdx.fetch_eta_at_stop(stop_name)
+            tdx_rows = await self._tdx.fetch_eta_at_stop(stop_name)
+            get_telemetry().record_provider_fallback(operation="eta", outcome="tdx_fallback" if tdx_rows else "both_empty")
+            return tdx_rows
         except Exception as exc:
             _log.warning("TDX fallback also failed for %s: %s", stop_name, exc)
+            get_telemetry().record_provider_fallback(operation="eta", outcome="both_empty")
             return []
 
     async def aclose(self) -> None:

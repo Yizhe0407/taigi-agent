@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime
+from unittest.mock import patch
 
 import pytest
 
@@ -496,3 +497,45 @@ def test_snapshot_filters_inbound_when_back_dest_matches_kiosk(use_provider):
     route_ids = [(r.route, r.go_back) for r in snapshot.routes]
     assert ("201A", 0) in route_ids  # outbound shown
     assert ("201A", 1) not in route_ids  # inbound to kiosk filtered
+
+
+# ── departures.decision metric ────────────────────────────────────────────────
+
+
+def test_build_departure_snapshot_records_decision_per_route(use_provider):
+    use_provider(
+        FakeBusProvider(
+            route_info={
+                "201": {"id": "201", "go_dest": "雲林科技大學", "back_dest": "高鐵雲林站"},
+                "101": {"id": "101", "go_dest": "受天宮", "back_dest": "斗六棒球場"},
+            },
+            eta_at_stop=[
+                {"sub_route_name": "201", "direction": 0, "stop_status": 0, "estimate_seconds": 120},
+                {"sub_route_name": "101", "direction": 0, "stop_status": 3, "estimate_seconds": None},
+            ],
+        )
+    )
+    with patch("services.departures.snapshot.get_telemetry") as mock_get_telemetry:
+        asyncio.run(departures.build_departure_snapshot("雲林科技大學", go_back=0, updated_at=_updated_at()))
+
+    recorded = [call.kwargs["decision"] for call in mock_get_telemetry.return_value.record_departure_decision.call_args_list]
+    assert recorded == ["arriving_soon", "last_departed"]
+
+
+def test_build_departure_snapshot_records_filtered_terminal_direction(use_provider):
+    """Auto-detect direction (go_back=None) drops the terminal direction; that drop is counted too."""
+    use_provider(
+        FakeBusProvider(
+            route_info={
+                "201A": {"id": "201A", "go_dest": "", "back_dest": "斗六火車站"},
+            },
+            eta_at_stop=[
+                {"sub_route_name": "201A", "direction": 0, "stop_status": 0, "estimate_seconds": 420},
+                {"sub_route_name": "201A", "direction": 1, "stop_status": 0, "estimate_seconds": 1260},
+            ],
+        )
+    )
+    with patch("services.departures.normalize.get_telemetry") as mock_get_telemetry:
+        asyncio.run(departures.build_departure_snapshot("斗六火車站", updated_at=_updated_at()))
+
+    mock_get_telemetry.return_value.record_departure_decision.assert_called_once_with(decision="filtered_terminal_direction")

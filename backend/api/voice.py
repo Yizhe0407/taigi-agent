@@ -17,6 +17,7 @@ from pipecat.transports.smallwebrtc.request_handler import (
     SmallWebRTCRequestHandler,
 )
 
+from agent.diagnostics import log_diagnostic
 from api.chat import _get_store
 
 router = APIRouter()
@@ -68,8 +69,15 @@ async def webrtc_offer(body: dict) -> dict:
             session_id = store.create()
             _log.info("Voice pipeline created new session %s (no valid session_id from client)", session_id)
 
+        def _on_pipeline_done(fut: asyncio.Task) -> None:
+            if fut.cancelled() or fut.exception() is None:
+                return
+            exc = fut.exception()
+            _log.exception("Voice pipeline error", exc_info=exc)
+            log_diagnostic("voice.pipeline", f"session={session_id} _start_pipeline task crashed: {exc}")
+
         t = asyncio.create_task(run_voice_pipeline(connection, session_id))
-        t.add_done_callback(lambda fut: _log.exception("Voice pipeline error", exc_info=fut.exception()) if not fut.cancelled() and fut.exception() else None)
+        t.add_done_callback(_on_pipeline_done)
 
     try:
         answer = await _handler.handle_web_request(request, _start_pipeline)

@@ -1,5 +1,7 @@
 import { onBeforeUnmount, readonly, ref, type Ref } from "vue"
 
+import { reportClientEvent } from "@/lib/report-client-event"
+
 export type WebRTCState = "disconnected" | "connecting" | "connected" | "error"
 
 export function useWebRTC(
@@ -103,7 +105,12 @@ export function useWebRTC(
     } catch (err) {
       if (currentId !== connectId || destroyed) return
       const name = err instanceof DOMException ? err.name : ""
-      if (name === "NotAllowedError" || name === "PermissionDeniedError") micDenied.value = true
+      if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+        micDenied.value = true
+        reportClientEvent("webrtc_mic_denied", "getUserMedia permission denied", name)
+      } else {
+        reportClientEvent("webrtc_mic_error", err instanceof Error ? err.message : String(err), name)
+      }
       state.value = "error"
       return
     }
@@ -182,7 +189,10 @@ export function useWebRTC(
       if (currentId !== connectId || !pc || destroyed) return
       const s = pc.iceConnectionState
       if (s === "connected" || s === "completed") state.value = "connected"
-      else if (s === "failed" || s === "closed") state.value = "error"
+      else if (s === "failed" || s === "closed") {
+        if (s === "failed") reportClientEvent("webrtc_ice_failed", `ICE connection state: ${s}`)
+        state.value = "error"
+      }
     }
 
     const offer = await pc.createOffer()
@@ -217,8 +227,9 @@ export function useWebRTC(
           session_id: sessionId?.value ?? null,
         }),
       })
-    } catch {
+    } catch (err) {
       if (currentId !== connectId || destroyed) return
+      reportClientEvent("webrtc_offer_network_error", err instanceof Error ? err.message : String(err))
       cleanup()
       state.value = "error"
       return
@@ -227,6 +238,7 @@ export function useWebRTC(
     if (currentId !== connectId || destroyed) return
 
     if (!resp.ok) {
+      reportClientEvent("webrtc_offer_rejected", `POST /api/voice/offer -> ${resp.status}`)
       cleanup()
       state.value = "error"
       return
@@ -236,8 +248,12 @@ export function useWebRTC(
     pcId = answer.pc_id
     try {
       await pc.setRemoteDescription({ sdp: answer.sdp, type: answer.type })
-    } catch {
+    } catch (err) {
       if (currentId !== connectId || destroyed) return
+      reportClientEvent(
+        "webrtc_remote_description_error",
+        err instanceof Error ? err.message : String(err),
+      )
       cleanup()
       state.value = "error"
     }

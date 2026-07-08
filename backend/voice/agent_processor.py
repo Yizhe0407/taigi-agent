@@ -27,10 +27,17 @@ _log = logging.getLogger(__name__)
 class TaigiBusAgentProcessor(FrameProcessor):
     """Integrates the existing REST AgentSession into the Pipecat pipeline."""
 
-    def __init__(self, session_id: str, send_event: Callable[[Any], None] | None = None, **kwargs):
+    def __init__(
+        self,
+        session_id: str,
+        send_event: Callable[[Any], None] | None = None,
+        turn_timer: Any | None = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.session_id = session_id
         self._send_event = send_event
+        self._turn_timer = turn_timer
         self._inference_task: asyncio.Task | None = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -50,6 +57,8 @@ class TaigiBusAgentProcessor(FrameProcessor):
                 return
 
             _log.info("Agent received transcription: %s", text)
+            if self._turn_timer:
+                self._turn_timer.mark_transcription()
 
             # Cancel any existing task just in case
             if self._inference_task and not self._inference_task.done():

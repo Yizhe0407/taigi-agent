@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from zoneinfo import ZoneInfo
 
 from pipeline.normalize import count_to_chinese, to_halfwidth
+from telemetry import get_telemetry
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
@@ -151,6 +152,7 @@ def iter_scoped_stop_etas(
             if stop_direction != go_back:
                 continue
         elif _is_terminal_direction(stop_name, route_info, sub_route_name, stop_direction):
+            get_telemetry().record_departure_decision(decision="filtered_terminal_direction")
             continue
 
         yield stop, sub_route_name, sub_route_name, stop_direction

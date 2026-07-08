@@ -7,7 +7,7 @@ with TDX as emergency fallback only.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from providers.hybrid import HybridBusProvider
 
@@ -222,3 +222,53 @@ def test_aclose_closes_both():
     asyncio.run(h.aclose())
     ebus.aclose.assert_awaited_once()
     tdx.aclose.assert_awaited_once()
+
+
+# ── provider.fallback metric ────────────────────────────────────────────────────
+
+
+def test_fetch_route_estimate_records_ebus_hit():
+    h, _, _ = _make_hybrid(ebus_route_estimate=[{"stop_name": "A"}])
+    with patch("providers.hybrid.get_telemetry") as mock_get_telemetry:
+        asyncio.run(h.fetch_route_estimate("Y01"))
+    mock_get_telemetry.return_value.record_provider_fallback.assert_called_once_with(operation="route_estimate", outcome="ebus_hit")
+
+
+def test_fetch_route_estimate_records_tdx_fallback():
+    h, _, _ = _make_hybrid(ebus_route_estimate=None, tdx_route_estimate=[{"stop_name": "B"}])
+    with patch("providers.hybrid.get_telemetry") as mock_get_telemetry:
+        asyncio.run(h.fetch_route_estimate("Y99"))
+    mock_get_telemetry.return_value.record_provider_fallback.assert_called_once_with(operation="route_estimate", outcome="tdx_fallback")
+
+
+def test_fetch_eta_at_stop_records_ebus_hit():
+    ebus_rows = [{"sub_route_name": "Y01", "direction": 0, "stop_status": 0, "estimate_seconds": 60}]
+    h, _, _ = _make_hybrid(ebus_eta_rows=ebus_rows)
+    with patch("providers.hybrid.get_telemetry") as mock_get_telemetry:
+        asyncio.run(h.fetch_eta_at_stop("斗六火車站"))
+    mock_get_telemetry.return_value.record_provider_fallback.assert_called_once_with(operation="eta", outcome="ebus_hit")
+
+
+def test_fetch_eta_at_stop_records_tdx_fallback_when_tdx_has_rows():
+    tdx_rows = [{"sub_route_name": "7120", "direction": 0, "stop_status": 0, "estimate_seconds": 300}]
+    h, _, _ = _make_hybrid(ebus_eta_rows=[], tdx_eta=tdx_rows)
+    with patch("providers.hybrid.get_telemetry") as mock_get_telemetry:
+        asyncio.run(h.fetch_eta_at_stop("斗六火車站"))
+    mock_get_telemetry.return_value.record_provider_fallback.assert_called_once_with(operation="eta", outcome="tdx_fallback")
+
+
+def test_fetch_eta_at_stop_records_both_empty_when_tdx_also_empty():
+    h, _, _ = _make_hybrid(ebus_eta_rows=[], tdx_eta=[])
+    with patch("providers.hybrid.get_telemetry") as mock_get_telemetry:
+        asyncio.run(h.fetch_eta_at_stop("斗六火車站"))
+    mock_get_telemetry.return_value.record_provider_fallback.assert_called_once_with(operation="eta", outcome="both_empty")
+
+
+def test_fetch_eta_at_stop_records_both_empty_when_tdx_raises():
+    h, ebus, tdx = _make_hybrid()
+    ebus.find_routes_at_stop.side_effect = RuntimeError("ebus down")
+    tdx.fetch_eta_at_stop.side_effect = RuntimeError("tdx down")
+    with patch("providers.hybrid.get_telemetry") as mock_get_telemetry:
+        result = asyncio.run(h.fetch_eta_at_stop("斗六火車站"))
+    assert result == []
+    mock_get_telemetry.return_value.record_provider_fallback.assert_called_once_with(operation="eta", outcome="both_empty")

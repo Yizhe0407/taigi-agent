@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from collections import deque
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -26,6 +27,8 @@ from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCOutputTransport, SmallWebRTCTransport
 from pipecat.workers.base_worker import WorkerParams
 
+from agent.diagnostics import log_diagnostic
+from telemetry import get_telemetry
 from voice.agent_processor import TaigiBusAgentProcessor
 from voice.stt_breeze import BreezeSTTService
 from voice.tts_taigi import TaigiTTSService
@@ -33,6 +36,29 @@ from voice.tts_taigi import TaigiTTSService
 _log = logging.getLogger(__name__)
 
 _WELCOME_TEXT = "請問您欲前往哪裡？"
+
+
+class TurnLatencyTracker:
+    """Bridges 'user finished speaking -> first TTS audio frame' latency across
+    two separate pipeline stages (agent_processor -> tts_taigi).
+
+    ponytail: single mutable timestamp slot shared by both processors for one
+    pipeline run. Correct for the common non-overlapping-turn case; a barge-in
+    that starts a new turn mid-measurement can produce a stale/dropped sample
+    (low-stakes latency metric — upgrade to per-turn IDs if it gets noisy).
+    """
+
+    def __init__(self) -> None:
+        self._t0: float | None = None
+
+    def mark_transcription(self) -> None:
+        self._t0 = time.perf_counter()
+
+    def mark_first_audio(self) -> None:
+        if self._t0 is None:
+            return
+        get_telemetry().record_voice_turn_latency(time.perf_counter() - self._t0)
+        self._t0 = None
 
 
 def _drain_chunk_queue(queue: deque) -> None:
@@ -76,6 +102,7 @@ class BargeInProcessor(FrameProcessor):
             self._bot_speaking = False
         elif isinstance(frame, VADUserStartedSpeakingFrame) and self._bot_speaking:
             _log.debug("Barge-in detected while bot speaking, broadcasting interruption")
+            get_telemetry().record_voice_barge_in()
             await self.broadcast_interruption()
         await self.push_frame(frame, direction)
 
@@ -128,11 +155,13 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
     vad = VADProcessor(vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.7)))
     barge_in = BargeInProcessor()
     stt = BreezeSTTService()
+    turn_timer = TurnLatencyTracker()
     agent = TaigiBusAgentProcessor(
         session_id=session_id,
         send_event=webrtc_connection.send_app_message,
+        turn_timer=turn_timer,
     )
-    tts = TaigiTTSService()
+    tts = TaigiTTSService(turn_timer=turn_timer)
 
     pipeline = Pipeline(
         processors=[
@@ -167,6 +196,9 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
 
     @transport.event_handler("on_client_connected")
     async def on_connected(_transport, _connection) -> None:
+        get_telemetry().record_voice_session(outcome="connected")
+        get_telemetry().record_voice_active_sessions(1)
+
         async def _send_welcome():
             # Wait for the frontend to confirm its <audio> element has started playing
             # before sending the welcome text. Falls back after 3 s so we always greet.
@@ -194,11 +226,17 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
         # it does NOT push an EndFrame, so task.run() never returns. Cancel explicitly.
         # Session data is preserved — frontend owns lifecycle via DELETE /api/chat/sessions/{id}.
         _log.info("WebRTC transport disconnected for session %s — cancelling pipeline", session_id)
+        log_diagnostic("voice.pipeline", f"session={session_id} disconnected, cancelling pipeline")
+        get_telemetry().record_voice_session(outcome="disconnected")
+        get_telemetry().record_voice_active_sessions(-1)
         await task.cancel()
 
     _log.info("Starting voice pipeline for session_id=%s, pc_id=%s", session_id, webrtc_connection.pc_id)
     try:
         await webrtc_connection.connect()
         await task.run(WorkerParams(loop=asyncio.get_running_loop()))
+    except Exception as exc:
+        log_diagnostic("voice.pipeline", f"session={session_id} pipeline crashed: {exc}")
+        raise
     finally:
         _log.info("Voice pipeline stopped for session_id=%s, pc_id=%s", session_id, webrtc_connection.pc_id)

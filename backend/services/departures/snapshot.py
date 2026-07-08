@@ -17,6 +17,7 @@ from services.departures.normalize import (
     iter_scoped_stop_etas,
 )
 from services.departures.provider import get_provider
+from telemetry import get_telemetry
 
 _log = logging.getLogger(__name__)
 
@@ -152,6 +153,7 @@ async def build_departure_snapshot(
 
     for stop, route, route_id, stop_direction in iter_scoped_stop_etas(eta_data, route_info, stop_name, go_back):
         c = _classify_stop(stop, now)
+        get_telemetry().record_departure_decision(decision=c.decision.value)
         direction = _direction_label_from_info(route_info, route, stop_direction)
         dedupe_key = (route, stop_direction, c.status_text)
         if dedupe_key in seen:

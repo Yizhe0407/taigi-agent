@@ -2,9 +2,9 @@
 
 import asyncio
 from collections import deque
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
-from voice.pipeline import BargeInProcessor, _drain_chunk_queue
+from voice.pipeline import BargeInProcessor, TurnLatencyTracker, _drain_chunk_queue
 
 # ---------------------------------------------------------------------------
 # _drain_chunk_queue
@@ -112,3 +112,52 @@ def test_barge_in_processor_interrupts_when_bot_speaking():
         proc.broadcast_interruption.assert_called_once()
 
     asyncio.run(_run())
+
+
+def test_barge_in_processor_records_telemetry_counter():
+    """A real barge-in must increment the pipeline.voice.barge_in counter."""
+    from pipecat.frames.frames import VADUserStartedSpeakingFrame
+
+    async def _run():
+        proc = BargeInProcessor()
+        proc._bot_speaking = True
+        proc.broadcast_interruption = AsyncMock()
+        proc.push_frame = AsyncMock()
+        with patch("voice.pipeline.get_telemetry") as mock_get_telemetry:
+            await proc.process_frame(VADUserStartedSpeakingFrame(), None)
+            mock_get_telemetry.return_value.record_voice_barge_in.assert_called_once()
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# TurnLatencyTracker
+# ---------------------------------------------------------------------------
+
+
+def test_turn_latency_tracker_records_duration_on_first_audio():
+    with patch("voice.pipeline.get_telemetry") as mock_get_telemetry:
+        tracker = TurnLatencyTracker()
+        tracker.mark_transcription()
+        tracker.mark_first_audio()
+        mock_get_telemetry.return_value.record_voice_turn_latency.assert_called_once()
+        (duration,) = mock_get_telemetry.return_value.record_voice_turn_latency.call_args[0]
+        assert duration >= 0
+
+
+def test_turn_latency_tracker_noop_without_prior_mark():
+    """mark_first_audio() before mark_transcription() must not record (or raise)."""
+    with patch("voice.pipeline.get_telemetry") as mock_get_telemetry:
+        tracker = TurnLatencyTracker()
+        tracker.mark_first_audio()
+        mock_get_telemetry.return_value.record_voice_turn_latency.assert_not_called()
+
+
+def test_turn_latency_tracker_records_once_per_mark():
+    """A second mark_first_audio() without a new mark_transcription() must not double-record."""
+    with patch("voice.pipeline.get_telemetry") as mock_get_telemetry:
+        tracker = TurnLatencyTracker()
+        tracker.mark_transcription()
+        tracker.mark_first_audio()
+        tracker.mark_first_audio()
+        assert mock_get_telemetry.return_value.record_voice_turn_latency.call_count == 1
