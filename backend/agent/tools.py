@@ -1,3 +1,4 @@
+from tools.intent_rules import DIRECT_RESPONSE_POOL, pick_direct_response
 from tools.kiosk_bus import (
     check_stop_on_route,
     get_arrivals_here,
@@ -9,8 +10,8 @@ from tools.kiosk_bus import (
 )
 
 
-async def respond_directly(message: str) -> str:
-    return message
+async def respond_directly(message: str, intent: str | None = None) -> str:
+    return pick_direct_response(intent, message)
 
 
 TOOL_SCHEMAS: list = [
@@ -23,13 +24,23 @@ TOOL_SCHEMAS: list = [
                 "以下情況使用此工具：非公車查詢、語意不清需追問、使用者表示不需要、"
                 "以及公車工具查詢完成後輸出最終答案。"
                 "公車相關查詢（到站時間、目的地路線等）必須先呼叫對應的公車工具，不得直接用此工具回答。"
+                "非公車情境務必用 intent 標明類別，系統會自動挑選合適說法，此時 message 隨意填即可。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "message": {
                         "type": "string",
-                        "description": "要回傳給使用者的文字。",
+                        "description": "要回傳給使用者的文字（僅在公車最終答案時採用；有帶社交 intent 時由系統覆寫）。",
+                    },
+                    "intent": {
+                        "type": "string",
+                        "enum": list(DIRECT_RESPONSE_POOL),
+                        "description": (
+                            "非公車情境的類別：off_topic=非公車閒聊、unclear=聽不懂需再說、"
+                            "complaint=抱怨質疑、thanks=道謝或表示不用了。"
+                            "公車最終答案不要帶此欄位。"
+                        ),
                     },
                 },
                 "required": ["message"],

@@ -282,7 +282,7 @@ def test_render_arrivals_uses_classify(use_provider):
         )
     )
 
-    assert asyncio.run(departures.render_arrivals("201", "雲林科技大學")) == ("往雲林科技大學：即將到站\n往高鐵雲林站：約十二分鐘後來車")
+    assert asyncio.run(departures.render_arrivals("201", "雲林科技大學")) == ("往雲林科技大學：即將到站\n往高鐵雲林站：約十二分鐘後到這站")
 
 
 def test_render_route_stops_lists_both_directions(use_provider):

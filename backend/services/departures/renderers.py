@@ -39,9 +39,10 @@ _SECTION_GROUP_LABEL: dict[DepartureSection, str] = {
 
 
 def _mark_incoming(status_text: str) -> str:
-    """Relative-time ETA (ends with 後) → append 來車 so the reader knows this is
-    the bus arriving at the kiosk, not the travel time to the destination."""
-    return f"{status_text}來車" if status_text.endswith("後") else status_text
+    """Relative-time ETA (ends with 後) → append 到這站. Anchors the arrival to a
+    *place* (這站 = here) so it contrasts with 抵達{destination} rather than both
+    ending in 站; critical for elderly riders. Reads naturally if copied verbatim."""
+    return f"{status_text}到這站" if status_text.endswith("後") else status_text
 
 
 def _with_schedule(status_text: str, scheduled_time: str | None) -> str:
