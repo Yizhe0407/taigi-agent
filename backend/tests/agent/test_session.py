@@ -23,6 +23,35 @@ def tool_call(name, arguments, call_id):
     )
 
 
+def _delta_chunk(content=None, tool_call_deltas=None):
+    return SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=content, tool_calls=tool_call_deltas))])
+
+
+async def _as_chunk_stream(response):
+    """Replay a canned response as create(stream=True) delta chunks.
+
+    Content arrives in small deltas (so sentence boundaries and <think> tags
+    span chunks, like real token streams); tool calls arrive as one indexed
+    delta batch.
+    """
+    message = response.choices[0].message
+    content = message.content or ""
+    for i in range(0, len(content), 8):
+        yield _delta_chunk(content=content[i : i + 8])
+    if message.tool_calls:
+        yield _delta_chunk(
+            tool_call_deltas=[
+                SimpleNamespace(
+                    index=i,
+                    id=call.id,
+                    type=call.type,
+                    function=SimpleNamespace(name=call.function.name, arguments=call.function.arguments),
+                )
+                for i, call in enumerate(message.tool_calls)
+            ]
+        )
+
+
 class FakeCompletions:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -33,6 +62,8 @@ class FakeCompletions:
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
+        if kwargs.get("stream"):
+            return _as_chunk_stream(response)
         return response
 
 
@@ -333,6 +364,43 @@ def test_history_stores_normalized_assistant_content_not_raw_reasoning():
     assert reply == session.messages[-1]["content"]
     assert "<think>" not in session.messages[-1]["content"]
     assert "没" not in session.messages[-1]["content"]
+
+
+def test_respond_stream_yields_sentences_and_history_matches_spoken_text():
+    """串流不變式：respond 的完整回覆 == respond_stream 所有 chunk 串接，
+    且歷史存的 assistant content 等於實際播出的文字（think 已剝、簡轉繁）。"""
+
+    async def bus_handler():
+        return "201 還有五分鐘"
+
+    session = make_session(
+        [
+            llm_response(assistant_message(tool_calls=[tool_call("bus", "{}", "c1")])),
+            llm_response(assistant_message("<think>检查结果</think>公车还有五分钟。请在原地等候。")),
+        ],
+        tool_handlers={"bus": bus_handler},
+    )
+
+    async def collect():
+        return [chunk async for chunk in session.respond_stream("到站時間")]
+
+    chunks = asyncio.run(collect())
+
+    assert len(chunks) >= 2, "第二輪自由文字應逐句串流，而非整段一次"
+    reply = "".join(chunks)
+    assert reply == "公車還有五分鐘。請在原地等候。"
+    assert session.messages[-1]["content"] == reply
+    # 第二輪走 stream=True
+    assert session.client.chat.completions.calls[1].get("stream") is True
+
+
+def test_respond_stream_canned_path_yields_single_chunk():
+    session = make_session([])
+
+    async def collect():
+        return [chunk async for chunk in session.respond_stream("我要去台中怎麼搭")]
+
+    assert asyncio.run(collect()) == ["這個要用地圖規劃比較準喔。"]
 
 
 def test_router_fallthrough_still_calls_llm():

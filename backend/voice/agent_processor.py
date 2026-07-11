@@ -69,15 +69,23 @@ class TaigiBusAgentProcessor(FrameProcessor):
             await self.push_frame(frame, direction)
 
     async def _run_agent_inference(self, text: str, direction: FrameDirection):
-        """Run the agent logic in a background task so we don't block process_frame."""
-        from api.chat import _get_store, respond_in_session
+        """Run the agent logic in a background task so we don't block process_frame.
+
+        Streams reply chunks straight into the pipeline — Pipecat's TTS
+        sentence aggregator starts synthesizing the first sentence while the
+        LLM is still generating the rest, instead of waiting for the full
+        reply.
+        """
+        from api.chat import _get_store, respond_in_session_stream
 
         try:
             if self._send_event:
                 self._send_event({"type": "transcript", "text": text, "role": "user"})
 
+            stream = respond_in_session_stream(self.session_id, text)
             try:
-                reply = await respond_in_session(self.session_id, text)
+                # LookupError surfaces on the first pull, before any chunk.
+                first = await anext(stream, None)
             except LookupError:
                 # The chat session's TTL expired while this long-lived WebRTC
                 # connection stayed open. Recreate a fresh session and retry
@@ -85,20 +93,29 @@ class TaigiBusAgentProcessor(FrameProcessor):
                 # the kiosk goes permanently silent for a still-connected user.
                 _log.warning("Chat session %s expired; recreating for live voice connection", self.session_id)
                 self.session_id = await asyncio.to_thread(_get_store().create)
+                stream = respond_in_session_stream(self.session_id, text)
                 try:
-                    reply = await respond_in_session(self.session_id, text)
+                    first = await anext(stream, None)
                 except LookupError:
                     _log.error("Recreated chat session %s immediately missing", self.session_id)
                     if self._send_event:
                         self._send_event({"type": "agent_cancelled"})
                     return
 
+            parts: list[str] = []
+            await self.push_frame(LLMFullResponseStartFrame(), direction)
+            if first is not None:
+                parts.append(first)
+                await self.push_frame(TextFrame(text=first), direction)
+                async for chunk in stream:
+                    parts.append(chunk)
+                    await self.push_frame(TextFrame(text=chunk), direction)
+            await self.push_frame(LLMFullResponseEndFrame(), direction)
+
+            reply = "".join(parts)
             _log.info("Agent reply: %s", reply)
             if self._send_event:
                 self._send_event({"type": "agent_reply", "text": reply, "role": "assistant"})
-            await self.push_frame(LLMFullResponseStartFrame(), direction)
-            await self.push_frame(TextFrame(text=reply), direction)
-            await self.push_frame(LLMFullResponseEndFrame(), direction)
 
         except asyncio.CancelledError:
             _log.info("Agent inference task was cancelled due to interruption.")

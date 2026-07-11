@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,7 +20,7 @@ from agent.context import (
     trim_history,
 )
 from agent.diagnostics import log_diagnostic
-from agent.llm_client import ContextWindowExceeded, ToolCallFailed, call_llm
+from agent.llm_client import ContextWindowExceeded, ToolCallFailed, call_llm, call_llm_stream
 from agent.router import ConvState, Decision, Intent, IntentRouter
 from agent.tool_dispatch import (
     ToolHandler,
@@ -28,7 +28,7 @@ from agent.tool_dispatch import (
     execute_tool_calls,
     function_tool_calls,
 )
-from pipeline.normalize import normalize_llm_output
+from pipeline.normalize import StreamNormalizer, normalize_llm_output
 from telemetry import AgentTelemetry
 
 InputEnricher = Callable[[str], Awaitable[str]]
@@ -65,10 +65,12 @@ _TOOL_ROUND_LIMIT_MESSAGE = "查詢逾時，請換個方式再問一次。"
 
 @dataclass(frozen=True)
 class _LlmTurnResult:
-    """LLM loop 的單一收斂出口；`error` 非 None 時由呼叫端記錄 metric 後重拋。"""
+    """LLM loop 的單一收斂出口；`error` 非 None 時由呼叫端記錄 metric 後重拋。
+
+    回覆文字不在此傳遞——loop 以 ("chunk", str) 事件串流輸出，
+    完整回覆恆等於所有 chunk 串接。"""
 
     outcome: str  # "ok" | "tool_round_limit" | "error"
-    reply: str
     tool_rounds: int
     error: Exception | None = None
 
@@ -156,6 +158,11 @@ class AgentSession:
             self.conv_state = decision.next_state
 
     async def respond(self, user_input: str) -> str:
+        """完整回覆 = respond_stream 所有 chunk 串接（單一實作路徑，無分岔）。"""
+        return "".join([chunk async for chunk in self.respond_stream(user_input)])
+
+    async def respond_stream(self, user_input: str) -> AsyncIterator[str]:
+        """串流回覆：yield 可直接播報/顯示的文字片段（已 normalize、句子級）。"""
         # Router gate: canned-response intents (Rules 1-3) short-circuit
         # before any LLM cost. Everything else goes to the LLM loop.
         decision = self.router.classify(user_input, self.conv_state)
@@ -176,16 +183,18 @@ class AgentSession:
                     intent=decision.intent.value,
                     outcome="ok",
                 )
-                return decision.canned_response
+            yield decision.canned_response
+            return
 
-        return await self._llm_respond(user_input, intent=decision.intent)
+        async for chunk in self._llm_respond_stream(user_input, intent=decision.intent):
+            yield chunk
 
-    async def _llm_respond(
+    async def _llm_respond_stream(
         self,
         user_input: str,
         *,
         intent: Intent = Intent.UNKNOWN,
-    ) -> str:
+    ) -> AsyncIterator[str]:
         # Prefetch enrichment is best-effort: a failing enricher must not sink
         # the turn. Previously an exception here propagated as a 500 with no
         # agent.turn metric recorded; degrade to the raw user input instead.
@@ -208,7 +217,14 @@ class AgentSession:
             self.telemetry.set_content(span, "agent.system_prompt", self.system_prompt)
             self.messages.append({"role": "user", "content": enriched_content})
 
-            result = await self._run_llm_loop()
+            reply_parts: list[str] = []
+            result: _LlmTurnResult | None = None
+            async for kind, value in self._run_llm_loop():
+                if kind == "chunk":
+                    reply_parts.append(value)
+                    yield value
+                else:
+                    result = value
             # 唯一記錄點：loop 的每個出口（含錯誤）都以 _LlmTurnResult 收斂，
             # 新增出口路徑時型別上必須給 outcome，不可能漏記。
             self.telemetry.record_turn(
@@ -219,34 +235,61 @@ class AgentSession:
             )
             if result.error is not None:
                 raise result.error
-            self.telemetry.set_content(span, "agent.reply.text", result.reply)
-            return result.reply
+            self.telemetry.set_content(span, "agent.reply.text", "".join(reply_parts))
 
-    async def _run_llm_loop(self) -> _LlmTurnResult:
-        """LLM tool-call loop。所有出口都回傳 `_LlmTurnResult`，不直接 raise —
-        例外帶在 `error` 欄位由 `_llm_respond` 統一記錄 metric 後重拋。"""
+    async def _run_llm_loop(self) -> AsyncIterator[tuple[str, Any]]:
+        """LLM tool-call loop。以事件串流輸出：("chunk", 可播報文字片段)…
+        ("result", `_LlmTurnResult`)。所有出口（含錯誤）都以 result 事件收斂，
+        例外帶在 `error` 欄位由 `_llm_respond_stream` 統一記錄 metric 後重拋。
+
+        首輪 forced tool call 不串流（強制 tool call，無可播文字）；後續 auto
+        輪走 `call_llm_stream`，content delta 經 `StreamNormalizer` 逐句 yield，
+        讓 TTS / SSE 在 LLM 還在生成時就開始輸出。"""
         tool_rounds = 0
         context_retries = 0
         force_required = True  # degraded to False on ToolCallFailed
         try:
             while True:
                 await self._prepare_context()
+                # First round: force a tool call (prevents free-text hallucinations).
+                # Subsequent rounds: allow free text so the model can respond after
+                # receiving tool results without being forced into respond_directly.
+                force_tool = tool_rounds == 0 and force_required
+                normalizer = StreamNormalizer()
+                round_pieces: list[str] = []
                 try:
-                    response = await call_llm(
-                        self.client,
-                        self.model,
-                        self._request_messages(),
-                        self.tool_schemas or None,
-                        self.extra_body,
-                        self.telemetry,
-                        operation="respond",
-                        # First round: force a tool call (prevents free-text hallucinations).
-                        # Subsequent rounds: allow free text so the model can respond after
-                        # receiving tool results without being forced into respond_directly.
-                        tool_choice="required" if (tool_rounds == 0 and force_required) else "auto",
-                    )
+                    if force_tool:
+                        response = await call_llm(
+                            self.client,
+                            self.model,
+                            self._request_messages(),
+                            self.tool_schemas or None,
+                            self.extra_body,
+                            self.telemetry,
+                            operation="respond",
+                            tool_choice="required",
+                        )
+                    else:
+                        response = None
+                        async for kind, value in call_llm_stream(
+                            self.client,
+                            self.model,
+                            self._request_messages(),
+                            self.tool_schemas or None,
+                            self.extra_body,
+                            self.telemetry,
+                            operation="respond",
+                            tool_choice="auto",
+                        ):
+                            if kind == "delta":
+                                for piece in normalizer.feed(value):
+                                    round_pieces.append(piece)
+                                    yield ("chunk", piece)
+                            else:
+                                response = value
                 except ContextWindowExceeded:
-                    if context_retries >= _MAX_CONTEXT_RECOVERY_RETRIES:
+                    # 已播出的內容不可重試——recovery 會整輪重生成、重講一次。
+                    if round_pieces or context_retries >= _MAX_CONTEXT_RECOVERY_RETRIES:
                         raise
                     await self._recover_context()
                     context_retries += 1
@@ -282,26 +325,33 @@ class AgentSession:
                         "warn",
                         f"單輪 tool call 達到上限 {self.max_tool_rounds}，強制跳出",
                     )
-                    return _LlmTurnResult(
-                        outcome="tool_round_limit",
-                        reply=self._finish_with_assistant(_TOOL_ROUND_LIMIT_MESSAGE),
-                        tool_rounds=tool_rounds,
-                    )
+                    yield ("chunk", self._finish_with_assistant(_TOOL_ROUND_LIMIT_MESSAGE))
+                    yield ("result", _LlmTurnResult(outcome="tool_round_limit", tool_rounds=tool_rounds))
+                    return
 
                 # Normalize before storing in history: raw content may carry
                 # <think> blocks or simplified Chinese (Groq/qwen3 reasoning
                 # output), which would waste context budget and few-shot the
                 # model into imitating its own dirty output next round.
                 entry = assistant_message(message, tool_calls)
-                entry["content"] = normalize_llm_output(entry["content"] or "")
+                if not tool_calls and not force_tool:
+                    # Streamed final round: history must equal what was spoken,
+                    # so reuse the incrementally normalized pieces verbatim.
+                    for piece in normalizer.flush():
+                        round_pieces.append(piece)
+                        yield ("chunk", piece)
+                    entry["content"] = "".join(round_pieces)
+                else:
+                    entry["content"] = normalize_llm_output(entry["content"] or "")
                 self.messages.append(entry)
                 if not tool_calls:
                     self._trim()
-                    return _LlmTurnResult(
-                        outcome="ok",
-                        reply=entry["content"],
-                        tool_rounds=tool_rounds,
-                    )
+                    if force_tool and entry["content"]:
+                        # Non-streamed round produced free text (model ignored
+                        # tool_choice="required") — emit it as one chunk.
+                        yield ("chunk", entry["content"])
+                    yield ("result", _LlmTurnResult(outcome="ok", tool_rounds=tool_rounds))
+                    return
 
                 tool_rounds += 1
                 tool_results = await execute_tool_calls(
@@ -314,15 +364,11 @@ class AgentSession:
                 # respond_directly short-circuits the loop: no further LLM call needed.
                 direct = _find_direct_response(tool_calls, tool_results)
                 if direct is not None:
-                    return _LlmTurnResult(
-                        outcome="ok",
-                        reply=self._finish_normalized(direct),
-                        tool_rounds=tool_rounds,
-                    )
+                    yield ("chunk", self._finish_normalized(direct))
+                    yield ("result", _LlmTurnResult(outcome="ok", tool_rounds=tool_rounds))
+                    return
         except Exception as error:
-            return _LlmTurnResult(
-                outcome="error",
-                reply="",
-                tool_rounds=tool_rounds,
-                error=error,
+            yield (
+                "result",
+                _LlmTurnResult(outcome="error", tool_rounds=tool_rounds, error=error),
             )

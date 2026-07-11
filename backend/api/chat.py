@@ -123,11 +123,13 @@ def _rehydrate_session(messages: list[dict]) -> AgentSession:
     return session
 
 
-async def respond_in_session(session_id: str, message: str) -> str:
-    """Load session, respond to message, and save updated history.
+async def respond_in_session_stream(session_id: str, message: str):
+    """Load session, stream reply chunks, then save updated history.
 
-    Raises LookupError if the session does not exist.
-    Serializes concurrent calls on the same session_id to prevent lost updates.
+    Raises LookupError (before the first chunk) if the session does not exist.
+    Holds the session lock for the whole stream to serialize concurrent calls.
+    History saves only after the stream完整跑完——中途放棄（語音打斷、client
+    斷線）就丟棄該輪，與語音中斷語意一致。
     """
     store = _get_store()
     lock = _session_locks.setdefault(session_id, asyncio.Lock())
@@ -141,9 +143,14 @@ async def respond_in_session(session_id: str, message: str) -> str:
             raise LookupError(session_id)
 
         session = _rehydrate_session(messages)
-        reply = await session.respond(message)
+        async for chunk in session.respond_stream(message):
+            yield chunk
         await asyncio.to_thread(store.save_messages, session_id, session.messages)
-    return reply
+
+
+async def respond_in_session(session_id: str, message: str) -> str:
+    """Non-streaming facade over `respond_in_session_stream`（單一實作路徑）。"""
+    return "".join([chunk async for chunk in respond_in_session_stream(session_id, message)])
 
 
 # ---------------------------------------------------------------------------
