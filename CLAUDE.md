@@ -2,7 +2,22 @@
 
 雲林固定站牌台語友善離站決策系統。Agent harness 架構：one loop + tools + prompt = agent。
 
-詳細架構與目錄說明見 `docs/architecture.md`；產品定位見 `docs/product-positioning.md`；進度見 `TASKS.md`。
+詳細架構見 `docs/architecture.md`（模組職責的唯一真相源）；產品定位見 `docs/product-positioning.md`；進度見 `TASKS.md`。
+
+## 開場協議
+
+1. 接續進行中的工作 → 先讀對應 `tasks/*.md` 頂部的「## 目前狀態」區塊，不要從頭讀整份計劃。
+2. 完成任一步驟 → 立刻更新該狀態區塊（≤5 行：做到哪、下一步、阻塞）。
+3. 派 subagent 前 → 照 `docs/playbook/model-dispatch.md` 選模型、用 `docs/playbook/prompts.md` 範本。
+
+## Playbook 索引（按需讀取，勿全載）
+
+- `docs/playbook/model-dispatch.md` — 模型調度：誰派誰、升降級、驗證不自驗。**每次派工前讀。**
+- `docs/playbook/prompts.md` — 交辦 prompt 範本（搜尋/實作/重構/研究/審查/read-back）。
+- `docs/playbook/judgment.md` — 判斷 rubric：何時升級、何時算完成、何時問使用者、方向錯的訊號。**卡住或準備說「完成」前讀。**
+- `docs/playbook/maintenance.md` — 哪些檔可自行改、踩雷教訓寫哪裡。**踩雷後讀。**
+- `docs/playbook/lessons.md` — 踩雷教訓帳本。
+- `docs/playbook/diagnosis.md` — 環境已知弱點與修法。
 
 ## 常用指令
 
@@ -25,6 +40,7 @@ pnpm dev
 - Tool handler 必須回傳 `str`；`session.py` 會把 tool result 直接送回 LLM。
 - 修改 code 後要說明「做了什麼、為什麼這樣寫、可能的坑」。
 - 修改 code 後自行判斷文件更新：使用方式改變更新 `README.md`；功能進度改變更新 `TASKS.md`；架構/邊界改變更新 `docs/architecture.md` 或相關 `docs/`。
+- 每完成一個 phase 就 commit，不要讓 working tree 累積跨任務改動。
 
 ## 新增工具流程
 
@@ -43,7 +59,7 @@ pnpm dev
 - **TDX 欄位**：ETA rows — `sub_route_name`(str)、`direction`(0/1)、`stop_status`(0-4)、`estimate_seconds`(int|None)。route estimate rows 多加 `stop_name`、`stop_sequence`。`route_id` 整個 service/API 層是 `str`。
 - **TDX StopStatus**：0=正常、1=未發車、2=交管不停（`iter_scoped_stop_etas` 靜默過濾）、3=末班已過、4=今日未營運。無 `ComeTime` 等效，`scheduled_time` 永遠 None。
 - **TDX 認證**：`TDX_CLIENT_ID` / `TDX_CLIENT_SECRET` 放 `.env`；token 用 OAuth2 client_credentials 自動取得並快取。
-- 站名縮寫要人工處理；縮寫對照在 `backend/tools/kiosk_bus.py` 的 `_ALIASES`。
+- 站名縮寫要人工處理；縮寫對照在 `backend/tools/kiosk_bus.py` 的 `_ALIASES`，展開用 `_expand_alias()`（完全比對，模糊比對交給 `services/departures/normalize.py` 兜底）。
 - 截斷 messages 必須以 tool-call 輪次為單位，不能讓 `tool_call_id` 失去對應 tool result。
 - Tool round limit 達上限時，不可先把新的 assistant `tool_calls` append 進 history 再跳出。
 - `.agent_state/` 是 runtime state（`sessions.db`、`kiosk_config.json`），已由 `.gitignore` 排除；測試要把寫入路徑指向 `tmp_path`（如 `ChatSessionStore(tmp_path / "sessions.db")`）。
@@ -51,6 +67,7 @@ pnpm dev
 - vLLM tool calling 需要 `--enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3`。
 - vLLM 非思考模式格式是 `{"chat_template_kwargs": {"enable_thinking": False}}`。
 - Telemetry content-level 觀測預設開啟（user input、prompt、LLM 回應、tool result、ASR/TTS 文字掛在 span attributes，經 `set_content()` 截斷）；設 `TELEMETRY_CAPTURE_CONTENT=false` 關閉。原始音訊 bytes 不收，只記大小。
+- 永不讀取：`uv.lock`、`pnpm-lock.yaml`、`frontend/.vite/`、`backend/data/`、`backend/otp/data/`（大檔，讀了只會漏 token）。
 
 ## Commit 規範
 
