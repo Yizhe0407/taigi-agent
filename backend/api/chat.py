@@ -75,6 +75,15 @@ class ChatMessageResponse(BaseModel):
 
 
 def _rehydrate_session(messages: list[dict]) -> AgentSession:
+    """Rebuild an AgentSession from persisted messages for this one request.
+
+    Only `messages` round-trips through the store — `conv_state` always comes
+    back as ConvState() (last_intent=None), so any router rule that reads
+    ConvState across turns will silently never see a non-default value here.
+    Currently harmless: IntentRouter.classify() only *writes* next_state,
+    nothing reads it back. If a future rule starts reading it, persist it
+    alongside messages in ChatSessionStore.
+    """
     session = make_agent_session(get_settings())
     session.messages = messages
     return session
@@ -92,6 +101,9 @@ async def respond_in_session(session_id: str, message: str) -> str:
         # SQLite I/O is synchronous — run it off the event loop
         messages = await asyncio.to_thread(store.load_messages, session_id)
         if messages is None:
+            # Session gone (expired/never existed) — drop its lock too, otherwise
+            # _session_locks grows unbounded for every expired session_id ever seen.
+            _session_locks.pop(session_id, None)
             raise LookupError(session_id)
 
         session = _rehydrate_session(messages)

@@ -27,10 +27,16 @@ _log = logging.getLogger(__name__)
 _ETA_WARMUP_INTERVAL = 25.0  # slightly under ETA cache TTL (30 s)
 
 
-async def _eta_warmup_loop(stop_name: str) -> None:
-    """Keep fetch_eta_at_stop cache warm so user requests never trigger TDX calls."""
+async def _eta_warmup_loop() -> None:
+    """Keep fetch_eta_at_stop cache warm so user requests never trigger TDX calls.
+
+    Re-reads kiosk_stop_name() every iteration (not just once at lifespan
+    start) so an admin-triggered stop change is picked up on the next tick
+    instead of leaving the new stop cold until a process restart.
+    """
     provider = get_provider()
     while True:
+        stop_name = kiosk_stop_name()
         try:
             await provider.load_route_info(stop_name)  # warms _kiosk_uids (TTL 600 s)
             await provider.fetch_eta_at_stop(stop_name)
@@ -65,7 +71,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await provider.warmup_route_map()
         except Exception as exc:
             _log.warning("ebus route map warmup failed: %s", exc)
-    warmup_task = asyncio.create_task(_eta_warmup_loop(stop_name))
+    warmup_task = asyncio.create_task(_eta_warmup_loop())
     try:
         yield
     finally:

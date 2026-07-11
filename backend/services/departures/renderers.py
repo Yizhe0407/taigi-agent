@@ -8,6 +8,7 @@ from providers.bus import BusProvider
 from services.departures.classification import DepartureSection, _classify_stop
 from services.departures.normalize import (
     TAIPEI_TZ,
+    _dedup_stop_rows_by_direction,
     _direction_label_from_info,
     _downstream_names,
     _fuzzy_candidates,
@@ -91,6 +92,7 @@ async def render_arrivals(
     route_info, data = resolved
 
     matches = [stop for stop in data if stop_name in stop.get("stop_name", "") and (go_back is None or stop.get("direction") == go_back)]
+    matches = _dedup_stop_rows_by_direction(matches)
     if not matches:
         return f"路線 {route} 不停 {stop_name}。"
 
@@ -251,11 +253,21 @@ async def _check_route_arrivals(
             dir_label = "（循環）"
 
         kiosk_rows = [row for row in data if kiosk_stop in row.get("stop_name", "") and row.get("direction", 0) == direction]
+        kiosk_rows = _dedup_stop_rows_by_direction(kiosk_rows)
         if kiosk_rows:
             c = _classify_stop(kiosk_rows[0], now)
             status_text = _with_schedule(_mark_incoming(c.status_text), c.scheduled_time)
 
-            dest_rows = [row for row in data if _name_matches(destination, row.get("stop_name", "")) and row.get("direction") == direction]
+            # Filter to the destination occurrence downstream of the kiosk boarding
+            # point — circular routes repeat stop names, and picking an upstream
+            # occurrence would report a shorter/negative travel time.
+            kiosk_seq = kiosk_rows[0].get("stop_sequence") or 0
+            dest_rows = [
+                row
+                for row in data
+                if _name_matches(destination, row.get("stop_name", "")) and row.get("direction") == direction and (row.get("stop_sequence") or 0) >= kiosk_seq
+            ]
+            dest_rows = _dedup_stop_rows_by_direction(dest_rows)
             dest_suffix = _dest_arrival_text(dest_rows, kiosk_rows[0], destination, now)
             hits.append((f"{route_name} {dir_label}：{status_text}{dest_suffix}", c.sort_minutes, c.section))
         else:

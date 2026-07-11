@@ -37,7 +37,10 @@ DIGIT_ZH: dict[str, str] = {
 }
 
 # Hours use 兩 for 2 (spoken form), not 二.
+# Hour 0 (24h midnight) speaks the same as 12 — "十二點" — distinguished only
+# by the 凌晨/中午 period prefix, never "零點".
 HOUR_ZH: dict[int, str] = {
+    0: "十二",
     1: "一",
     2: "兩",
     3: "三",

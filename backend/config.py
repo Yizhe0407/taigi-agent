@@ -122,8 +122,8 @@ def make_agent_session(
 ) -> AgentSession:
     """Create an AgentSession from *settings*.
 
-    Shared factory used by the HTTP API (api/chat.py) and the CLI (agent/loop.py)
-    to avoid duplicating the OpenAI client + session wiring.
+    Shared factory used by the HTTP API (api/chat.py) so chat and voice
+    session rehydration don't duplicate the OpenAI client + session wiring.
     """
     return AgentSession(
         client=_make_llm_client(settings.llm_base_url, settings.llm_api_key),

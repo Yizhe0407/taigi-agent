@@ -407,7 +407,7 @@ def test_find_routes_at_stop_serves_stale_on_empty_result(monkeypatch):
     p = EbusBusProvider()
     # Prime cache manually
     stale = {"7120": {"id": "7120", "go_dest": "虎尾", "back_dest": "斗六火車站"}}
-    p._stop_route_cache["斗六火車站"] = (p._clock() - p._stop_route_ttl - 1, stale)
+    p._stop_route_cache["斗六火車站"] = (p._clock() - p._stop_route_ttl - 1, stale, False)
 
     # Return empty estimates for all routes
     _patch_http(

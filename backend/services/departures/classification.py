@@ -94,6 +94,10 @@ def _classify_stop(stop: dict, now: datetime) -> StopClassification:
                 h, m = map(int, scheduled_time.split(":"))
                 target = now.replace(hour=h, minute=m, second=0, microsecond=0)
                 diff = round((target - now).total_seconds() / 60)
+                # diff < 0 near midnight (now=23:50, scheduled=00:10) is
+                # ambiguous with stale same-day data (now=08:00, scheduled=07:00)
+                # without knowing the service day boundary — silently drop the
+                # minute count rather than guess; decision_text still shows 未發車.
                 if diff >= 0:
                     sched_minutes = diff
                     sort_mins = diff

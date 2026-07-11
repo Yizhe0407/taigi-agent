@@ -35,6 +35,7 @@ _BASE = "https://ebus.yunlin.gov.tw/api"
 _ROUTE_MAP_TTL = 86400.0  # route list changes at most daily
 _ESTIMATE_TTL = 30.0  # real-time; same cadence as TDX
 _STOP_ROUTE_TTL = 86400.0  # which routes serve a stop changes at most daily
+_STOP_ROUTE_PARTIAL_TTL = 60.0  # short TTL when the scan had per-route failures
 
 # Strips trailing alpha/Chinese-character suffixes used in sub-route variants:
 # "7120A" → "7120", "101甲" → "101". Used as fallback when exact name not found.
@@ -64,7 +65,7 @@ def _norm_route_estimate_row(row: dict) -> dict:
     return {
         "stop_name": row.get("StopName", ""),
         "stop_sequence": row.get("SeqNo"),
-        "direction": row["GoBack"] - 1,
+        "direction": row.get("GoBack", 1) - 1,
         "stop_status": stop_status,
         "estimate_seconds": estimate_seconds,
         "scheduled_time": row.get("ComeTime"),  # HH:MM of next scheduled departure; None when no service
@@ -152,8 +153,12 @@ class EbusBusProvider:
         self._route_map: tuple[float, dict[str, int]] | None = None
         # route_id → (fetched_at, normalised route-estimate rows)
         self._estimate_cache: dict[int, tuple[float, list[dict]]] = {}
-        # stop_name → (fetched_at, {route_name: {id, go_dest, back_dest}})
-        self._stop_route_cache: dict[str, tuple[float, dict[str, dict]]] = {}
+        # stop_name → (fetched_at, {route_name: {id, go_dest, back_dest}}, had_failures)
+        # had_failures=True uses _STOP_ROUTE_PARTIAL_TTL so a route that failed
+        # mid-scan gets re-checked soon instead of staying "missing" for 24h.
+        self._stop_route_cache: dict[str, tuple[float, dict[str, dict], bool]] = {}
+        # per-stop locks prevent concurrent cache-miss storms (thundering herd)
+        self._stop_route_locks: dict[str, asyncio.Lock] = {}
 
     def _expired(self, fetched_at: float, ttl: float) -> bool:
         return (self._clock() - fetched_at) >= ttl
@@ -192,43 +197,53 @@ class EbusBusProvider:
         await self._load_route_map()
 
     async def find_routes_at_stop(self, stop_name: str) -> dict[str, dict]:
-        """Discover all routes serving stop_name by scanning all route estimates. Cached 24h.
+        """Discover all routes serving stop_name by scanning all route estimates. Cached 24h
+        (or 60s if the scan had per-route failures — see `_STOP_ROUTE_PARTIAL_TTL`).
 
         Returns {sub_route_name: {id, go_dest, back_dest}}.
         Covers city routes and 7xxx intercity routes alike.
         """
         cached = self._stop_route_cache.get(stop_name)
-        if cached is not None and not self._expired(cached[0], self._stop_route_ttl):
+        if cached is not None and not self._expired(cached[0], self._stop_route_ttl if not cached[2] else _STOP_ROUTE_PARTIAL_TTL):
             return cached[1]
 
-        route_map = await self._load_route_map()
-        names = list(route_map.keys())
-        sem = asyncio.Semaphore(20)
+        lock = self._stop_route_locks.setdefault(stop_name, asyncio.Lock())
+        async with lock:
+            # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
+            cached = self._stop_route_cache.get(stop_name)
+            if cached is not None and not self._expired(cached[0], self._stop_route_ttl if not cached[2] else _STOP_ROUTE_PARTIAL_TTL):
+                return cached[1]
 
-        async def _check(name: str) -> dict | None:
-            async with sem:
-                rows = await self.fetch_route_estimate(name)
-                if not rows:
-                    return None
-                if not any(stop_name in r.get("stop_name", "") for r in rows):
-                    return None
-                terminals = _terminals_from_estimate(rows)
-                return {"id": name, **terminals}
+            route_map = await self._load_route_map()
+            names = list(route_map.keys())
+            sem = asyncio.Semaphore(20)
 
-        results = await asyncio.gather(*[_check(n) for n in names], return_exceptions=True)
-        info: dict[str, dict] = {}
-        for name, result in zip(names, results):
-            if isinstance(result, BaseException):
-                _log.warning("ebus route scan failed for %s: %s", name, result)
-            elif result is not None:
-                info[name] = result
+            async def _check(name: str) -> dict | None:
+                async with sem:
+                    rows = await self.fetch_route_estimate(name)
+                    if not rows:
+                        return None
+                    if not any(stop_name in r.get("stop_name", "") for r in rows):
+                        return None
+                    terminals = _terminals_from_estimate(rows)
+                    return {"id": name, **terminals}
 
-        if not info and cached is not None:
-            _log.warning("ebus route scan returned empty; serving stale for %s", stop_name)
-            return cached[1]
+            results = await asyncio.gather(*[_check(n) for n in names], return_exceptions=True)
+            info: dict[str, dict] = {}
+            had_failures = False
+            for name, result in zip(names, results):
+                if isinstance(result, BaseException):
+                    _log.warning("ebus route scan failed for %s: %s", name, result)
+                    had_failures = True
+                elif result is not None:
+                    info[name] = result
 
-        self._stop_route_cache[stop_name] = (self._clock(), info)
-        return info
+            if not info and cached is not None:
+                _log.warning("ebus route scan returned empty; serving stale for %s", stop_name)
+                return cached[1]
+
+            self._stop_route_cache[stop_name] = (self._clock(), info, had_failures)
+            return info
 
     async def fetch_route_estimate(self, sub_route_name: str) -> list[dict] | None:
         """ETA rows for every stop along sub_route_name, or None if not in ebus.

@@ -67,7 +67,9 @@ def _format_time_zh(period: str, hour: int, minute: int) -> str:
 
 def _time_sub(m: re.Match[str]) -> str:
     h, mn = int(m.group(1)), int(m.group(2))
-    if h == 12:
+    if h == 0:
+        period, dh = "凌晨", 0  # 00:xx is midnight — never bare "零點"
+    elif h == 12:
         period, dh = "中午", 12
     elif h > 12:
         period, dh = "下午", h - 12

@@ -85,14 +85,26 @@ def _make_silence(n_frames: int, n_channels: int, sampwidth: int) -> bytes:
 
 
 def _concat_wav(wav_bytes_list: list[bytes], silences_ms: list[int]) -> bytes:
-    """Concatenate WAV segments with silence between them."""
+    """Concatenate WAV segments with silence between them.
+
+    All segments must share sample rate / channels / sample width — they come
+    from the same TTS backend and voice, so a mismatch means an upstream
+    format change that needs a code fix, not a value to silently paper over.
+    """
     params = None
     pcm_parts: list[bytes] = []
 
     for i, wav_bytes in enumerate(wav_bytes_list):
         with wave.open(io.BytesIO(wav_bytes)) as wf:
+            seg_params = wf.getparams()
             if params is None:
-                params = wf.getparams()
+                params = seg_params
+            elif (seg_params.framerate, seg_params.nchannels, seg_params.sampwidth) != (
+                params.framerate,
+                params.nchannels,
+                params.sampwidth,
+            ):
+                raise ValueError(f"TTS segment {i} has mismatched WAV format: {seg_params} vs {params}")
             pcm_parts.append(wf.readframes(wf.getnframes()))
         if i < len(silences_ms) and silences_ms[i] > 0 and params is not None:
             n_frames = int(params.framerate * silences_ms[i] / 1000)
@@ -165,9 +177,16 @@ async def synthesize(body: TTSRequest) -> Response:
                         timeout=_TTS_TIMEOUT_SECONDS,
                     )
                     for seg, _ in segments
-                ]
+                ],
+                return_exceptions=True,
             )
+            # return_exceptions=True keeps one failed segment from leaving its
+            # sibling requests dangling (unclosed responses / unhandled tasks).
+            # Re-raise so the existing httpx.TimeoutException / RequestError
+            # handlers below still apply uniformly.
             for resp in responses:
+                if isinstance(resp, BaseException):
+                    raise resp
                 if resp.status_code != 200:
                     raise HTTPException(
                         status_code=502,
@@ -186,7 +205,10 @@ async def synthesize(body: TTSRequest) -> Response:
 
     # ── Step 5: concatenate WAV with silence ──────────────────────────────────
     silences_ms = [ms for _, ms in segments]
-    audio_bytes = _concat_wav([r.content for r in responses], silences_ms)
+    try:
+        audio_bytes = _concat_wav([r.content for r in responses], silences_ms)
+    except (ValueError, wave.Error) as err:
+        raise HTTPException(status_code=502, detail=f"TTS 音訊格式異常：{err}") from err
     tel.record_tts_audio_bytes(len(audio_bytes))
 
     return Response(

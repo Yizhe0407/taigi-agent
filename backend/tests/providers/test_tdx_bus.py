@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from providers import tdx_bus
 from providers.tdx_bus import TdxBusProvider
 
@@ -476,5 +478,12 @@ def test_fetch_eta_at_stop_returns_stale_on_error(monkeypatch):
 
     rows = asyncio.run(provider.fetch_eta_at_stop("A"))
     assert rows == stale_rows  # stale returned, not raised
-    # Cache timestamp should be refreshed to prevent immediate retry
-    assert provider._eta_cache["A"][0] == 60.0
+    # Cache timestamp must NOT be refreshed — bumping it would make an upstream
+    # outage's last-good data live forever instead of aging toward the hard cap.
+    assert provider._eta_cache["A"][0] == 0.0
+
+    # Past the hard staleness cap (eta_ttl + _MAX_STALE_SECONDS), stop serving
+    # stale data and let the upstream error propagate instead.
+    fake_now[0] = 30.0 + tdx_bus._MAX_STALE_SECONDS + 1.0
+    with pytest.raises(Exception):  # noqa: B017 — any upstream failure, not a specific type
+        asyncio.run(provider.fetch_eta_at_stop("A"))

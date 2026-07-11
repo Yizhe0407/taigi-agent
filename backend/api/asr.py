@@ -64,7 +64,7 @@ async def transcribe_audio(request: Request, file: UploadFile) -> object:
     base_url, model, api_key = _asr_config()
 
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > _ASR_MAX_BYTES:
+    if content_length and content_length.isdigit() and int(content_length) > _ASR_MAX_BYTES:
         raise HTTPException(status_code=413, detail="音訊檔案過大（上限 25 MB）")
 
     audio_bytes = await file.read()

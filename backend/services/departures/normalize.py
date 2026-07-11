@@ -114,6 +114,25 @@ def _downstream_names(
     return [n for s, n in stops if s >= kiosk_seq]
 
 
+def _dedup_stop_rows_by_direction(rows: list[dict]) -> list[dict]:
+    """Collapse duplicate stop occurrences to one row per direction.
+
+    Circular routes yield two `fetch_route_estimate` rows for the kiosk stop
+    name within the same direction — the boarding point (min stop_sequence)
+    and the loop-completion arrival (max stop_sequence). Keeping the min-seq
+    row matches `TdxBusProvider._build_route_info`'s boarding-UID selection,
+    so callers see one consistent ETA instead of two conflicting ones.
+    """
+    best: dict[int, dict] = {}
+    for row in rows:
+        direction = row.get("direction", 0)
+        seq = row.get("stop_sequence") or 9999
+        existing = best.get(direction)
+        if existing is None or (existing.get("stop_sequence") or 9999) > seq:
+            best[direction] = row
+    return list(best.values())
+
+
 def _direction_label_from_info(
     route_info: dict[str, dict],
     route: str,

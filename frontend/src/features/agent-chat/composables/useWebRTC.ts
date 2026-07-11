@@ -47,6 +47,10 @@ export function useWebRTC(
   }
 
   function setupRemoteAmplitude(stream: MediaStream) {
+    // ontrack can fire more than once per connection (renegotiation); cancel
+    // any prior RAF loop first so it doesn't keep running orphaned alongside
+    // this one (analyserRafId would otherwise be overwritten, leaking the loop).
+    stopAmplitude()
     const ctx = audioCtx!
     // Build the graph and start the loop immediately — do NOT gate on resume().
     // connect() runs after async work (session POST, getUserMedia, ICE), so the

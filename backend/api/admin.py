@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
+import os
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from services.kiosk_config import KioskConfig, get_kiosk_config, set_kiosk_config
 from services.stop_catalog import StopCatalogError, StopRecord, load_stop_catalog
 
 router = APIRouter()
+
+
+def _require_admin_token(x_admin_token: str | None = Header(default=None)) -> None:
+    """Reject kiosk-config writes when ADMIN_TOKEN is set and the header doesn't match.
+
+    ADMIN_TOKEN unset keeps prior (unauthenticated) behavior — opt-in so
+    existing LAN-only deployments aren't broken until an operator sets it.
+    """
+    expected = os.getenv("ADMIN_TOKEN", "")
+    if expected and x_admin_token != expected:
+        raise HTTPException(status_code=401, detail="缺少或錯誤的管理員權杖")
 
 
 class KioskConfigResponse(BaseModel):
@@ -79,7 +91,11 @@ def get_admin_kiosk() -> KioskConfigResponse:
     return _cfg_to_response(get_kiosk_config())
 
 
-@router.put("/api/admin/kiosk", response_model=KioskConfigResponse)
+@router.put(
+    "/api/admin/kiosk",
+    response_model=KioskConfigResponse,
+    dependencies=[Depends(_require_admin_token)],
+)
 def update_admin_kiosk(req: KioskConfigRequest) -> KioskConfigResponse:
     """Update the kiosk stop, direction, and coordinates. Takes effect immediately."""
     cfg = KioskConfig(

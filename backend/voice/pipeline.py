@@ -183,6 +183,11 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
     # The welcome greeting is held until the frontend confirms its audio element is playing,
     # eliminating the race between server-side TTS output and browser-side audio track setup.
     _client_ready = asyncio.Event()
+    # Tracks whether record_voice_active_sessions(+1) has an outstanding -1 owed.
+    # on_client_disconnected normally pays it back; the outer finally below
+    # covers crashes/early-exit paths that skip that event entirely, so the
+    # gauge can't leak a permanent +1 per abnormal session end.
+    _session_active = False
 
     @transport.event_handler("on_app_message")
     async def on_app_message(_transport, message, _sender) -> None:
@@ -196,6 +201,8 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
 
     @transport.event_handler("on_client_connected")
     async def on_connected(_transport, _connection) -> None:
+        nonlocal _session_active
+        _session_active = True
         get_telemetry().record_voice_session(outcome="connected")
         get_telemetry().record_voice_active_sessions(1)
 
@@ -225,6 +232,8 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
         # ponytail: pipecat's _on_client_disconnected only fires the event handler;
         # it does NOT push an EndFrame, so task.run() never returns. Cancel explicitly.
         # Session data is preserved — frontend owns lifecycle via DELETE /api/chat/sessions/{id}.
+        nonlocal _session_active
+        _session_active = False
         _log.info("WebRTC transport disconnected for session %s — cancelling pipeline", session_id)
         log_diagnostic("voice.pipeline", f"session={session_id} disconnected, cancelling pipeline")
         get_telemetry().record_voice_session(outcome="disconnected")
@@ -239,4 +248,8 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
         log_diagnostic("voice.pipeline", f"session={session_id} pipeline crashed: {exc}")
         raise
     finally:
+        if _session_active:
+            # Crashed/exited without on_client_disconnected firing — pay back
+            # the +1 recorded in on_connected so the gauge doesn't drift.
+            get_telemetry().record_voice_active_sessions(-1)
         _log.info("Voice pipeline stopped for session_id=%s, pc_id=%s", session_id, webrtc_connection.pc_id)

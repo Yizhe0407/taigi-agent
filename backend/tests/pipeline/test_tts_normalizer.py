@@ -46,7 +46,11 @@ def test_time_noon():
 
 
 def test_time_midnight():
-    assert normalize_for_tts("0:00") == "零點"  # h=0 → 凌晨 edge case
+    assert normalize_for_tts("0:00") == "凌晨十二點"
+
+
+def test_time_midnight_with_minutes():
+    assert normalize_for_tts("00:05") == "凌晨十二點零五分"
 
 
 def test_time_embedded():

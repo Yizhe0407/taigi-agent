@@ -69,6 +69,7 @@ _DEFAULT_ROUTE_INFO_TTL = 600.0
 _DEFAULT_ROUTE_ESTIMATE_TTL = 30.0  # TDX updates ~30 s; 10 s caused 429 rate-limit hits
 _DEFAULT_ETA_TTL = 60.0  # must exceed wait_for(12s) + warmup_sleep(25s) = 37s to break 429 cascade
 _MAX_RETRIES = 1  # retries on HTTP 429; Retry-After is 20-40 s so 3 retries = 60-120 s blocking
+_MAX_STALE_SECONDS = 300.0  # upstream-down grace period; beyond this, stop serving stale data
 
 _INTERCITY_RE = re.compile(r"^7\d{3}")
 
@@ -76,6 +77,16 @@ _INTERCITY_RE = re.compile(r"^7\d{3}")
 def _is_intercity(sub_route_name: str) -> bool:
     """True for public highway buses (7000D, 7120, 7123A, …), False for city buses."""
     return bool(_INTERCITY_RE.match(sub_route_name))
+
+
+def _odata_escape(value: str) -> str:
+    """Escape a single-quoted OData string literal (doubles embedded quotes).
+
+    stop_name / route_name ultimately trace back to LLM tool-call arguments;
+    an unescaped `'` breaks the `$filter` expression and turns into a 500
+    instead of a clean "not found".
+    """
+    return value.replace("'", "''")
 
 
 def _zh(field: object) -> str:
@@ -117,6 +128,7 @@ class TdxBusProvider(BusProvider):
         # token cache
         self._token: str = ""
         self._token_expires_at: float = 0.0
+        self._token_lock = asyncio.Lock()
         # stop_name → (fetched_at, route_info_dict)
         self._route_info_by_stop: dict[str, tuple[float, dict[str, dict]]] = {}
         # stop_name → set of boarding StopUIDs (first occurrence of that stop in each route)
@@ -136,26 +148,31 @@ class TdxBusProvider(BusProvider):
     async def _get_token(self) -> str:
         if self._clock() < self._token_expires_at:
             return self._token
-        http = get_http_client()
-        resp = await http.post(
-            _TOKEN_URL,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": self._client_id,
-                "client_secret": self._client_secret,
-            },
-            timeout=15.0,
-        )
-        resp.raise_for_status()
-        body = resp.json()
-        self._token = body["access_token"]
-        expires_in = float(body.get("expires_in", 3600))
-        self._token_expires_at = self._clock() + expires_in - _TOKEN_BUFFER_SECONDS
-        return self._token
+        async with self._token_lock:
+            # Re-check after acquiring: first caller refreshes, subsequent callers reuse it.
+            if self._clock() < self._token_expires_at:
+                return self._token
+            http = get_http_client()
+            resp = await http.post(
+                _TOKEN_URL,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self._client_id,
+                    "client_secret": self._client_secret,
+                },
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            self._token = body["access_token"]
+            expires_in = float(body.get("expires_in", 3600))
+            self._token_expires_at = self._clock() + expires_in - _TOKEN_BUFFER_SECONDS
+            return self._token
 
     async def _get(self, url: str, params: dict) -> list[dict]:
         token = await self._get_token()
         http = get_http_client()
+        refreshed_token = False
         for attempt in range(_MAX_RETRIES + 1):
             resp = await http.get(
                 url,
@@ -163,6 +180,14 @@ class TdxBusProvider(BusProvider):
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=15.0,
             )
+            if resp.status_code == 401 and not refreshed_token:
+                # Token was revoked/expired early server-side; force a refresh and
+                # retry once instead of failing the whole call outright.
+                _log.warning("TDX 401 on %s; refreshing token and retrying once", url)
+                self._token_expires_at = 0.0
+                token = await self._get_token()
+                refreshed_token = True
+                continue
             if resp.status_code == 429 and attempt < _MAX_RETRIES:
                 wait = float(resp.headers.get("Retry-After", 1 << attempt))
                 _log.warning("TDX 429 on %s; retry in %.0fs (attempt %d/%d)", url, wait, attempt + 1, _MAX_RETRIES)
@@ -234,9 +259,12 @@ class TdxBusProvider(BusProvider):
                 fetch = self._fetch_eta_by_uids(uids) if uids else self._fetch_eta_by_name(stop_name)
                 rows = await asyncio.wait_for(fetch, timeout=12.0)
             except Exception:
-                if cached is not None:
+                # Serve stale data without bumping fetched_at, so staleness keeps
+                # accumulating toward _MAX_STALE_SECONDS instead of resetting on
+                # every failed retry (which would keep an upstream outage's last
+                # good data alive forever).
+                if cached is not None and not self._expired(cached[0], self._eta_ttl + _MAX_STALE_SECONDS):
                     _log.warning("TDX ETA fetch failed; serving stale cache for %s", stop_name)
-                    self._eta_cache[stop_name] = (self._clock(), cached[1])
                     return cached[1]
                 raise
             self._eta_cache[stop_name] = (self._clock(), rows)
@@ -254,17 +282,16 @@ class TdxBusProvider(BusProvider):
             if _is_intercity(sub_route_name):
                 raw = await self._get(
                     f"{_BASE}/EstimatedTimeOfArrival/InterCity",
-                    {"$filter": f"SubRouteName/Zh_tw eq '{sub_route_name}'"},
+                    {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(sub_route_name)}'"},
                 )
             else:
                 raw = await self._get(
                     f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
-                    {"$filter": f"SubRouteName/Zh_tw eq '{sub_route_name}'"},
+                    {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(sub_route_name)}'"},
                 )
         except Exception:
-            if cached is not None:
+            if cached is not None and not self._expired(cached[0], self._route_estimate_ttl + _MAX_STALE_SECONDS):
                 _log.warning("TDX route estimate fetch failed; serving stale cache for %s", sub_route_name)
-                self._route_estimate_cache[sub_route_name] = (self._clock(), cached[1])
                 return cached[1]
             raise
 
@@ -291,7 +318,7 @@ class TdxBusProvider(BusProvider):
 
         Used to supplement ebus data when ebus encodes rare CJK characters as '?'.
         """
-        filter_expr = f"SubRouteName/Zh_tw eq '{route_name}'"
+        filter_expr = f"SubRouteName/Zh_tw eq '{_odata_escape(route_name)}'"
         results = await asyncio.gather(
             self._get(f"{_BASE}/StopOfRoute/City/{_CITY}", {"$filter": filter_expr}),
             self._get(f"{_BASE}/StopOfRoute/InterCity", {"$filter": filter_expr}),
@@ -336,12 +363,11 @@ class TdxBusProvider(BusProvider):
                 fetch = self._fetch_intercity_eta_by_uids(uids) if uids else self._fetch_intercity_eta_by_name(stop_name)
                 rows = await asyncio.wait_for(fetch, timeout=12.0)
             except Exception:
-                if cached is not None:
+                if cached is not None and not self._expired(cached[0], self._eta_ttl + _MAX_STALE_SECONDS):
                     _log.warning(
                         "TDX intercity ETA fetch failed; serving stale cache for %s",
                         stop_name,
                     )
-                    self._intercity_eta_cache[stop_name] = (self._clock(), cached[1])
                     return cached[1]
                 raise
             self._intercity_eta_cache[stop_name] = (self._clock(), rows)
@@ -371,11 +397,11 @@ class TdxBusProvider(BusProvider):
         results = await asyncio.gather(
             self._get(
                 f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
-                {"$filter": f"StopName/Zh_tw eq '{stop_name}'"},
+                {"$filter": f"StopName/Zh_tw eq '{_odata_escape(stop_name)}'"},
             ),
             self._get(
                 f"{_BASE}/EstimatedTimeOfArrival/InterCity",
-                {"$filter": f"StopName/Zh_tw eq '{stop_name}'"},
+                {"$filter": f"StopName/Zh_tw eq '{_odata_escape(stop_name)}'"},
             ),
             return_exceptions=True,
         )
@@ -399,7 +425,7 @@ class TdxBusProvider(BusProvider):
         """Fallback: InterCity ETA by stop name with min-sequence dedup."""
         raw = await self._get(
             f"{_BASE}/EstimatedTimeOfArrival/InterCity",
-            {"$filter": f"StopName/Zh_tw eq '{stop_name}'"},
+            {"$filter": f"StopName/Zh_tw eq '{_odata_escape(stop_name)}'"},
         )
         all_rows = [self._norm_eta(r) for r in raw]
         return self._dedup_by_min_sequence(all_rows)
@@ -411,11 +437,11 @@ class TdxBusProvider(BusProvider):
         results = await asyncio.gather(
             self._get(
                 f"{_BASE}/StopOfRoute/City/{_CITY}",
-                {"$filter": f"Stops/any(s: s/StopName/Zh_tw eq '{stop_name}')"},
+                {"$filter": f"Stops/any(s: s/StopName/Zh_tw eq '{_odata_escape(stop_name)}')"},
             ),
             self._get(
                 f"{_BASE}/StopOfRoute/InterCity",
-                {"$filter": f"Stops/any(s: s/StopName/Zh_tw eq '{stop_name}')"},
+                {"$filter": f"Stops/any(s: s/StopName/Zh_tw eq '{_odata_escape(stop_name)}')"},
             ),
             return_exceptions=True,
         )

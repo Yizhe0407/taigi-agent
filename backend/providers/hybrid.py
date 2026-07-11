@@ -75,8 +75,12 @@ class HybridBusProvider:
         return await self._tdx.fetch_routes_at_stop(stop_name)
 
     async def fetch_route_estimate(self, sub_route_name: str) -> list[dict]:
-        """ebus for all routes; TDX fallback if route not in ebus."""
-        result = await self._ebus.fetch_route_estimate(sub_route_name)
+        """ebus for all routes; TDX fallback if route not in ebus or ebus errors."""
+        try:
+            result = await self._ebus.fetch_route_estimate(sub_route_name)
+        except Exception as exc:
+            _log.warning("ebus fetch_route_estimate failed for %s; falling back to TDX: %s", sub_route_name, exc)
+            result = None
         if result is not None:
             get_telemetry().record_provider_fallback(operation="route_estimate", outcome="ebus_hit")
             return result

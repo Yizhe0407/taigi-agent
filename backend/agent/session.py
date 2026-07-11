@@ -46,9 +46,15 @@ def _find_direct_response(tool_calls: list, tool_results: list[dict]) -> str | N
     if len(tool_calls) != 1:
         return None
     call, result = tool_calls[0], tool_results[0]
-    if call.function.name == "respond_directly":
-        return result["content"]
-    return None
+    if call.function.name != "respond_directly":
+        return None
+    content = result["content"]
+    # tool_dispatch.execute_tool_calls wraps a handler exception into
+    # "工具 X 執行失敗：..." — never let that leak to the user as the final
+    # reply; fall through to a normal LLM round instead.
+    if content.startswith(f"工具 {call.function.name} 執行失敗："):
+        return None
+    return content
 
 
 _MAX_CONTEXT_RECOVERY_RETRIES = 1
