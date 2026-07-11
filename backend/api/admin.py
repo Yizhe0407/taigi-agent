@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -21,7 +22,9 @@ def _require_admin_token(x_admin_token: str | None = Header(default=None)) -> No
     existing LAN-only deployments aren't broken until an operator sets it.
     """
     expected = os.getenv("ADMIN_TOKEN", "")
-    if expected and x_admin_token != expected:
+    # compare_digest keeps the check constant-time so a wrong token can't be
+    # recovered byte-by-byte via response-timing differences.
+    if expected and not secrets.compare_digest(x_admin_token or "", expected):
         raise HTTPException(status_code=401, detail="缺少或錯誤的管理員權杖")
 
 

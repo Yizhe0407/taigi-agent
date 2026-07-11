@@ -34,8 +34,10 @@ async def _eta_warmup_loop() -> None:
     start) so an admin-triggered stop change is picked up on the next tick
     instead of leaving the new stop cold until a process restart.
     """
-    provider = get_provider()
     while True:
+        # Re-read provider each tick too: set_provider() (boot wiring / region
+        # rollout) would otherwise keep warming the old instance forever.
+        provider = get_provider()
         stop_name = kiosk_stop_name()
         try:
             await provider.load_route_info(stop_name)  # warms _kiosk_uids (TTL 600 s)

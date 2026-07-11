@@ -68,13 +68,25 @@ export function usePipChat(
 
   // ponytail: in-flight promise reuse so two concurrent callers share one POST
   let _ensureSessionInflight: Promise<void> | null = null
+  // Bumped by reset(): if the panel closes while a createChatSession() POST is
+  // in flight, the resolved id is orphaned server-side (leaks until TTL) and a
+  // stale sessionId gets resurrected. Comparing generations discards it and
+  // deletes the just-created session instead.
+  let sessionGeneration = 0
 
   async function ensureSession(): Promise<void> {
     if (sessionId.value) return
     if (_ensureSessionInflight) return _ensureSessionInflight
+    const generation = sessionGeneration
     _ensureSessionInflight = (async () => {
       try {
-        sessionId.value = await createChatSession()
+        const id = await createChatSession()
+        if (generation !== sessionGeneration) {
+          // Panel was reset while this POST was in flight — abandon the session.
+          void deleteChatSession(id)
+          return
+        }
+        sessionId.value = id
         // Voice mode (suppressTts): the pipeline announces the welcome itself over
         // the data channel — text and audio arrive together. Only greet locally
         // in text-only mode, otherwise the subtitle shows seconds before the voice.
@@ -149,6 +161,7 @@ export function usePipChat(
   }
 
   function reset() {
+    sessionGeneration++
     typewriterToken++
     displayedAgentText.value = ""
     cancelTts()

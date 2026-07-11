@@ -49,10 +49,11 @@ def _find_direct_response(tool_calls: list, tool_results: list[dict]) -> str | N
     if call.function.name != "respond_directly":
         return None
     content = result["content"]
-    # tool_dispatch.execute_tool_calls wraps a handler exception into
-    # "工具 X 執行失敗：..." — never let that leak to the user as the final
-    # reply; fall through to a normal LLM round instead.
-    if content.startswith(f"工具 {call.function.name} 執行失敗："):
+    # Internal error strings from tool_dispatch.execute_tool_calls — a handler
+    # exception ("工具 X 執行失敗：…") or a dispatch failure (bad JSON args /
+    # non-object args / missing handler, all prefixed "錯誤：") — must never
+    # become the user's final reply. Fall through to a normal LLM round instead.
+    if content.startswith(f"工具 {call.function.name} 執行失敗：") or content.startswith("錯誤："):
         return None
     return content
 
@@ -146,7 +147,8 @@ class AgentSession:
         input_enricher (prefetch makes no sense if we already have a final
         answer) and tool dispatch entirely.
         """
-        assert decision.canned_response is not None
+        if decision.canned_response is None:
+            raise ValueError("_record_canned_turn requires a canned_response")
         self.messages.append({"role": "user", "content": user_input})
         self.messages.append({"role": "assistant", "content": decision.canned_response})
         self._trim()
@@ -184,7 +186,14 @@ class AgentSession:
         *,
         intent: Intent = Intent.UNKNOWN,
     ) -> str:
-        extra = await self.input_enricher(user_input) if self.input_enricher else ""
+        # Prefetch enrichment is best-effort: a failing enricher must not sink
+        # the turn. Previously an exception here propagated as a 500 with no
+        # agent.turn metric recorded; degrade to the raw user input instead.
+        try:
+            extra = await self.input_enricher(user_input) if self.input_enricher else ""
+        except Exception as exc:  # noqa: BLE001 — enrichment is optional
+            log_diagnostic("warn", f"input_enricher 失敗，改用原始輸入：{exc}")
+            extra = ""
         enriched_content = user_input + extra
         with self.telemetry.start_span(
             "agent.turn",

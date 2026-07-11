@@ -199,65 +199,66 @@ export function useWebRTC(
       }
     }
 
-    const offer = await pc.createOffer()
-    if (currentId !== connectId || destroyed) return
-    await pc.setLocalDescription(offer)
-
-    // Wait for ICE gathering before sending offer (SmallWebRTCTransport needs full SDP)
-    await new Promise<void>(resolve => {
-      if (pc!.iceGatheringState === "complete") { resolve(); return }
-      const handler = () => {
-        if (pc!.iceGatheringState === "complete") {
-          pc!.removeEventListener("icegatheringstatechange", handler)
-          resolve()
-        }
-      }
-      pc!.addEventListener("icegatheringstatechange", handler)
-      setTimeout(() => { pc?.removeEventListener("icegatheringstatechange", handler); resolve() }, 3000)
-    })
-
-    if (currentId !== connectId || destroyed || !pc) return
-
-    let resp: Response
+    // Outer guard: createOffer / setLocalDescription / resp.json() can all
+    // reject. Without this, a rejection escaped as an unhandled promise, left
+    // state stuck at "connecting", and the connect() re-entry guard then
+    // blocked every retry — the mic button died with no recovery path.
     try {
-      resp = await fetch("/api/voice/offer", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sdp: pc.localDescription!.sdp,
-          type: pc.localDescription!.type,
-          pc_id: pcId,
-          // Pass the existing chat session so voice and text share conversation context.
-          session_id: sessionId?.value ?? null,
-        }),
-      })
-    } catch (err) {
+      const offer = await pc.createOffer()
       if (currentId !== connectId || destroyed) return
-      reportClientEvent("webrtc_offer_network_error", err instanceof Error ? err.message : String(err))
-      cleanup()
-      state.value = "error"
-      return
-    }
+      await pc.setLocalDescription(offer)
 
-    if (currentId !== connectId || destroyed) return
+      // Wait for ICE gathering before sending offer (SmallWebRTCTransport needs full SDP)
+      await new Promise<void>(resolve => {
+        if (pc!.iceGatheringState === "complete") { resolve(); return }
+        const handler = () => {
+          if (pc!.iceGatheringState === "complete") {
+            pc!.removeEventListener("icegatheringstatechange", handler)
+            resolve()
+          }
+        }
+        pc!.addEventListener("icegatheringstatechange", handler)
+        setTimeout(() => { pc?.removeEventListener("icegatheringstatechange", handler); resolve() }, 3000)
+      })
 
-    if (!resp.ok) {
-      reportClientEvent("webrtc_offer_rejected", `POST /api/voice/offer -> ${resp.status}`)
-      cleanup()
-      state.value = "error"
-      return
-    }
+      if (currentId !== connectId || destroyed || !pc) return
 
-    const answer = await resp.json() as { sdp: string; type: RTCSdpType; pc_id: string }
-    pcId = answer.pc_id
-    try {
+      let resp: Response
+      try {
+        resp = await fetch("/api/voice/offer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sdp: pc.localDescription!.sdp,
+            type: pc.localDescription!.type,
+            pc_id: pcId,
+            // Pass the existing chat session so voice and text share conversation context.
+            session_id: sessionId?.value ?? null,
+          }),
+        })
+      } catch (err) {
+        if (currentId !== connectId || destroyed) return
+        reportClientEvent("webrtc_offer_network_error", err instanceof Error ? err.message : String(err))
+        cleanup()
+        state.value = "error"
+        return
+      }
+
+      if (currentId !== connectId || destroyed) return
+
+      if (!resp.ok) {
+        reportClientEvent("webrtc_offer_rejected", `POST /api/voice/offer -> ${resp.status}`)
+        cleanup()
+        state.value = "error"
+        return
+      }
+
+      const answer = await resp.json() as { sdp: string; type: RTCSdpType; pc_id: string }
+      pcId = answer.pc_id
       await pc.setRemoteDescription({ sdp: answer.sdp, type: answer.type })
     } catch (err) {
       if (currentId !== connectId || destroyed) return
-      reportClientEvent(
-        "webrtc_remote_description_error",
-        err instanceof Error ? err.message : String(err),
-      )
+      reportClientEvent("webrtc_connect_error", err instanceof Error ? err.message : String(err))
       cleanup()
       state.value = "error"
     }

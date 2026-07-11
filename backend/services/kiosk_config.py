@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -87,10 +88,15 @@ def set_kiosk_config(cfg: KioskConfig) -> None:
     # Disk write outside the lock — readers can't see a partial state because
     # _current is an immutable dataclass reference swapped atomically above.
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _STATE_PATH.write_text(
+    # Atomic write: a crash mid-write would otherwise leave truncated JSON that
+    # _load() silently falls back on, booting the kiosk to the wrong default stop.
+    # Write to a temp file, then os.replace() (atomic rename on the same fs).
+    tmp_path = _STATE_PATH.with_name(f"{_STATE_PATH.name}.tmp")
+    tmp_path.write_text(
         json.dumps(asdict(cfg), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    os.replace(tmp_path, _STATE_PATH)
 
 
 def kiosk_stop_name() -> str:

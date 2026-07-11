@@ -70,7 +70,7 @@ class TaigiBusAgentProcessor(FrameProcessor):
 
     async def _run_agent_inference(self, text: str, direction: FrameDirection):
         """Run the agent logic in a background task so we don't block process_frame."""
-        from api.chat import respond_in_session
+        from api.chat import _get_store, respond_in_session
 
         try:
             if self._send_event:
@@ -79,10 +79,19 @@ class TaigiBusAgentProcessor(FrameProcessor):
             try:
                 reply = await respond_in_session(self.session_id, text)
             except LookupError:
-                _log.warning("Chat session %s not found", self.session_id)
-                if self._send_event:
-                    self._send_event({"type": "agent_cancelled"})
-                return
+                # The chat session's TTL expired while this long-lived WebRTC
+                # connection stayed open. Recreate a fresh session and retry
+                # once — otherwise every later utterance hits LookupError and
+                # the kiosk goes permanently silent for a still-connected user.
+                _log.warning("Chat session %s expired; recreating for live voice connection", self.session_id)
+                self.session_id = await asyncio.to_thread(_get_store().create)
+                try:
+                    reply = await respond_in_session(self.session_id, text)
+                except LookupError:
+                    _log.error("Recreated chat session %s immediately missing", self.session_id)
+                    if self._send_event:
+                        self._send_event({"type": "agent_cancelled"})
+                    return
 
             _log.info("Agent reply: %s", reply)
             if self._send_event:
