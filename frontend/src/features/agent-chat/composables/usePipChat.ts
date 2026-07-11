@@ -13,7 +13,7 @@ import {
   ChatApiError,
   createChatSession,
   deleteChatSession,
-  sendChatMessage,
+  sendChatMessageStream,
 } from "../api/chat"
 import type { PipChatMessage } from "../types"
 import { useTts } from "./useTts"
@@ -132,9 +132,19 @@ export function usePipChat(
     await scrollToBottom()
 
     isSending.value = true
+    const replyId = `${id}-reply`
     try {
-      const reply = await sendChatMessage(sessionId.value, text)
-      messages.value.push({ id: `${id}-reply`, role: "assistant", text: reply })
+      // Reply streams into the chat bubble as the LLM generates it; the
+      // avatar subtitle + TTS still use the full text so audio stays in sync.
+      const reply = await sendChatMessageStream(sessionId.value, text, (delta) => {
+        const bubble = messages.value.find(m => m.id === replyId)
+        if (bubble) bubble.text += delta
+        else messages.value.push({ id: replyId, role: "assistant", text: delta })
+        void scrollToBottom()
+      })
+      if (!messages.value.some(m => m.id === replyId)) {
+        messages.value.push({ id: replyId, role: "assistant", text: reply })
+      }
       speakWithAnimation(reply)
     } catch (error) {
       const message =

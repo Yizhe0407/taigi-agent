@@ -9,11 +9,13 @@ from `Settings`; only the mutable message log is persisted (see
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent.error import summarize_error
@@ -188,6 +190,40 @@ async def send_chat_message(session_id: str, body: ChatMessageRequest) -> object
         ) from error
 
     return {"reply": reply}
+
+
+def _sse_event(payload: dict) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@router.post("/api/chat/sessions/{session_id}/messages/stream")
+async def send_chat_message_stream(session_id: str, body: ChatMessageRequest) -> StreamingResponse:
+    """Streaming variant of send_chat_message：SSE 逐 chunk 推回覆。
+
+    事件格式：`{"delta": 文字}`… 結尾 `{"done": true}`；串流中的錯誤以
+    `{"error": 訊息}` 事件收尾（HTTP status 已送出，無法改）。
+    """
+    # SSE 開始後無法再改 status code，session 存在與否先查（與串流開始之間
+    # 的過期 race 由 error 事件兜底）。
+    if await asyncio.to_thread(_get_store().load_messages, session_id) is None:
+        raise HTTPException(status_code=404, detail="對話階段不存在或已過期，請重新開始")
+
+    async def events():
+        try:
+            async for chunk in respond_in_session_stream(session_id, body.message):
+                yield _sse_event({"delta": chunk})
+            yield _sse_event({"done": True})
+        except LookupError:
+            yield _sse_event({"error": "對話階段不存在或已過期，請重新開始"})
+        except Exception as error:  # noqa: BLE001 — must surface as an SSE event
+            _log.exception("Chat stream failed for session %s", session_id)
+            yield _sse_event({"error": f"助理暫時無法回應：{summarize_error(error)}"})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.delete("/api/chat/sessions/{session_id}", status_code=204)

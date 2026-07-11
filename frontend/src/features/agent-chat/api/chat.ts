@@ -20,14 +20,21 @@ export async function createChatSession(): Promise<string> {
   return body.sessionId
 }
 
-/** Send a user message and receive the agent reply. */
-export async function sendChatMessage(
+/**
+ * Send a user message and stream the reply via SSE.
+ *
+ * `onDelta` fires per text chunk; resolves with the full reply
+ * (concatenation of all deltas). Falls back to throwing ChatApiError on
+ * HTTP errors or in-stream `{"error": ...}` events.
+ */
+export async function sendChatMessageStream(
   sessionId: string,
   message: string,
+  onDelta: (delta: string) => void,
   signal?: AbortSignal,
 ): Promise<string> {
   const response = await apiFetch(
-    `/api/chat/sessions/${sessionId}/messages`,
+    `/api/chat/sessions/${sessionId}/messages/stream`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -37,10 +44,37 @@ export async function sendChatMessage(
       networkMessage: API_NETWORK_MESSAGES.agent,
     },
   )
-  const body = (await response.json()) as { reply: string }
-  return body.reply
-}
+  const reader = response.body?.getReader()
+  if (!reader) throw new ChatApiError(API_NETWORK_MESSAGES.agent)
 
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let reply = ""
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let boundary
+    while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+      const rawEvent = buffer.slice(0, boundary)
+      buffer = buffer.slice(boundary + 2)
+      const dataLine = rawEvent.split("\n").find(line => line.startsWith("data: "))
+      if (!dataLine) continue
+      const payload = JSON.parse(dataLine.slice(6)) as {
+        delta?: string
+        done?: boolean
+        error?: string
+      }
+      if (payload.error) throw new ChatApiError(payload.error)
+      if (payload.delta) {
+        reply += payload.delta
+        onDelta(payload.delta)
+      }
+      if (payload.done) return reply
+    }
+  }
+  return reply
+}
 
 /** POST text to /api/tts; returns audio Blob (audio/wav or audio/mpeg). */
 export async function synthesizeSpeech(text: string, signal?: AbortSignal): Promise<Blob> {

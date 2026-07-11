@@ -14,12 +14,12 @@ def test_concurrent_respond_no_lost_update(tmp_path, monkeypatch):
 
     from agent.session import AgentSession
 
-    async def slow_respond(self, message: str) -> str:
+    async def slow_respond_stream(self, message: str):
         await asyncio.sleep(0.05)  # yield so both coroutines start before either saves
         self.messages.append({"role": "user", "content": message})
-        return f"reply to {message}"
+        yield f"reply to {message}"
 
-    monkeypatch.setattr(AgentSession, "respond", slow_respond)
+    monkeypatch.setattr(AgentSession, "respond_stream", slow_respond_stream)
 
     async def run():
         await asyncio.gather(
