@@ -35,10 +35,19 @@ InputEnricher = Callable[[str], Awaitable[str]]
 
 
 def _find_direct_response(tool_calls: list, tool_results: list[dict]) -> str | None:
-    """Return the respond_directly message if the model called that tool, else None."""
-    for call, result in zip(tool_calls, tool_results):
-        if call.function.name == "respond_directly":
-            return result["content"]
+    """Return the respond_directly message, but only if it's the sole call this round.
+
+    respond_directly's content is generated before the model sees any tool
+    results in this batch. If other tools were called alongside it (e.g. a
+    real lookup like get_arrivals_here), that content is a guess made in
+    parallel — never let it win over real data. Discard it and let the real
+    tool result(s) go back to the model for a follow-up round instead.
+    """
+    if len(tool_calls) != 1:
+        return None
+    call, result = tool_calls[0], tool_results[0]
+    if call.function.name == "respond_directly":
+        return result["content"]
     return None
 
 
@@ -264,11 +273,18 @@ class AgentSession:
                         tool_rounds=tool_rounds,
                     )
 
-                self.messages.append(assistant_message(message, tool_calls))
+                # Normalize before storing in history: raw content may carry
+                # <think> blocks or simplified Chinese (Groq/qwen3 reasoning
+                # output), which would waste context budget and few-shot the
+                # model into imitating its own dirty output next round.
+                entry = assistant_message(message, tool_calls)
+                entry["content"] = normalize_llm_output(entry["content"] or "")
+                self.messages.append(entry)
                 if not tool_calls:
+                    self._trim()
                     return _LlmTurnResult(
                         outcome="ok",
-                        reply=self._finish_normalized(message.content or ""),
+                        reply=entry["content"],
                         tool_rounds=tool_rounds,
                     )
 

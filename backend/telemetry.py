@@ -1,11 +1,15 @@
+import logging
 import os
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any
 
 from opentelemetry import metrics, trace
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
@@ -102,6 +106,18 @@ def configure_telemetry(service_name: str = "taigi-bus-agent") -> "AgentTelemetr
                 views=[duration_view, bytes_view],
             )
         )
+
+        # Forwards stdlib `logging` records (the _log = logging.getLogger(__name__)
+        # calls throughout providers/services/voice) to OTLP. Attached at the root
+        # logger with level=NOTSET so it only sees what already passed each
+        # logger's own effective level (WARNING by default — no basicConfig sets
+        # one). ponytail: uvicorn's own "uvicorn.access"/"uvicorn.error" loggers
+        # have propagate=False, so they never reach this handler — only this
+        # app's own module loggers are exported. Add an explicit forwarder later
+        # if access logs in SigNoz turn out to matter.
+        logger_provider = LoggerProvider(resource=resource)
+        logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter()))
+        logging.getLogger().addHandler(LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider))
 
     _telemetry = AgentTelemetry()
     return _telemetry

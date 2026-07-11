@@ -36,4 +36,4 @@ def test_settings_groq_api_key_satisfies_requirement(monkeypatch):
     assert s.llm_base_url == "https://api.groq.com/openai/v1"
     assert s.llm_model == "qwen/qwen3-32b"
     assert s.llm_api_key == "gsk_test"
-    assert s.llm_extra_body == {}
+    assert s.llm_extra_body == {"reasoning_format": "hidden"}

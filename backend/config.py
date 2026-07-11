@@ -27,8 +27,12 @@ from telemetry import configure_telemetry
 
 _GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 _GROQ_DEFAULT_MODEL = "qwen/qwen3-32b"
-# vLLM (Qwen3) requires this to suppress chain-of-thought tokens.
-_VLLM_EXTRA_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
+# Local Qwen3 endpoints (vLLM / llama.cpp) read this to suppress thinking tokens.
+# Confirmed accepted by llama-server's OpenAI endpoint (returns 200, thinking off).
+_LOCAL_EXTRA_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
+# Groq qwen3-32b emits <think>...</think> reasoning by default; hiding it
+# saves the reasoning tokens' latency on every tool-call round.
+_GROQ_EXTRA_BODY = {"reasoning_format": "hidden"}
 
 
 def parse_cors_origins() -> list[str]:
@@ -42,8 +46,8 @@ class Settings:
     """Parsed and validated environment-variable configuration."""
 
     # ── LLM ───────────────────────────────────────────────────────────────────
-    # Set GROQ_API_KEY to route through Groq (preferred).
-    # Otherwise set LLM_BASE_URL + LLM_MODEL for a local/vLLM endpoint.
+    # Set GROQ_API_KEY to route through Groq (takes priority if present).
+    # Otherwise set LLM_BASE_URL + LLM_MODEL for a local endpoint (vLLM / llama.cpp).
     llm_base_url: str
     llm_model: str
     llm_api_key: str
@@ -75,7 +79,7 @@ class Settings:
             llm_base_url = _GROQ_BASE_URL
             llm_model = os.getenv("GROQ_MODEL", _GROQ_DEFAULT_MODEL)
             llm_api_key = groq_api_key
-            llm_extra_body: dict = {}
+            llm_extra_body: dict = _GROQ_EXTRA_BODY
         else:
             llm_base_url = os.getenv("LLM_BASE_URL", "")
             llm_model = os.getenv("LLM_MODEL", "")
@@ -83,7 +87,7 @@ class Settings:
             if missing:
                 raise RuntimeError(f"Required env vars not set: GROQ_API_KEY or {', '.join(missing)}")
             llm_api_key = os.getenv("LLM_API_KEY", "ollama")
-            llm_extra_body = _VLLM_EXTRA_BODY
+            llm_extra_body = _LOCAL_EXTRA_BODY
 
         return cls(
             llm_base_url=llm_base_url,

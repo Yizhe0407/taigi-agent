@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 from agent.error import summarize_error
+from agent.router import Intent
 from agent.session import AgentSession
 
 
@@ -264,7 +265,7 @@ def test_router_canned_response_skips_llm_call():
         {"role": "assistant", "content": reply},
     ]
     # ConvState updated.
-    assert session.conv_state.last_route == "201"
+    assert session.conv_state.last_intent == Intent.ROUTE_ONLY
 
 
 def test_router_canned_response_for_remote_destination():
@@ -279,6 +280,59 @@ def test_router_canned_response_for_timetable_query():
     reply = asyncio.run(session.respond("201路完整時刻表"))
     assert reply == "時刻表查不了，只能查下一班到站時間喔。"
     assert session.client.chat.completions.calls == []
+
+
+def test_respond_directly_discarded_when_called_with_other_tools():
+    """respond_directly guessed content must lose to a real tool call in the same batch.
+
+    Regression test for the bug where `tool_choice="required"` + parallel tool
+    calls let the model pair a real lookup (bus) with a respond_directly guess
+    generated before seeing any tool result — and the guess used to win.
+    """
+
+    async def bus_handler():
+        return "查詢結果：還要五分鐘"
+
+    async def respond_directly_handler(message):
+        return message
+
+    session = make_session(
+        [
+            llm_response(
+                assistant_message(
+                    tool_calls=[
+                        tool_call("bus", "{}", "c1"),
+                        tool_call("respond_directly", '{"message": "大約五分鐘後到"}', "c2"),
+                    ]
+                )
+            ),
+            llm_response(assistant_message("還要五分鐘")),
+        ],
+        tool_handlers={"bus": bus_handler, "respond_directly": respond_directly_handler},
+    )
+
+    reply = asyncio.run(session.respond("到站時間"))
+
+    # The real tool result was fed back for a follow-up LLM call, not short-circuited.
+    assert reply == "還要五分鐘"
+    assert len(session.client.chat.completions.calls) == 2
+
+
+def test_history_stores_normalized_assistant_content_not_raw_reasoning():
+    """Assistant content saved to history must be think-stripped and traditional Chinese.
+
+    Regression test: raw content (e.g. Groq qwen3's <think> blocks, simplified
+    Chinese) used to be appended to history verbatim, wasting context budget
+    and few-shotting the model into repeating its own dirty output.
+    """
+    session = make_session([llm_response(assistant_message("<think>我在想</think>没问题"))])
+
+    reply = asyncio.run(session.respond("你好"))
+
+    assert "<think>" not in reply
+    assert reply == session.messages[-1]["content"]
+    assert "<think>" not in session.messages[-1]["content"]
+    assert "没" not in session.messages[-1]["content"]
 
 
 def test_router_fallthrough_still_calls_llm():

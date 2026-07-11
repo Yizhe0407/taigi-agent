@@ -49,7 +49,6 @@ def test_route_only_fires_for_bare_route_numbers(router: IntentRouter, empty_sta
     assert decision.canned_response is not None
     assert expected_route in decision.canned_response
     assert decision.next_state is not None
-    assert decision.next_state.last_route == expected_route
     assert decision.next_state.last_intent == Intent.ROUTE_ONLY
 
 
@@ -68,14 +67,6 @@ def test_route_only_does_not_fire_when_question_present(router: IntentRouter, em
     assert decision.intent != Intent.ROUTE_ONLY
 
 
-def test_route_only_preserves_last_destination(router: IntentRouter):
-    """Confirming a route doesn't wipe out the destination from prior turns."""
-    state = ConvState(last_destination="虎尾科大")
-    decision = router.classify("201", state)
-    assert decision.next_state is not None
-    assert decision.next_state.last_destination == "虎尾科大"
-
-
 # ── Rule 2: REMOTE_DESTINATION ───────────────────────────────────────────────
 
 
@@ -84,11 +75,9 @@ def test_route_only_preserves_last_destination(router: IntentRouter):
     [
         "我要去台中怎麼搭",
         "到台北要怎麼轉乘",
-        "要不要轉乘才能到嘉義",
+        "要不要轉乘才能到嘉義",  # 轉乘 keyword fires regardless of city
         "台北的車呢",
         "怎麼到高雄",
-        "去南投有公車嗎",
-        "搭什麼到彰化",
         "想去新竹",
         "臺中的車",
     ],
@@ -107,6 +96,20 @@ def test_remote_destination_transfer_keyword_alone_triggers(router: IntentRouter
 
 def test_remote_destination_does_not_fire_for_local_destination(router: IntentRouter, empty_state: ConvState):
     decision = router.classify("我想去虎尾科大", empty_state)
+    assert decision.intent != Intent.REMOTE_DESTINATION
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        "去嘉義有車嗎",
+        "搭什麼到彰化",
+        "去南投有公車嗎",
+    ],
+)
+def test_remote_destination_does_not_fire_for_nearby_cities_with_direct_routes(router: IntentRouter, empty_state: ConvState, user_input: str):
+    """嘉義/彰化/南投 have direct Yunlin routes (TDX InterCity) — must reach the tool, not the map redirect."""
+    decision = router.classify(user_input, empty_state)
     assert decision.intent != Intent.REMOTE_DESTINATION
 
 
@@ -197,9 +200,11 @@ def test_decision_dataclass_is_frozen():
 
 
 def test_conv_state_dataclass_is_frozen():
-    state = ConvState(last_route="201")
+    state = ConvState(last_intent=Intent.ROUTE_ONLY)
     with pytest.raises(Exception):
-        state.last_route = "999"  # type: ignore[misc]
+        state.last_intent = Intent.UNKNOWN  # type: ignore[misc]
 
-    # Confirm removed field is gone.
+    # Confirm removed fields are gone (dead state, never read across requests).
     assert not hasattr(state, "pending_stops_clarify_route")
+    assert not hasattr(state, "last_route")
+    assert not hasattr(state, "last_destination")

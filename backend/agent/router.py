@@ -33,8 +33,6 @@ class ConvState:
     carry forward context without touching LLM messages.
     """
 
-    last_route: str | None = None
-    last_destination: str | None = None
     last_intent: Intent | None = None
 
 
@@ -62,16 +60,16 @@ class Decision:
 _ROUTE_ONLY_RE = re.compile(r"^([A-Za-z]?\d{2,4}[A-Za-z]?)路?$")
 
 # Remote (cross-county) destinations the kiosk cannot route to directly —
-# user must use a map planner instead.
+# user must use a map planner instead. 嘉義/彰化/南投 excluded: TDX InterCity
+# endpoint (see providers/tdx_bus.py) has direct Yunlin routes there (e.g.
+# 7000 series to 嘉義, 西螺-彰化), so those queries must reach the tool
+# instead of being short-circuited here.
 _REMOTE_CITIES = (
     "台北",
     "臺北",
     "台中",
     "臺中",
     "高雄",
-    "嘉義",
-    "彰化",
-    "南投",
     "新北",
     "桃園",
     "新竹",
@@ -107,15 +105,14 @@ class IntentRouter:
 
         # Rule 1: pure route number → ask the user what about it.
         # Highest priority — even Rule 2 keywords matter less than "user
-        # just said a route number with no question". Echoes the number back
-        # so the next turn can resolve via state.last_route.
+        # just said a route number with no question".
         match = _ROUTE_ONLY_RE.match(text)
         if match:
             route = match.group(1)
             return Decision(
                 intent=Intent.ROUTE_ONLY,
                 canned_response=(f"{route}您想查什麼，到站時間還是有沒有停某個地方？"),
-                next_state=replace(state, last_route=route, last_intent=Intent.ROUTE_ONLY),
+                next_state=replace(state, last_intent=Intent.ROUTE_ONLY),
             )
 
         # Rule 2: remote destination / transfer → map redirect.
