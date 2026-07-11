@@ -65,7 +65,7 @@ def _norm_route_estimate_row(row: dict) -> dict:
     return {
         "stop_name": row.get("StopName", ""),
         "stop_sequence": row.get("SeqNo"),
-        "direction": row.get("GoBack", 1) - 1,
+        "direction": (row.get("GoBack") or 1) - 1,
         "stop_status": stop_status,
         "estimate_seconds": estimate_seconds,
         "scheduled_time": row.get("ComeTime"),  # HH:MM of next scheduled departure; None when no service
@@ -277,18 +277,9 @@ class EbusBusProvider:
         """
 
         async def _one(name: str) -> list[dict]:
-            route_id = await self.get_route_id(name)
-            if route_id is None:
+            route_rows = await self.fetch_route_estimate(name)
+            if route_rows is None:
                 return []
-
-            cached = self._estimate_cache.get(route_id)
-            if cached is not None and not self._expired(cached[0], self._estimate_ttl):
-                route_rows = cached[1]
-            else:
-                raw = await self._get(f"{_BASE}/route/{route_id}/estimate")
-                route_rows = [_norm_route_estimate_row(r) for r in raw]
-                self._estimate_cache[route_id] = (self._clock(), route_rows)
-
             matching = [r for r in route_rows if stop_name in r.get("stop_name", "")]
             return _dedup_eta_by_min_seq([_route_est_to_eta(r, name) for r in matching])
 

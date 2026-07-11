@@ -2,6 +2,7 @@ import { computed, type MaybeRefOrGetter, toValue } from "vue"
 
 import {
   buildRouteColorAssignments,
+  normalizeRouteCode,
   routeColorBgClass,
   routeColorBorderClass,
   routeColorTextClass,
@@ -14,15 +15,15 @@ export function useRouteColors(routeCodes: MaybeRefOrGetter<string[]>) {
   )
 
   function getRouteBgClass(routeCode: string): string {
-    return assignments.value[routeCode]?.bgClass ?? routeColorBgClass(routeCode)
+    return assignments.value[normalizeRouteCode(routeCode)]?.bgClass ?? routeColorBgClass(routeCode)
   }
 
   function getRouteBorderClass(routeCode: string): string {
-    return assignments.value[routeCode]?.borderClass ?? routeColorBorderClass(routeCode)
+    return assignments.value[normalizeRouteCode(routeCode)]?.borderClass ?? routeColorBorderClass(routeCode)
   }
 
   function getRouteTextClass(routeCode: string): string {
-    return assignments.value[routeCode]?.textClass ?? routeColorTextClass(routeCode)
+    return assignments.value[normalizeRouteCode(routeCode)]?.textClass ?? routeColorTextClass(routeCode)
   }
 
   return {

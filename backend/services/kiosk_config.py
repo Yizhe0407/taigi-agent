@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import threading
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -90,8 +91,10 @@ def set_kiosk_config(cfg: KioskConfig) -> None:
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
     # Atomic write: a crash mid-write would otherwise leave truncated JSON that
     # _load() silently falls back on, booting the kiosk to the wrong default stop.
-    # Write to a temp file, then os.replace() (atomic rename on the same fs).
-    tmp_path = _STATE_PATH.with_name(f"{_STATE_PATH.name}.tmp")
+    # Write to a uniquely-named temp file, then os.replace() (atomic rename on
+    # the same fs) — a shared tmp name would let concurrent writers corrupt
+    # each other's in-progress content before either replace() lands.
+    tmp_path = _STATE_PATH.with_name(f"{_STATE_PATH.name}.{uuid.uuid4().hex}.tmp")
     tmp_path.write_text(
         json.dumps(asdict(cfg), ensure_ascii=False, indent=2),
         encoding="utf-8",

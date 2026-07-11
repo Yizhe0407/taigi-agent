@@ -9,6 +9,7 @@ from `Settings`; only the mutable message log is persisted (see
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 
@@ -21,6 +22,12 @@ from api.session_store import ChatSessionStore
 from config import get_settings, make_agent_session
 
 router = APIRouter()
+_log = logging.getLogger(__name__)
+
+# How often the background loop reconciles _session_locks against expired
+# sessions. Independent of the store's own TTL — this only bounds how long a
+# dangling Lock can survive after its session expires.
+_LOCK_PURGE_INTERVAL_SECONDS = 300.0
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +56,33 @@ def set_store(store: ChatSessionStore) -> None:
     """Inject a store (tests, alternative backends)."""
     global _store
     _store = store
+
+
+async def purge_expired_locks() -> None:
+    """Drop `_session_locks` entries for sessions the store just expired.
+
+    `respond_in_session` only cleans up a session's lock when that same
+    session_id is looked up again after expiry (the LookupError path) — a
+    session created but never revisited leaves its Lock behind forever.
+    Over a long kiosk uptime with steady session churn that grows unbounded.
+    """
+    store = _get_store()
+    purged_ids = await asyncio.to_thread(store.purge_expired)
+    for session_id in purged_ids:
+        _session_locks.pop(session_id, None)
+
+
+async def run_lock_purge_loop() -> None:
+    """Background loop: periodically reconcile `_session_locks` with the store.
+
+    Started alongside the ETA warmup loop in `api._lifespan`.
+    """
+    while True:
+        await asyncio.sleep(_LOCK_PURGE_INTERVAL_SECONDS)
+        try:
+            await purge_expired_locks()
+        except Exception as exc:  # noqa: BLE001 — background loop must not die
+            _log.warning("Session lock purge failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

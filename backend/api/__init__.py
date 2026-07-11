@@ -50,6 +50,7 @@ async def _eta_warmup_loop() -> None:
 from .admin import router as admin_router  # noqa: E402
 from .asr import router as asr_router  # noqa: E402
 from .chat import router as chat_router  # noqa: E402
+from .chat import run_lock_purge_loop  # noqa: E402
 from .client_events import router as client_events_router  # noqa: E402
 from .departures import router as departures_router  # noqa: E402
 from .moovo import router as moovo_router  # noqa: E402
@@ -74,12 +75,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception as exc:
             _log.warning("ebus route map warmup failed: %s", exc)
     warmup_task = asyncio.create_task(_eta_warmup_loop())
+    lock_purge_task = asyncio.create_task(run_lock_purge_loop())
     try:
         yield
     finally:
         warmup_task.cancel()
+        lock_purge_task.cancel()
         with suppress(asyncio.CancelledError):
             await warmup_task
+        with suppress(asyncio.CancelledError):
+            await lock_purge_task
         provider = get_provider()
         if hasattr(provider, "aclose"):
             await provider.aclose()

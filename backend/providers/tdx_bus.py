@@ -69,6 +69,7 @@ _DEFAULT_ROUTE_INFO_TTL = 600.0
 _DEFAULT_ROUTE_ESTIMATE_TTL = 30.0  # TDX updates ~30 s; 10 s caused 429 rate-limit hits
 _DEFAULT_ETA_TTL = 60.0  # must exceed wait_for(12s) + warmup_sleep(25s) = 37s to break 429 cascade
 _MAX_RETRIES = 1  # retries on HTTP 429; Retry-After is 20-40 s so 3 retries = 60-120 s blocking
+_MAX_UIDS_PER_FILTER = 15  # keeps encoded $filter well under typical gateway URL-length limits
 _MAX_STALE_SECONDS = 300.0  # upstream-down grace period; beyond this, stop serving stale data
 
 _INTERCITY_RE = re.compile(r"^7\d{3}")
@@ -166,11 +167,22 @@ class TdxBusProvider(BusProvider):
             self._token_expires_at = self._clock() + expires_in - _TOKEN_BUFFER_SECONDS
             return self._token
 
+    @staticmethod
+    def _retry_after_seconds(resp: object, default: float) -> float:
+        """Parse Retry-After as seconds; RFC also allows an HTTP-date, which
+        float() can't handle — fall back to `default` instead of raising."""
+        raw = resp.headers.get("Retry-After", "")  # type: ignore[attr-defined]
+        try:
+            return float(raw)
+        except ValueError:
+            return default
+
     async def _get(self, url: str, params: dict) -> list[dict]:
         token = await self._get_token()
         http = get_http_client()
         refreshed_token = False
-        for attempt in range(_MAX_RETRIES + 1):
+        attempt = 0
+        while True:
             resp = await http.get(
                 url,
                 params={**params, "$format": "JSON"},
@@ -179,20 +191,21 @@ class TdxBusProvider(BusProvider):
             )
             if resp.status_code == 401 and not refreshed_token:
                 # Token was revoked/expired early server-side; force a refresh and
-                # retry once instead of failing the whole call outright.
+                # retry once. Independent of the 429 retry budget below — a 401
+                # refresh must not consume a rate-limit retry attempt.
                 _log.warning("TDX 401 on %s; refreshing token and retrying once", url)
                 self._token_expires_at = 0.0
                 token = await self._get_token()
                 refreshed_token = True
                 continue
             if resp.status_code == 429 and attempt < _MAX_RETRIES:
-                wait = float(resp.headers.get("Retry-After", 1 << attempt))
+                wait = self._retry_after_seconds(resp, float(1 << attempt))
                 _log.warning("TDX 429 on %s; retry in %.0fs (attempt %d/%d)", url, wait, attempt + 1, _MAX_RETRIES)
                 await self._sleep(wait)
+                attempt += 1
                 continue
             resp.raise_for_status()
             return resp.json()
-        raise RuntimeError("unreachable")
 
     # ── Normalizers ───────────────────────────────────────────────────────────
 
@@ -343,18 +356,32 @@ class TdxBusProvider(BusProvider):
     # ── ETA fetch helpers ──────────────────────────────────────────────────────
 
     async def _fetch_eta_by_uids(self, uids: set[str]) -> list[dict]:
-        """Query by StopUID — precise, no dedup needed."""
-        uid_filter = " or ".join(f"StopUID eq '{uid}'" for uid in uids)
-        results = await asyncio.gather(
-            self._get(f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}", {"$filter": uid_filter}),
-            self._get(f"{_BASE}/EstimatedTimeOfArrival/InterCity", {"$filter": uid_filter}),
-            return_exceptions=True,
-        )
-        city_rows = _safe_list(results[0])
-        intercity_rows = _safe_list(results[1])
-        if isinstance(results[0], BaseException) and isinstance(results[1], BaseException):
-            raise results[0]
-        return [self._norm_eta(r) for r in city_rows + intercity_rows]
+        """Query by StopUID — precise, no dedup needed.
+
+        Chunks the OR filter so an interchange stop with many boarding UIDs
+        (e.g. 高鐵雲林站, served by both city and intercity routes in both
+        directions) can't build a single `$filter` clause long enough to hit
+        a gateway/proxy URL-length limit.
+        """
+        uid_list = sorted(uids)
+        chunks = [uid_list[i : i + _MAX_UIDS_PER_FILTER] for i in range(0, len(uid_list), _MAX_UIDS_PER_FILTER)]
+
+        async def _fetch_chunk(chunk: list[str]) -> tuple[object, object]:
+            uid_filter = " or ".join(f"StopUID eq '{uid}'" for uid in chunk)
+            return await asyncio.gather(
+                self._get(f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}", {"$filter": uid_filter}),
+                self._get(f"{_BASE}/EstimatedTimeOfArrival/InterCity", {"$filter": uid_filter}),
+                return_exceptions=True,
+            )
+
+        chunk_results = await asyncio.gather(*[_fetch_chunk(chunk) for chunk in chunks])
+        all_results = [r for pair in chunk_results for r in pair]
+        # Only raise (→ caller serves stale cache) when every request across every
+        # chunk failed; a partial outage should still surface the rows that succeeded.
+        if all_results and all(isinstance(r, BaseException) for r in all_results):
+            raise all_results[0]  # type: ignore[misc]
+        rows = [row for r in all_results for row in _safe_list(r)]
+        return [self._norm_eta(r) for r in rows]
 
     async def _fetch_eta_by_name(self, stop_name: str) -> list[dict]:
         """Fallback: query by stop name and dedup by min sequence."""

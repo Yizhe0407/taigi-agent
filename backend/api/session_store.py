@@ -103,13 +103,26 @@ class ChatSessionStore:
                 (session_id,),
             )
 
-    def purge_expired(self) -> None:
+    def purge_expired(self) -> list[str]:
+        """Delete rows past TTL; return the purged session_ids.
+
+        Callers with per-session in-memory state keyed by session_id (e.g.
+        api.chat's `_session_locks`) use the return value to prune their own
+        state in step — otherwise a session that expires without ever being
+        revisited leaves its entry behind forever.
+        """
         cutoff = time.time() - self._ttl
         with self._lock:
-            self._conn.execute(
-                "DELETE FROM sessions WHERE last_used < ?",
+            rows = self._conn.execute(
+                "SELECT session_id FROM sessions WHERE last_used < ?",
                 (cutoff,),
-            )
+            ).fetchall()
+            if rows:
+                self._conn.execute(
+                    "DELETE FROM sessions WHERE last_used < ?",
+                    (cutoff,),
+                )
+        return [row[0] for row in rows]
 
     def close(self) -> None:
         with self._lock:

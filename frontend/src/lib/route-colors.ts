@@ -78,7 +78,7 @@ const DEFAULT_ROUTE_COLOR = ROUTE_COLOR_TOKENS[0]
 const PREFERENCE_STEP = 5
 const REUSE_PENALTY = 0.12
 
-function normalizeRouteCode(routeCode: string): string {
+export function normalizeRouteCode(routeCode: string): string {
   return routeCode.normalize("NFKC").trim().toUpperCase()
 }
 
