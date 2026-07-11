@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable
 from datetime import datetime, timedelta
-from typing import TypeVar
 
 from providers.bus import BusProvider
 from services.departures.classification import DepartureSection, _classify_stop
@@ -19,11 +18,10 @@ from services.departures.normalize import (
 from services.departures.provider import get_provider
 from services.departures.snapshot import DepartureSnapshotUnavailable, build_departure_snapshot
 
-_T = TypeVar("_T")
 _QUERY_FAILED = "查詢失敗，請稍後再試。"
 
 
-async def _safe_provider_call[T](coro: Awaitable[_T]) -> _T | None:
+async def _safe_provider_call[T](coro: Awaitable[T]) -> T | None:
     """Run a provider coroutine; return None on any exception."""
     try:
         return await coro
@@ -198,7 +196,6 @@ async def render_stop_on_route(
 def _dest_arrival_text(
     dest_rows: list[dict],
     kiosk_row: dict,
-    downstream: list[str],
     destination: str,
     now: datetime,
 ) -> str:
@@ -259,7 +256,7 @@ async def _check_route_arrivals(
             status_text = _with_schedule(_mark_incoming(c.status_text), c.scheduled_time)
 
             dest_rows = [row for row in data if _name_matches(destination, row.get("stop_name", "")) and row.get("direction") == direction]
-            dest_suffix = _dest_arrival_text(dest_rows, kiosk_rows[0], downstream, destination, now)
+            dest_suffix = _dest_arrival_text(dest_rows, kiosk_rows[0], destination, now)
             hits.append((f"{route_name} {dir_label}：{status_text}{dest_suffix}", c.sort_minutes, c.section))
         else:
             hits.append((f"{route_name} {dir_label}：無即時資料", 9999, DepartureSection.UNKNOWN))
@@ -313,7 +310,7 @@ async def render_arrivals_to_destination(
     # causes 429 storms when cache is cold.
     sem = asyncio.Semaphore(3)
 
-    async def _guarded(name: str, rid: str) -> tuple[list[tuple[str, int]], set[str]]:
+    async def _guarded(name: str, rid: str) -> tuple[list[tuple[str, int, DepartureSection]], set[str]]:
         async with sem:
             return await _check_route_arrivals(name, rid, provider, kiosk_stop, go_back, destination, route_info, now)
 
