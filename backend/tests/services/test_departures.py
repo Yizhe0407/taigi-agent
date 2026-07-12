@@ -348,6 +348,27 @@ def test_render_stop_on_route_not_found(use_provider):
     assert result.startswith("沒有")
 
 
+def test_render_arrivals_route_not_found_lists_stop_routes(use_provider):
+    """Route not found: error lists routes actually serving the stop (ASR rescue path)."""
+    use_provider(
+        FakeBusProvider(
+            route_info={
+                "201": {"id": "201", "go_dest": "雲林科技大學", "back_dest": "高鐵雲林站"},
+                "7126": {"id": "7126", "go_dest": "雲林科技大學", "back_dest": "斗六火車站"},
+            },
+        )
+    )
+    result = asyncio.run(departures.render_arrivals("221", "雲林科技大學"))
+    assert result == "本站沒有路線 221。本站停靠路線：201、7126。"
+
+
+def test_render_arrivals_route_not_found_empty_route_info(use_provider):
+    """Empty route_info: fall back to plain not-found message, no dangling colon."""
+    use_provider(FakeBusProvider(route_info={}))
+    result = asyncio.run(departures.render_arrivals("221", "雲林科技大學"))
+    assert result == "本站沒有路線 221。"
+
+
 # ── render_arrivals_to_destination ───────────────────────────────────────────
 
 
@@ -382,7 +403,7 @@ def test_render_arrivals_to_destination_no_routes(use_provider):
         )
     )
     result = asyncio.run(departures.render_arrivals_to_destination("台北101", "雲林科技大學"))
-    assert result == "本站沒有直達台北101的路線"
+    assert result == "本站沒有直達「台北101」的路線。"
 
 
 def test_render_arrivals_to_destination_no_eta_row(use_provider):
@@ -398,7 +419,22 @@ def test_render_arrivals_to_destination_no_eta_row(use_provider):
     )
     result = asyncio.run(departures.render_arrivals_to_destination("西螺", "雲林科技大學"))
     # 雲林科技大學 not in stop sequence → no downstream match → no hit
-    assert result == "本站沒有直達西螺的路線"
+    assert result == "本站沒有直達「西螺」的路線。"
+
+
+def test_render_arrivals_to_destination_no_routes_with_fuzzy_candidate(use_provider):
+    """ASR mis-hearing rescue: no exact-match route, but a similarly-spelled stop exists downstream."""
+    use_provider(
+        FakeBusProvider(
+            route_info={"201": {"id": "201", "go_dest": "斗六火車站", "back_dest": "雲林科技大學"}},
+            route_estimate=[
+                {"direction": 0, "stop_sequence": 1, "stop_name": "雲林科技大學", "stop_status": 0, "estimate_seconds": 0},
+                {"direction": 0, "stop_sequence": 2, "stop_name": "斗六火車站", "stop_status": 0, "estimate_seconds": 600},
+            ],
+        )
+    )
+    result = asyncio.run(departures.render_arrivals_to_destination("斗溜火車站", "雲林科技大學"))
+    assert result == "本站沒有直達「斗溜火車站」的路線。相近站名：斗六火車站。"
 
 
 # ── geo-awareness ────────────────────────────────────────────────────────────

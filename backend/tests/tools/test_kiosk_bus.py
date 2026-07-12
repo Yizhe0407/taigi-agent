@@ -20,14 +20,6 @@ def test_get_route_stops_uses_kiosk_config_stop_name(monkeypatch):
     assert calls == [("201", "雲林科技大學")]
 
 
-def test_expand_alias_known_abbreviation():
-    assert kiosk_bus._expand_alias("雲科大") == "雲林科技大學"
-
-
-def test_expand_alias_passthrough_for_unknown_name():
-    assert kiosk_bus._expand_alias("雲林科技大學") == "雲林科技大學"
-
-
 def test_get_stop_arrival_statuses_here_passes_direction_filter(monkeypatch):
     calls = []
 

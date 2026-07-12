@@ -68,12 +68,12 @@ backend/
 - `providers/otp.py`：OpenTripPlanner GraphQL provider。
 - `providers/moovo.py`：TDX bike provider。
 - `services/kiosk_config.py`：Runtime kiosk 設定 singleton（stop_name、direction、lat/lon）；持久化至 `.agent_state/kiosk_config.json`，預設雲林科技大學／回程。所有需要站牌資訊的模組從此讀取，不用 env var。
-- `services/departures/`：離站決策唯一分類來源，支援 provider override。方向過濾分兩層：admin 設定「去程」或「回程」時直接照設定過濾（不做 auto-detect）；設定「去回程都有」（go_back=None）時啟動 `_is_terminal_direction()` 自動過濾「本站是該方向終點（即抵達非出發）」的方向，循環路線（go_dest == back_dest == 本站）不過濾。`_classify_stop` 讀 TDX `stop_status` / `estimate_seconds`，回傳 `StopClassification` dataclass，所有 render 函式共用同一分類規則。方向編碼 0=去程、1=回程（TDX Direction）。`route_id` 全層為 str（SubRouteName）。
+- `services/departures/`：離站決策唯一分類來源，支援 provider override。方向過濾分兩層：admin 設定「去程」或「回程」時直接照設定過濾（不做 auto-detect）；設定「去回程都有」（go_back=None）時啟動 `_is_terminal_direction()` 自動過濾「本站是該方向終點（即抵達非出發）」的方向，循環路線（go_dest == back_dest == 本站）不過濾。`_classify_stop` 讀 TDX `stop_status` / `estimate_seconds`，回傳 `StopClassification` dataclass，所有 render 函式共用同一分類規則。方向編碼 0=去程、1=回程（TDX Direction）。`route_id` 全層為 str（SubRouteName）。查無路線/目的地時，renderer 回傳候選清單（路線用 `route_info` 站牌路線表；目的地用 `normalize._fuzzy_candidates`），交給 LLM 挑音近者重查（ASR 聽錯救援，見 `agent/prompt.py`【聽錯救援】）。
 - `services/route_plans.py`：OTP 路線規劃 facade、Kiosk 起點、雲林邊界、view model。
 - `services/moovo.py`：公共自行車站 dataclass、解析、cache、距離查詢。
 - `services/stop_catalog.py`：TDX / GTFS 更新流程產生的雲林 stop index。
 - `services/yunlin_boundary.py`：雲林縣 GeoJSON point-in-polygon。
-- `tools/kiosk_bus.py`：Agent str facade、站名縮寫。
+- `tools/kiosk_bus.py`：Agent str facade，解析 kiosk 範圍（stop/direction）後轉呼叫 `services.departures`。
 
 ## 前端
 

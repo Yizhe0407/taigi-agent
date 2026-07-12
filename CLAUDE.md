@@ -59,7 +59,7 @@ pnpm dev
 - **TDX 欄位**：ETA rows — `sub_route_name`(str)、`direction`(0/1)、`stop_status`(0-4)、`estimate_seconds`(int|None)。route estimate rows 多加 `stop_name`、`stop_sequence`。`route_id` 整個 service/API 層是 `str`。
 - **TDX StopStatus**：0=正常、1=未發車、2=交管不停（`iter_scoped_stop_etas` 靜默過濾）、3=末班已過、4=今日未營運。無 `ComeTime` 等效，`scheduled_time` 永遠 None。
 - **TDX 認證**：`TDX_CLIENT_ID` / `TDX_CLIENT_SECRET` 放 `.env`；token 用 OAuth2 client_credentials 自動取得並快取。
-- 站名縮寫要人工處理；縮寫對照在 `backend/tools/kiosk_bus.py` 的 `_ALIASES`，展開用 `_expand_alias()`（完全比對，模糊比對交給 `services/departures/normalize.py` 兜底）。
+- 站名/路線沒有人工縮寫對照表；ASR 聽錯救援統一走「工具查無時回候選清單（路線清單或 `normalize._fuzzy_candidates` 相近站名）→ LLM 挑音近者重查 → 用確認句回答」，邏輯在 `agent/prompt.py`【聽錯救援】。
 - 截斷 messages 必須以 tool-call 輪次為單位，不能讓 `tool_call_id` 失去對應 tool result。
 - Tool round limit 達上限時，不可先把新的 assistant `tool_calls` append 進 history 再跳出。
 - `.agent_state/` 是 runtime state（`sessions.db`、`kiosk_config.json`），已由 `.gitignore` 排除；測試要把寫入路徑指向 `tmp_path`（如 `ChatSessionStore(tmp_path / "sessions.db")`）。

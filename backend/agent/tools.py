@@ -89,7 +89,7 @@ TOOL_SCHEMAS: list = [
                 "properties": {
                     "destination": {
                         "type": "string",
-                        "description": "目的地名稱，例如 '斗六火車站'、'北港朝天宮'。常見口語縮寫會自動展開為標準站名。",
+                        "description": "目的地名稱，例如 '斗六火車站'、'北港朝天宮'。",
                     },
                 },
                 "required": ["destination"],
@@ -110,7 +110,7 @@ TOOL_SCHEMAS: list = [
                     },
                     "stop_name": {
                         "type": "string",
-                        "description": "要查詢的站牌或地點名稱，例如 '斗六火車站'。常見口語縮寫會自動展開為標準站名。",
+                        "description": "要查詢的站牌或地點名稱，例如 '斗六火車站'。",
                     },
                 },
                 "required": ["route", "stop_name"],
@@ -138,7 +138,7 @@ TOOL_SCHEMAS: list = [
                 "properties": {
                     "stop_name": {
                         "type": "string",
-                        "description": "站牌名稱，例如 '斗六火車站'、'北港朝天宮'。常見口語縮寫會自動展開為標準站名。",
+                        "description": "站牌名稱，例如 '斗六火車站'、'北港朝天宮'。",
                     },
                 },
                 "required": ["stop_name"],

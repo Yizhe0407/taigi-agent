@@ -61,10 +61,15 @@ def _stop_similarity(a: str, b: str) -> float:
 
 
 def _fuzzy_candidates(destination: str, stop_names: set[str]) -> list[tuple[str, float]]:
-    """Return (name, score) pairs sorted by similarity, score > 0.35 only."""
+    """Return (name, score) pairs sorted by similarity, score > 0.25 only.
+
+    Threshold is low: ASR mis-hearing 1-2 characters in a 3-character stop
+    name can drop the charset Jaccard score to as low as 0.2-0.33, so 0.35
+    would exclude the very mis-hearings this rescue path exists to catch.
+    """
     scored = [(name, _stop_similarity(destination, name)) for name in stop_names if name != destination]
     scored.sort(key=lambda x: -x[1])
-    return [(name, score) for name, score in scored if score > 0.35]
+    return [(name, score) for name, score in scored if score > 0.25]
 
 
 def _as_int(value: object) -> int | None:

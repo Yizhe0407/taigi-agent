@@ -56,13 +56,15 @@ async def _resolve_route_estimate(
     stop_name: str,
     *,
     fuzzy: bool = False,
-    not_found_msg: str | None = None,
 ) -> tuple[dict, list[dict]] | str:
     """Shared prologue for single-route renderers.
 
     Returns (route_info, estimate_data) on success, or a user-facing error
     string. `fuzzy` uses loose route-key matching (`_lookup_route`); otherwise
-    exact dict lookup. `not_found_msg` overrides the "route not at stop" text.
+    exact dict lookup. When the route isn't found, the error lists the routes
+    actually serving `stop_name` (from `route_info`, already fetched — no
+    extra HTTP round-trip) so the LLM can pick a phonetically close match and
+    retry — this is the ASR mis-hearing rescue path.
     """
     provider = get_provider()
     route_info = await _safe_provider_call(provider.load_route_info(stop_name))
@@ -72,7 +74,10 @@ async def _resolve_route_estimate(
     info = _lookup_route(route_info, route) if fuzzy else route_info.get(route)
     route_id = info.get("id") if info is not None else None
     if not route_id:
-        return not_found_msg or f"本站沒有路線 {route}。"
+        if not route_info:
+            return f"本站沒有路線 {route}。"
+        available = "、".join(sorted(route_info))
+        return f"本站沒有路線 {route}。本站停靠路線：{available}。"
 
     data = await _safe_provider_call(provider.fetch_route_estimate(route_id))
     if data is None:
@@ -173,11 +178,7 @@ async def render_stop_on_route(
     position in the stop sequence count as 有. Substring matching so aliases
     like '斗六' match '斗六火車站'. LLM reads result verbatim.
     """
-    resolved = await _resolve_route_estimate(
-        route,
-        kiosk_stop,
-        not_found_msg=f"在 {kiosk_stop} 找不到停靠路線 {route}",
-    )
+    resolved = await _resolve_route_estimate(route, kiosk_stop)
     if isinstance(resolved, str):
         return resolved
     route_info, data = resolved
@@ -276,33 +277,10 @@ async def _check_route_arrivals(
     return hits, all_downstream
 
 
-async def _remap_destination_via_fuzzy(
-    destination: str,
-    all_stops: set[str],
-    kiosk_stop: str,
-    go_back: int | None,
-) -> str | None:
-    """Try fuzzy remap of destination; return result string or None if no candidate.
-
-    score >= 0.8: silent auto-remap (e.g. '雲林高鐵站' → '高鐵雲林站')
-    0.35 <= score < 0.8: return hint text for LLM to clarify
-    """
-    candidates = _fuzzy_candidates(destination, all_stops)
-    if not candidates:
-        return None
-    best_name, best_score = candidates[0]
-    if best_score >= 0.8:
-        return await render_arrivals_to_destination(best_name, kiosk_stop, go_back, _allow_remap=False)
-    top = "、".join(name for name, _ in candidates[:3])
-    return f"查無「{destination}」站名。本站路線鄰近站名：{top}。"
-
-
 async def render_arrivals_to_destination(
     destination: str,
     kiosk_stop: str,
     go_back: int | None = None,
-    *,
-    _allow_remap: bool = True,
 ) -> str:
     """Find routes to destination and return each route's next ETA at kiosk_stop.
 
@@ -332,11 +310,11 @@ async def render_arrivals_to_destination(
     all_stops = {name for _, stops in results for name in stops}
 
     if not raw:
-        if _allow_remap:
-            remapped = await _remap_destination_via_fuzzy(destination, all_stops, kiosk_stop, go_back)
-            if remapped is not None:
-                return remapped
-        return f"本站沒有直達{destination}的路線"
+        candidates = _fuzzy_candidates(destination, all_stops)
+        if candidates:
+            top = "、".join(name for name, _ in candidates[:5])
+            return f"本站沒有直達「{destination}」的路線。相近站名：{top}。"
+        return f"本站沒有直達「{destination}」的路線。"
 
     raw.sort(key=lambda x: x[1])
     # Return only the highest-priority group so LLM sees one consistent situation.
