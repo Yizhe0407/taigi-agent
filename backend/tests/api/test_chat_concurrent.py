@@ -1,9 +1,13 @@
-"""Tests for respond_in_session concurrent serialization."""
+"""Tests for respond_in_session_stream concurrent serialization."""
 
 import asyncio
 
-from api.chat import respond_in_session, set_store
+from api.chat import respond_in_session_stream, set_store
 from api.session_store import ChatSessionStore
+
+
+async def _collect(session_id: str, message: str) -> str:
+    return "".join([chunk async for chunk in respond_in_session_stream(session_id, message)])
 
 
 def test_concurrent_respond_no_lost_update(tmp_path, monkeypatch):
@@ -23,8 +27,8 @@ def test_concurrent_respond_no_lost_update(tmp_path, monkeypatch):
 
     async def run():
         await asyncio.gather(
-            respond_in_session(session_id, "hello"),
-            respond_in_session(session_id, "world"),
+            _collect(session_id, "hello"),
+            _collect(session_id, "world"),
         )
 
     asyncio.run(run())

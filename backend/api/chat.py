@@ -63,7 +63,7 @@ def set_store(store: ChatSessionStore) -> None:
 async def purge_expired_locks() -> None:
     """Drop `_session_locks` entries for sessions the store just expired.
 
-    `respond_in_session` only cleans up a session's lock when that same
+    `respond_in_session_stream` only cleans up a session's lock when that same
     session_id is looked up again after expiry (the LookupError path) — a
     session created but never revisited leaves its Lock behind forever.
     Over a long kiosk uptime with steady session churn that grows unbounded.
@@ -99,10 +99,6 @@ class ChatSessionResponse(BaseModel):
 
 class ChatMessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
-
-
-class ChatMessageResponse(BaseModel):
-    reply: str
 
 
 # ---------------------------------------------------------------------------
@@ -150,11 +146,6 @@ async def respond_in_session_stream(session_id: str, message: str):
         await asyncio.to_thread(store.save_messages, session_id, session.messages)
 
 
-async def respond_in_session(session_id: str, message: str) -> str:
-    """Non-streaming facade over `respond_in_session_stream`（單一實作路徑）。"""
-    return "".join([chunk async for chunk in respond_in_session_stream(session_id, message)])
-
-
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -173,32 +164,13 @@ def create_chat_session() -> object:
     return ChatSessionResponse(sessionId=session_id)
 
 
-@router.post(
-    "/api/chat/sessions/{session_id}/messages",
-    response_model=ChatMessageResponse,
-)
-async def send_chat_message(session_id: str, body: ChatMessageRequest) -> object:
-    """Append a user message, run the agent, persist updated history."""
-    try:
-        reply = await respond_in_session(session_id, body.message)
-    except LookupError as error:
-        raise HTTPException(status_code=404, detail="對話階段不存在或已過期，請重新開始") from error
-    except Exception as error:
-        raise HTTPException(
-            status_code=500,
-            detail=f"助理暫時無法回應：{summarize_error(error)}",
-        ) from error
-
-    return {"reply": reply}
-
-
 def _sse_event(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 @router.post("/api/chat/sessions/{session_id}/messages/stream")
 async def send_chat_message_stream(session_id: str, body: ChatMessageRequest) -> StreamingResponse:
-    """Streaming variant of send_chat_message：SSE 逐 chunk 推回覆。
+    """SSE 逐 chunk 推回覆。
 
     事件格式：`{"delta": 文字}`… 結尾 `{"done": true}`；串流中的錯誤以
     `{"error": 訊息}` 事件收尾（HTTP status 已送出，無法改）。

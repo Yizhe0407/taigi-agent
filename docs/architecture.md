@@ -33,7 +33,7 @@ backend/
 
 - `api/__init__.py`：FastAPI app、CORS、router include、telemetry setup。
 - `api/admin.py`：`/api/admin/kiosk`（GET/PUT）與 `/api/admin/stops`（GET）；供後台 UI 讀寫 runtime 站牌設定與站牌目錄。
-- `api/chat.py`：`/api/chat/*`，SQLite-backed `ChatSessionStore`。`respond_in_session_stream` 為唯一實作路徑（voice 與 SSE 共用）；`POST /api/chat/sessions/{id}/messages/stream` 以 SSE 推 `{delta}`/`{done}`/`{error}` 事件，非串流 endpoint 保留。
+- `api/chat.py`：`/api/chat/*`，SQLite-backed `ChatSessionStore`。`respond_in_session_stream` 為唯一實作路徑（voice 與 SSE 共用）；`POST /api/chat/sessions/{id}/messages/stream` 以 SSE 推 `{delta}`/`{done}`/`{error}` 事件；非串流 endpoint 已移除。
 - `api/departures.py`：`/api/departures/here` 與路線詳情；`GET /api/departures/stream` SSE 推播——ETA warmup loop（25 s）每次刷新 cache 後 `notify_snapshot_refreshed()` 喚醒連線推最新 snapshot，40 s fallback 自刷新兜底。
 - `api/route_plans.py`：`/api/route-plans` 與 `/api/kiosk`（含 direction）。
 - `api/moovo.py`：`/api/moovo/*`。
