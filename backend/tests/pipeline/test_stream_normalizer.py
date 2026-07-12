@@ -45,6 +45,19 @@ def test_unclosed_think_block_is_dropped_not_spoken():
     assert normalizer.flush() == []
 
 
+def test_long_enumeration_emits_at_pause_boundaries():
+    """站名清單（整句只有「、」）不能憋到句號才輸出，否則首音延遲等於整句生成時間。"""
+    normalizer = StreamNormalizer()
+    pieces = []
+    text = "201路去程經過的站點有：高鐵雲林站、臺大虎尾分院、持法媽祖宮、虎尾惠來、大美瓦斯廠。"
+    for i in range(0, len(text), 4):  # simulate token deltas
+        pieces.extend(normalizer.feed(text[i : i + 4]))
+        if pieces:
+            break  # first piece must arrive before the sentence completes
+    assert pieces, "清單句應在軟邊界（、：）就先輸出第一段"
+    assert len(pieces[0]) < len(text) // 2
+
+
 def test_long_clause_without_punctuation_still_emits():
     normalizer = StreamNormalizer()
     pieces = normalizer.feed("字" * 250)

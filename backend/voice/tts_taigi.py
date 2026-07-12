@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 from pipecat.frames.frames import Frame, TTSAudioRawFrame
 from pipecat.services.settings import TTSSettings
-from pipecat.services.tts_service import TTSService
+from pipecat.services.tts_service import TextAggregationMode, TTSService
 
 from api.tts import _TTS_TIMEOUT_SECONDS, _split_tailo, _tts_config
 from pipeline.text_processor import process_async as text_process_async
@@ -47,7 +47,16 @@ class TaigiTTSService(TTSService):
     """Custom TTS Service for Taigi Bus Agent."""
 
     def __init__(self, turn_timer: Any | None = None, **kwargs):
-        super().__init__(settings=TTSSettings(model=None, voice=None, language=None), **kwargs)
+        # TOKEN mode: upstream chunks are already speakable pieces (the agent's
+        # StreamNormalizer emits at sentence/pause boundaries). The default
+        # SENTENCE aggregator would re-buffer them until a sentence-final mark,
+        # holding back long enumerations (e.g. station lists joined by 、) and
+        # delaying first audio.
+        super().__init__(
+            text_aggregation_mode=TextAggregationMode.TOKEN,
+            settings=TTSSettings(model=None, voice=None, language=None),
+            **kwargs,
+        )
         self._turn_timer = turn_timer
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:

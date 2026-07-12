@@ -85,6 +85,13 @@ def normalize_llm_output(text: str) -> str:
 
 # Sentence-final punctuation; emission boundary for streamed LLM output.
 _SENTENCE_END_RE = re.compile(r"[。！？!?\n]")
+# Pause-level punctuation: once the pending text is long enough, emit at the
+# last of these instead of waiting for a sentence end. Long enumerations
+# (station lists joined by 、) would otherwise hold back the whole sentence.
+# Fullwidth only — halfwidth , : ; appear inside times (09:58) and numbers,
+# and cutting there corrupts the TTS digit reading.
+_SOFT_BOUNDARY_RE = re.compile(r"[，、；]")
+_SOFT_EMIT_MIN_CHARS = 20
 # Safety valve: emit even without a boundary once the buffer grows this large,
 # so a long clause without punctuation can't stall TTS indefinitely.
 _EMIT_MAX_CHARS = 200
@@ -157,9 +164,12 @@ class StreamNormalizer:
         if final:
             cut = len(self._clean)
         else:
-            matches = list(_SENTENCE_END_RE.finditer(self._clean))
-            if matches:
-                cut = matches[-1].end()
+            sentence_ends = list(_SENTENCE_END_RE.finditer(self._clean))
+            soft_ends = list(_SOFT_BOUNDARY_RE.finditer(self._clean))
+            if sentence_ends:
+                cut = sentence_ends[-1].end()
+            elif len(self._clean) >= _SOFT_EMIT_MIN_CHARS and soft_ends:
+                cut = soft_ends[-1].end()
             elif len(self._clean) >= _EMIT_MAX_CHARS:
                 cut = len(self._clean)
             else:
