@@ -17,6 +17,7 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     TTSSpeakFrame,
     VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 
@@ -94,6 +95,12 @@ class BargeInProcessor(FrameProcessor):
     Also forwards these two frames to the client over the data channel (send_event)
     as {"type": "bot_speaking"} / {"type": "bot_silent"} — the frontend uses this to
     know playback is still active instead of relying solely on timers.
+
+    Likewise forwards the Silero VAD frames as {"type": "user_speaking"} /
+    {"type": "user_silent"} so the frontend's conversation state machine can show
+    a "listening" vs "recognizing" phase. user_speaking fires regardless of the
+    bot-speaking gate (the frontend always wants to know the mic picked up speech);
+    only the barge-in interruption stays gated on the bot currently talking.
     """
 
     def __init__(self, send_event: Callable[[Any], None] | None = None, **kwargs):
@@ -111,10 +118,16 @@ class BargeInProcessor(FrameProcessor):
             self._bot_speaking = False
             if self._send_event:
                 self._send_event({"type": "bot_silent"})
-        elif isinstance(frame, VADUserStartedSpeakingFrame) and self._bot_speaking:
-            _log.debug("Barge-in detected while bot speaking, broadcasting interruption")
-            get_telemetry().record_voice_barge_in()
-            await self.broadcast_interruption()
+        elif isinstance(frame, VADUserStartedSpeakingFrame):
+            if self._send_event:
+                self._send_event({"type": "user_speaking"})
+            if self._bot_speaking:
+                _log.debug("Barge-in detected while bot speaking, broadcasting interruption")
+                get_telemetry().record_voice_barge_in()
+                await self.broadcast_interruption()
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            if self._send_event:
+                self._send_event({"type": "user_silent"})
         await self.push_frame(frame, direction)
 
 

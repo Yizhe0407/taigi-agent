@@ -26,7 +26,7 @@ class _FakeStore:
 def _raising_stream(error: Exception):
     """A respond_in_session_stream stand-in that raises on the first pull."""
 
-    def factory(sid, msg):
+    def factory(sid, msg, **kwargs):
         async def gen():
             raise error
             yield  # pragma: no cover — makes this an async generator
@@ -78,7 +78,7 @@ def test_streamed_chunks_are_pushed_incrementally_and_reply_event_is_full_text()
 
     proc = _RecordingProcessor("sess-1", events.append)
 
-    def fake_stream(sid, msg):
+    def fake_stream(sid, msg, **kwargs):
         async def gen():
             yield "第一句。"
             yield "第二句。"
@@ -96,3 +96,36 @@ def test_streamed_chunks_are_pushed_incrementally_and_reply_event_is_full_text()
     assert texts == ["第一句。", "第二句。"]
     assert not any(e.get("type") == "agent_delta" for e in events)
     assert {"type": "agent_reply", "text": "第一句。第二句。", "role": "assistant"} in events
+
+
+def test_injects_end_conversation_tool_whose_handler_emits_event():
+    """The voice path must inject an end_conversation tool; its handler pushes
+    {"type": "end_conversation"} to the client and returns a str for the LLM."""
+    events = []
+    proc = _FakeProcessor("sess-1", events.append)
+    captured = {}
+
+    def fake_stream(sid, msg, **kwargs):
+        captured.update(kwargs)
+
+        async def gen():
+            yield "再會啦。"
+
+        return gen()
+
+    async def run():
+        with patch("api.chat.respond_in_session_stream", fake_stream):
+            await proc._run_agent_inference("再見", None)
+
+    asyncio.run(run())
+
+    # The extra tool was injected with the exact contract name.
+    extra_tools = captured["extra_tools"]
+    assert [schema["function"]["name"] for schema, _ in extra_tools] == ["end_conversation"]
+    assert "extra_system_prompt" in captured and captured["extra_system_prompt"]
+
+    # Its handler emits the frozen JSON contract and returns a str.
+    _, handler = extra_tools[0]
+    result = asyncio.run(handler())
+    assert {"type": "end_conversation"} in events
+    assert isinstance(result, str) and result

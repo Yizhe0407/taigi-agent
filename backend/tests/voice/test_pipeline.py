@@ -133,6 +133,48 @@ def test_barge_in_processor_forwards_bot_speaking_events():
     asyncio.run(_run())
 
 
+def test_barge_in_processor_forwards_user_speaking_events():
+    """VADUserStarted/StoppedSpeakingFrame must reach send_event as
+    {"type": "user_speaking"} / {"type": "user_silent"} — the frontend's
+    conversation state machine keys its listening/recognizing phases off these."""
+    from pipecat.frames.frames import VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
+
+    async def _run():
+        events = []
+        proc = BargeInProcessor(send_event=events.append)
+        proc._bot_speaking = False
+        proc.broadcast_interruption = AsyncMock()
+        proc.push_frame = AsyncMock()
+
+        await proc.process_frame(VADUserStartedSpeakingFrame(), None)
+        await proc.process_frame(VADUserStoppedSpeakingFrame(), None)
+
+        assert events == [{"type": "user_speaking"}, {"type": "user_silent"}]
+        # No barge-in while the bot was silent.
+        proc.broadcast_interruption.assert_not_called()
+
+    asyncio.run(_run())
+
+
+def test_barge_in_processor_forwards_user_speaking_even_while_bot_speaks():
+    """A barge-in still emits user_speaking AND triggers the interruption."""
+    from pipecat.frames.frames import VADUserStartedSpeakingFrame
+
+    async def _run():
+        events = []
+        proc = BargeInProcessor(send_event=events.append)
+        proc._bot_speaking = True
+        proc.broadcast_interruption = AsyncMock()
+        proc.push_frame = AsyncMock()
+
+        await proc.process_frame(VADUserStartedSpeakingFrame(), None)
+
+        assert {"type": "user_speaking"} in events
+        proc.broadcast_interruption.assert_called_once()
+
+    asyncio.run(_run())
+
+
 def test_barge_in_processor_no_send_event_is_optional():
     """send_event defaults to None (e.g. tests) and must not raise."""
     from pipecat.frames.frames import BotStartedSpeakingFrame

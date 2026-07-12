@@ -1,5 +1,17 @@
 from services.kiosk_config import get_kiosk_config
 
+# Appended to the system prompt ONLY on the voice path (via
+# respond_in_session_stream(extra_system_prompt=...)), because the
+# end_conversation tool is voice-only — the REST prompt must not tell the model
+# to call a tool that isn't in its schema list.
+VOICE_END_CONVERSATION_GUIDANCE = """
+
+【結束對話】
+- 當使用者明確表達要結束（如「再見」「多謝」「按呢就好」「毋免矣」「我欲走矣」）時：
+  先講一句自然的道別語，然後呼叫 end_conversation 工具。
+- 只要意圖不明確、或使用者可能還有問題，就不要呼叫 end_conversation，繼續正常對話。
+"""
+
 
 def build_system_prompt() -> str:
     cfg = get_kiosk_config()

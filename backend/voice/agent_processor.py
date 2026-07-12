@@ -23,6 +23,23 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 _log = logging.getLogger(__name__)
 
+# Voice-only tool. Not registered in agent/tools.py's global TOOL_SCHEMAS: the
+# REST frontend has no "end conversation" affordance, and its signal path
+# (send_event over the data channel) only exists inside the voice pipeline.
+# Injected per-connection via respond_in_session_stream(extra_tools=...).
+_END_CONVERSATION_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "end_conversation",
+        "description": (
+            "標記這段對話結束，讓畫面收尾。只在使用者明確表達要結束（講再見、多謝、"
+            "按呢就好、毋免矣、我欲走矣…）時才呼叫；呼叫前務必先口語道別。"
+            "若意圖不明確、或使用者可能還有問題，不要呼叫。"
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
 
 class TaigiBusAgentProcessor(FrameProcessor):
     """Integrates the existing REST AgentSession into the Pipecat pipeline."""
@@ -39,6 +56,23 @@ class TaigiBusAgentProcessor(FrameProcessor):
         self._send_event = send_event
         self._turn_timer = turn_timer
         self._inference_task: asyncio.Task | None = None
+
+    def _end_conversation_tool(self) -> tuple[dict, Any]:
+        """Build the (schema, handler) pair injected into this session's tools.
+
+        The handler is a closure over `self._send_event` so it can push the
+        end-of-conversation signal to the client. It returns a short string that
+        goes back to the LLM as the tool result; the model then speaks the actual
+        farewell on the following round (the frontend waits for bot_silent before
+        closing, so the goodbye audio still plays out).
+        """
+
+        async def end_conversation() -> str:
+            if self._send_event:
+                self._send_event({"type": "end_conversation"})
+            return "好，對話已標記結束，跟使用者道別即可。"
+
+        return (_END_CONVERSATION_SCHEMA, end_conversation)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         """Process incoming frames, trigger agent on transcription."""
@@ -76,13 +110,20 @@ class TaigiBusAgentProcessor(FrameProcessor):
         LLM is still generating the rest, instead of waiting for the full
         reply.
         """
+        from agent.prompt import VOICE_END_CONVERSATION_GUIDANCE
         from api.chat import _get_store, respond_in_session_stream
+
+        extra_tools = [self._end_conversation_tool()]
+        stream_kwargs = {
+            "extra_tools": extra_tools,
+            "extra_system_prompt": VOICE_END_CONVERSATION_GUIDANCE,
+        }
 
         try:
             if self._send_event:
                 self._send_event({"type": "transcript", "text": text, "role": "user"})
 
-            stream = respond_in_session_stream(self.session_id, text)
+            stream = respond_in_session_stream(self.session_id, text, **stream_kwargs)
             try:
                 # LookupError surfaces on the first pull, before any chunk.
                 first = await anext(stream, None)
@@ -93,7 +134,7 @@ class TaigiBusAgentProcessor(FrameProcessor):
                 # the kiosk goes permanently silent for a still-connected user.
                 _log.warning("Chat session %s expired; recreating for live voice connection", self.session_id)
                 self.session_id = await asyncio.to_thread(_get_store().create)
-                stream = respond_in_session_stream(self.session_id, text)
+                stream = respond_in_session_stream(self.session_id, text, **stream_kwargs)
                 try:
                     first = await anext(stream, None)
                 except LookupError:

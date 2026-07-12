@@ -20,8 +20,14 @@ from pydantic import BaseModel, Field
 
 from agent.error import summarize_error
 from agent.session import AgentSession
+from agent.tool_dispatch import ToolHandler
 from api.session_store import ChatSessionStore
 from config import get_settings, make_agent_session
+
+# (schema, handler) pair injected into a single session at rehydration time —
+# used by the voice pipeline to add per-connection tools (e.g. end_conversation)
+# that must not enter the global TOOL_SCHEMAS/TOOL_HANDLERS (no REST UI for them).
+ExtraTool = tuple[dict, ToolHandler]
 
 router = APIRouter()
 _log = logging.getLogger(__name__)
@@ -106,7 +112,12 @@ class ChatMessageRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _rehydrate_session(messages: list[dict]) -> AgentSession:
+def _rehydrate_session(
+    messages: list[dict],
+    *,
+    extra_tools: list[ExtraTool] | None = None,
+    extra_system_prompt: str | None = None,
+) -> AgentSession:
     """Rebuild an AgentSession from persisted messages for this one request.
 
     Only `messages` round-trips through the store — `conv_state` always comes
@@ -115,19 +126,42 @@ def _rehydrate_session(messages: list[dict]) -> AgentSession:
     Currently harmless: IntentRouter.classify() only *writes* next_state,
     nothing reads it back. If a future rule starts reading it, persist it
     alongside messages in ChatSessionStore.
+
+    `extra_tools` / `extra_system_prompt` layer per-session tools and prompt
+    guidance on top of the global set without touching AgentSession internals
+    or the module-level TOOL_SCHEMAS/TOOL_HANDLERS (rebuilt as fresh
+    list/dict copies so the injection can't leak into other sessions).
     """
     session = make_agent_session(get_settings())
     session.messages = messages
+    if extra_tools:
+        session.tool_schemas = [*session.tool_schemas, *(schema for schema, _ in extra_tools)]
+        session.tool_handlers = {
+            **session.tool_handlers,
+            **{schema["function"]["name"]: handler for schema, handler in extra_tools},
+        }
+    if extra_system_prompt:
+        session.system_prompt = session.system_prompt + extra_system_prompt
     return session
 
 
-async def respond_in_session_stream(session_id: str, message: str):
+async def respond_in_session_stream(
+    session_id: str,
+    message: str,
+    *,
+    extra_tools: list[ExtraTool] | None = None,
+    extra_system_prompt: str | None = None,
+):
     """Load session, stream reply chunks, then save updated history.
 
     Raises LookupError (before the first chunk) if the session does not exist.
     Holds the session lock for the whole stream to serialize concurrent calls.
     History saves only after the stream完整跑完——中途放棄（語音打斷、client
     斷線）就丟棄該輪，與語音中斷語意一致。
+
+    `extra_tools` / `extra_system_prompt` are the voice pipeline's injection
+    hooks (see `_rehydrate_session`). REST callers pass neither, so their
+    behaviour is unchanged.
     """
     store = _get_store()
     lock = _session_locks.setdefault(session_id, asyncio.Lock())
@@ -140,7 +174,11 @@ async def respond_in_session_stream(session_id: str, message: str):
             _session_locks.pop(session_id, None)
             raise LookupError(session_id)
 
-        session = _rehydrate_session(messages)
+        session = _rehydrate_session(
+            messages,
+            extra_tools=extra_tools,
+            extra_system_prompt=extra_system_prompt,
+        )
         async for chunk in session.respond_stream(message):
             yield chunk
         await asyncio.to_thread(store.save_messages, session_id, session.messages)
