@@ -37,6 +37,12 @@ const {
 const lastUserText = ref("")
 const isWebRTCThinking = ref(false)
 
+// Streaming voice reply bubble state — reset per turn by onTranscript.
+// voiceReplyDone guards against a stray late agent_delta after agent_reply
+// already arrived (out-of-order data channel messages) leaving a leftover bubble.
+let voiceReplyId: string | null = null
+let voiceReplyDone = false
+
 let idleTimeout: number | null = null
 
 function clearIdleTimeout() {
@@ -83,12 +89,22 @@ const {
     clearIdleTimeout()
     isWebRTCThinking.value = true
     startThinkingFuse()
+    voiceReplyId = null
+    voiceReplyDone = false
     messages.value.push({ id: `wrtc-user-${Date.now()}`, role: "user", text })
   },
   (text) => {
+    // Final full-text signal — overwrite (not append) so it's idempotent
+    // whether or not agent_delta chunks already built the bubble.
     clearThinkingFuse()
-    messages.value.push({ id: `wrtc-reply-${Date.now()}`, role: "assistant", text })
-    clearDisplayedText()
+    if (voiceReplyId) {
+      const bubble = messages.value.find(m => m.id === voiceReplyId)
+      if (bubble) bubble.text = text
+      else messages.value.push({ id: voiceReplyId, role: "assistant", text })
+    } else {
+      messages.value.push({ id: `wrtc-reply-${Date.now()}`, role: "assistant", text })
+    }
+    voiceReplyDone = true
     lastUserText.value = ""
     isWebRTCThinking.value = false
     resetIdleTimeout()
@@ -100,6 +116,31 @@ const {
     clearThinkingFuse()
     isWebRTCThinking.value = false
     lastUserText.value = ""
+    resetIdleTimeout()
+  },
+  (delta) => {
+    // Ignore stray deltas that arrive after agent_reply already finalized this turn.
+    if (voiceReplyDone) return
+    clearIdleTimeout()
+    clearThinkingFuse() // reply has started streaming — no longer "stalled"
+    if (!voiceReplyId) {
+      voiceReplyId = `wrtc-reply-${Date.now()}`
+      messages.value.push({ id: voiceReplyId, role: "assistant", text: delta })
+    } else {
+      const bubble = messages.value.find(m => m.id === voiceReplyId)
+      if (bubble) bubble.text += delta
+    }
+    displayedAgentText.value += delta
+  },
+  // bot_speaking: TTS audio is actively playing — hold off both timers so
+  // long replies don't get killed mid-playback.
+  () => {
+    clearIdleTimeout()
+    clearThinkingFuse()
+  },
+  // bot_silent: TTS finished a chunk — restart the idle clock. agent_reply's
+  // own resetIdleTimeout() below remains the fallback if bot_speaking never fires.
+  () => {
     resetIdleTimeout()
   },
 )

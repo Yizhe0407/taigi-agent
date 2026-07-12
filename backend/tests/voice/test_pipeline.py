@@ -114,6 +114,38 @@ def test_barge_in_processor_interrupts_when_bot_speaking():
     asyncio.run(_run())
 
 
+def test_barge_in_processor_forwards_bot_speaking_events():
+    """BotStartedSpeakingFrame / BotStoppedSpeakingFrame must reach send_event
+    as {"type": "bot_speaking"} / {"type": "bot_silent"} for the frontend idle timers."""
+    from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame
+
+    async def _run():
+        events = []
+        proc = BargeInProcessor(send_event=events.append)
+        proc.push_frame = AsyncMock()
+
+        await proc.process_frame(BotStartedSpeakingFrame(), None)
+        assert {"type": "bot_speaking"} in events
+
+        await proc.process_frame(BotStoppedSpeakingFrame(), None)
+        assert {"type": "bot_silent"} in events
+
+    asyncio.run(_run())
+
+
+def test_barge_in_processor_no_send_event_is_optional():
+    """send_event defaults to None (e.g. tests) and must not raise."""
+    from pipecat.frames.frames import BotStartedSpeakingFrame
+
+    async def _run():
+        proc = BargeInProcessor()
+        proc.push_frame = AsyncMock()
+        await proc.process_frame(BotStartedSpeakingFrame(), None)  # must not raise
+        assert proc._bot_speaking is True
+
+    asyncio.run(_run())
+
+
 def test_barge_in_processor_records_telemetry_counter():
     """A real barge-in must increment the pipeline.voice.barge_in counter."""
     from pipecat.frames.frames import VADUserStartedSpeakingFrame

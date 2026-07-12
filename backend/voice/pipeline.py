@@ -5,6 +5,8 @@ import json
 import logging
 import time
 from collections import deque
+from collections.abc import Callable
+from typing import Any
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
@@ -88,18 +90,27 @@ class BargeInProcessor(FrameProcessor):
     BotStartedSpeakingFrame / BotStoppedSpeakingFrame are broadcast upstream by the
     output transport's MediaSender and travel through this processor on their way to
     the input transport.
+
+    Also forwards these two frames to the client over the data channel (send_event)
+    as {"type": "bot_speaking"} / {"type": "bot_silent"} — the frontend uses this to
+    know playback is still active instead of relying solely on timers.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, send_event: Callable[[Any], None] | None = None, **kwargs):
         super().__init__(**kwargs)
         self._bot_speaking = False
+        self._send_event = send_event
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         if isinstance(frame, BotStartedSpeakingFrame):
             self._bot_speaking = True
+            if self._send_event:
+                self._send_event({"type": "bot_speaking"})
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
+            if self._send_event:
+                self._send_event({"type": "bot_silent"})
         elif isinstance(frame, VADUserStartedSpeakingFrame) and self._bot_speaking:
             _log.debug("Barge-in detected while bot speaking, broadcasting interruption")
             get_telemetry().record_voice_barge_in()
@@ -153,7 +164,7 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
     )
 
     vad = VADProcessor(vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.7)))
-    barge_in = BargeInProcessor()
+    barge_in = BargeInProcessor(send_event=webrtc_connection.send_app_message)
     stt = BreezeSTTService()
     turn_timer = TurnLatencyTracker()
     agent = TaigiBusAgentProcessor(

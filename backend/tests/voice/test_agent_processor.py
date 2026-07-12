@@ -91,4 +91,9 @@ def test_streamed_chunks_are_pushed_incrementally_and_reply_event_is_full_text()
 
     texts = [f.text for f in pushed if isinstance(f, TextFrame)]
     assert texts == ["第一句。", "第二句。"]
+    deltas = [e for e in events if e.get("type") == "agent_delta"]
+    assert deltas == [
+        {"type": "agent_delta", "text": "第一句。", "role": "assistant"},
+        {"type": "agent_delta", "text": "第二句。", "role": "assistant"},
+    ]
     assert {"type": "agent_reply", "text": "第一句。第二句。", "role": "assistant"} in events
