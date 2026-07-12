@@ -36,6 +36,7 @@
 | Done | TTS 台語播報 | `tasks/tts.md` |
 | Done | ASR 短指令 | `tasks/asr.md` |
 | Done | 路線規劃 | `tasks/route-planning.md` |
+| Done | PiP 語音對話 UX | `tasks/pip-voice-ux.md` |
 | Blocked | 數位站務員 | `tasks/station-attendant.md`（等組員模型）|
 | Not started | Demo 與報告 | `tasks/demo-report.md` |
 | Not started | 評估與使用者試用 | `tasks/evaluation.md` |

@@ -2,10 +2,8 @@
 
 ## 目前狀態
 
-- Phase 1 已 commit `2941c91`、Phase 2 已 commit `54cad4f`。
-- Phase 3 審查完：4 findings（end_conversation 早到判斷反了、WebRTC error 無狀態、processing 無 fuse、end-confirm 倒數不因開口取消）修復中。
-- 下一步：驗收修復 diff → commit 收尾。
-- 阻塞：無。
+- **完成**（2026-07-12）：`2941c91`（backend 事件＋注入式 end_conversation tool）、`54cad4f`（前端狀態機＋結束流程）、`a83c22b`（審查 4 findings 修復）。
+- 尚未實機驗證：需開 kiosk 實測六態視覺、道別→確認卡時序、45s/15s idle 流程。
 - Backlog：前端無測試基礎設施（vitest 未裝），useConversationState 轉換表值得補測——另開任務。
 
 ## 問題（研究佐證：scratchpad voice-ui-research.md、pip-flow-map.md）
