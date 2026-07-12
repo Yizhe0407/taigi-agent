@@ -66,6 +66,9 @@ def test_exception_sends_agent_reply_with_error_text():
 
 
 def test_streamed_chunks_are_pushed_incrementally_and_reply_event_is_full_text():
+    """TextFrame chunks still stream into the pipeline (for TTS), but no
+    agent_delta events go out anymore — subtitle sync now comes from
+    pipeline.py's SubtitleSyncProcessor watching TTSTextFrame instead."""
     events = []
     pushed = []
 
@@ -91,9 +94,5 @@ def test_streamed_chunks_are_pushed_incrementally_and_reply_event_is_full_text()
 
     texts = [f.text for f in pushed if isinstance(f, TextFrame)]
     assert texts == ["第一句。", "第二句。"]
-    deltas = [e for e in events if e.get("type") == "agent_delta"]
-    assert deltas == [
-        {"type": "agent_delta", "text": "第一句。", "role": "assistant"},
-        {"type": "agent_delta", "text": "第二句。", "role": "assistant"},
-    ]
+    assert not any(e.get("type") == "agent_delta" for e in events)
     assert {"type": "agent_reply", "text": "第一句。第二句。", "role": "assistant"} in events

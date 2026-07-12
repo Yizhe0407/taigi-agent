@@ -16,6 +16,7 @@ from pipecat.frames.frames import (
     Frame,
     InterruptionFrame,
     TTSSpeakFrame,
+    TTSTextFrame,
     VADUserStartedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
@@ -118,6 +119,28 @@ class BargeInProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class SubtitleSyncProcessor(FrameProcessor):
+    """Forwards TTSTextFrame chunks to the client as playback-synced subtitles.
+
+    Placed after transport.output() in the pipeline: BaseOutputTransport's
+    _audio_task_handler drains its internal audio queue at real playback
+    speed and only pushes each TTSTextFrame downstream once the audio chunk
+    it follows has actually been queued for playback. A processor sitting
+    after transport.output() therefore sees each TTSTextFrame at ~the moment
+    its audio starts playing, not at LLM-generation time.
+    """
+
+    def __init__(self, send_event: Callable[[Any], None] | None = None, **kwargs):
+        super().__init__(**kwargs)
+        self._send_event = send_event
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        if isinstance(frame, TTSTextFrame) and self._send_event:
+            self._send_event({"type": "subtitle", "text": frame.text})
+        await self.push_frame(frame, direction)
+
+
 class _TaigiSmallWebRTCOutputTransport(SmallWebRTCOutputTransport):
     """Extends SmallWebRTCOutputTransport to clear aiortc's audio buffer on barge-in.
 
@@ -173,6 +196,7 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
         turn_timer=turn_timer,
     )
     tts = TaigiTTSService(turn_timer=turn_timer)
+    subtitle_sync = SubtitleSyncProcessor(send_event=webrtc_connection.send_app_message)
 
     pipeline = Pipeline(
         processors=[
@@ -183,6 +207,7 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
             agent,
             tts,
             transport.output(),
+            subtitle_sync,
         ]
     )
 

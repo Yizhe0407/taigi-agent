@@ -43,7 +43,7 @@ backend/
 
 ### Voice Pipeline (WebRTC)
 
-- `voice/pipeline.py`：Pipecat 語音管線組裝（SmallWebRTCTransport、VAD、中斷處理）與連線生命週期管理。
+- `voice/pipeline.py`：Pipecat 語音管線組裝（SmallWebRTCTransport、VAD、中斷處理）與連線生命週期管理。`SubtitleSyncProcessor` 掛在 `transport.output()` 之後，`TTSTextFrame` 與音訊同佇列以播放速度釋放，故 `subtitle` data channel 事件 ≈ 該段音訊起播時刻——前端字幕跟播放進度同步，全文 `agent_reply` 由 `bot_silent` 收尾補全。
 - `voice/stt_breeze.py`：繼承 Pipecat `STTService`，搭配 VAD 收集完整語句後呼叫 ASR 轉文字。
 - `voice/agent_processor.py`：將原本的 `AgentSession` 封裝為 Pipecat 的 `FrameProcessor`，介接文字與語音的資料流。消費 `respond_in_session_stream` 逐 chunk 推 `TextFrame`——Pipecat TTS 句子聚合器在 LLM 還在生成時就開始逐句合成，首音延遲不再等完整回覆。
 - `voice/tts_taigi.py`：繼承 Pipecat `TTSService`，封裝原有的文字前處理與 Piper TTS，輸出 PCM 音訊流供 WebRTC 播放。

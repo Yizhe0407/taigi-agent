@@ -9,7 +9,7 @@ export function useWebRTC(
   onReply: (text: string) => void,
   sessionId?: Readonly<Ref<string | null>>,
   onCancelled?: () => void,
-  onDelta?: (text: string) => void,
+  onSubtitle?: (text: string) => void,
   onBotSpeaking?: () => void,
   onBotSilent?: () => void,
 ) {
@@ -148,7 +148,7 @@ export function useWebRTC(
       try {
         const msg = JSON.parse(evt.data as string) as { type: string; text?: string }
         if (msg.type === "transcript") onTranscript(msg.text ?? "")
-        else if (msg.type === "agent_delta") onDelta?.(msg.text ?? "")
+        else if (msg.type === "subtitle") onSubtitle?.(msg.text ?? "")
         else if (msg.type === "agent_reply") onReply(msg.text ?? "")
         else if (msg.type === "agent_cancelled") onCancelled?.()
         else if (msg.type === "bot_speaking") onBotSpeaking?.()

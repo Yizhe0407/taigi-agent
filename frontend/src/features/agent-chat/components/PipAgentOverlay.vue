@@ -37,11 +37,52 @@ const {
 const lastUserText = ref("")
 const isWebRTCThinking = ref(false)
 
-// Streaming voice reply bubble state — reset per turn by onTranscript.
-// voiceReplyDone guards against a stray late agent_delta after agent_reply
-// already arrived (out-of-order data channel messages) leaving a leftover bubble.
+// Playback-synced voice reply bubble state — reset per turn by onTranscript.
+// voiceReplyId: bubble built up from `subtitle` events as TTS audio plays.
+// pendingReply: full-text `agent_reply` is *always* parked here, never shown
+// immediately — only `bot_silent` (or the TTS watchdog below) applies it to
+// the bubble, so the transcript never gets ahead of the audio. Three timings:
+//   1. Normal long reply: subtitle/bot_speaking arrive first (clear the
+//      watchdog), agent_reply lands mid-playback and is parked, bot_silent
+//      flushes it once playback ends.
+//   2. Canned short reply (near-zero LLM latency): agent_reply arrives
+//      *before* any subtitle/bot_speaking. It's still just parked — no
+//      immediate-display branch — so the bubble stays empty until subtitle
+//      starts appending; bot_silent flushes the full text at the end.
+//      Nothing ever flashes full-text-then-retypes.
+//   3. TTS failure: no subtitle/bot_speaking ever fires this turn, so the
+//      4s watchdog started alongside pendingReply fires and flushes it
+//      itself — the one case where the bubble fills outside of bot_silent.
 let voiceReplyId: string | null = null
-let voiceReplyDone = false
+let pendingReply: string | null = null
+let ttsWatchdog: number | null = null
+
+function clearTtsWatchdog() {
+  if (ttsWatchdog !== null) { clearTimeout(ttsWatchdog); ttsWatchdog = null }
+}
+
+function flushPendingReply() {
+  if (pendingReply === null) return
+  const text = pendingReply
+  pendingReply = null
+  if (voiceReplyId) {
+    const bubble = messages.value.find(m => m.id === voiceReplyId)
+    if (bubble) bubble.text = text
+    else messages.value.push({ id: voiceReplyId, role: "assistant", text })
+  } else {
+    voiceReplyId = `wrtc-reply-${Date.now()}`
+    messages.value.push({ id: voiceReplyId, role: "assistant", text })
+  }
+  displayedAgentText.value = text
+}
+
+function startTtsWatchdog() {
+  clearTtsWatchdog()
+  ttsWatchdog = window.setTimeout(() => {
+    ttsWatchdog = null
+    flushPendingReply()
+  }, 4000)
+}
 
 let idleTimeout: number | null = null
 
@@ -75,7 +116,7 @@ function startThinkingFuse() {
   }, 30_000)
 }
 
-onUnmounted(() => { clearIdleTimeout(); clearThinkingFuse() })
+onUnmounted(() => { clearIdleTimeout(); clearThinkingFuse(); clearTtsWatchdog() })
 
 const {
   state: webrtcState,
@@ -90,57 +131,61 @@ const {
     isWebRTCThinking.value = true
     startThinkingFuse()
     voiceReplyId = null
-    voiceReplyDone = false
+    pendingReply = null
+    clearTtsWatchdog()
     messages.value.push({ id: `wrtc-user-${Date.now()}`, role: "user", text })
   },
   (text) => {
-    // Final full-text signal — overwrite (not append) so it's idempotent
-    // whether or not agent_delta chunks already built the bubble.
+    // Full-text signal — timing relative to playback varies (see scenarios
+    // 1-3 above the state declarations). Always just park it and arm the
+    // watchdog; subtitle/bot_speaking will cancel the watchdog if audio is
+    // actually playing, bot_silent (normal case) or the watchdog (TTS-failed
+    // case) does the actual flush.
     clearThinkingFuse()
-    if (voiceReplyId) {
-      const bubble = messages.value.find(m => m.id === voiceReplyId)
-      if (bubble) bubble.text = text
-      else messages.value.push({ id: voiceReplyId, role: "assistant", text })
-    } else {
-      messages.value.push({ id: `wrtc-reply-${Date.now()}`, role: "assistant", text })
-    }
-    voiceReplyDone = true
     lastUserText.value = ""
     isWebRTCThinking.value = false
     resetIdleTimeout()
-    displayedAgentText.value = text
+    pendingReply = text
+    startTtsWatchdog()
   },
   // Share the existing chat session so voice and text have the same conversation context.
   sessionId,
   () => {
+    // agent_cancelled (barge-in): leave the bubble/subtitle as-is, stopped at
+    // whatever was actually spoken — completing it here would show text the
+    // user never heard.
     clearThinkingFuse()
     isWebRTCThinking.value = false
     lastUserText.value = ""
     resetIdleTimeout()
+    clearTtsWatchdog()
   },
-  (delta) => {
-    // Ignore stray deltas that arrive after agent_reply already finalized this turn.
-    if (voiceReplyDone) return
-    clearIdleTimeout()
-    clearThinkingFuse() // reply has started streaming — no longer "stalled"
+  (text) => {
+    // subtitle: fires as each TTS chunk starts playing (see pipeline.py
+    // SubtitleSyncProcessor) — appending here tracks playback, not generation.
+    // Audio is alive, so the TTS-failed watchdog no longer applies.
+    clearTtsWatchdog()
     if (!voiceReplyId) {
       voiceReplyId = `wrtc-reply-${Date.now()}`
-      messages.value.push({ id: voiceReplyId, role: "assistant", text: delta })
+      messages.value.push({ id: voiceReplyId, role: "assistant", text })
     } else {
       const bubble = messages.value.find(m => m.id === voiceReplyId)
-      if (bubble) bubble.text += delta
+      if (bubble) bubble.text += text
     }
-    displayedAgentText.value += delta
+    displayedAgentText.value += text
   },
   // bot_speaking: TTS audio is actively playing — hold off both timers so
   // long replies don't get killed mid-playback.
   () => {
+    clearTtsWatchdog()
     clearIdleTimeout()
     clearThinkingFuse()
   },
-  // bot_silent: TTS finished a chunk — restart the idle clock. agent_reply's
-  // own resetIdleTimeout() below remains the fallback if bot_speaking never fires.
+  // bot_silent: playback finished. Flush the full-text reply the server sent
+  // earlier (idempotently covers any subtitle gaps) and restart the idle clock.
   () => {
+    clearTtsWatchdog()
+    flushPendingReply()
     resetIdleTimeout()
   },
 )

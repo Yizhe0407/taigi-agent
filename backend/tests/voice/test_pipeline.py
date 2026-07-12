@@ -4,7 +4,7 @@ import asyncio
 from collections import deque
 from unittest.mock import AsyncMock, patch
 
-from voice.pipeline import BargeInProcessor, TurnLatencyTracker, _drain_chunk_queue
+from voice.pipeline import BargeInProcessor, SubtitleSyncProcessor, TurnLatencyTracker, _drain_chunk_queue
 
 # ---------------------------------------------------------------------------
 # _drain_chunk_queue
@@ -158,6 +158,59 @@ def test_barge_in_processor_records_telemetry_counter():
         with patch("voice.pipeline.get_telemetry") as mock_get_telemetry:
             await proc.process_frame(VADUserStartedSpeakingFrame(), None)
             mock_get_telemetry.return_value.record_voice_barge_in.assert_called_once()
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# SubtitleSyncProcessor
+# ---------------------------------------------------------------------------
+
+
+def test_subtitle_sync_processor_emits_subtitle_for_tts_text_frame():
+    from pipecat.frames.frames import TTSTextFrame
+    from pipecat.utils.text.base_text_aggregator import AggregationType
+
+    async def _run():
+        events = []
+        proc = SubtitleSyncProcessor(send_event=events.append)
+        proc.push_frame = AsyncMock()
+
+        frame = TTSTextFrame(text="第一句。", aggregated_by=AggregationType.TOKEN)
+        await proc.process_frame(frame, None)
+
+        assert events == [{"type": "subtitle", "text": "第一句。"}]
+        proc.push_frame.assert_called_once_with(frame, None)
+
+    asyncio.run(_run())
+
+
+def test_subtitle_sync_processor_passes_other_frames_through_without_event():
+    from pipecat.frames.frames import TextFrame
+
+    async def _run():
+        events = []
+        proc = SubtitleSyncProcessor(send_event=events.append)
+        proc.push_frame = AsyncMock()
+
+        frame = TextFrame(text="not a tts text frame")
+        await proc.process_frame(frame, None)
+
+        assert events == []
+        proc.push_frame.assert_called_once_with(frame, None)
+
+    asyncio.run(_run())
+
+
+def test_subtitle_sync_processor_no_send_event_is_optional():
+    from pipecat.frames.frames import TTSTextFrame
+    from pipecat.utils.text.base_text_aggregator import AggregationType
+
+    async def _run():
+        proc = SubtitleSyncProcessor()
+        proc.push_frame = AsyncMock()
+        # must not raise
+        await proc.process_frame(TTSTextFrame(text="x", aggregated_by=AggregationType.TOKEN), None)
 
     asyncio.run(_run())
 

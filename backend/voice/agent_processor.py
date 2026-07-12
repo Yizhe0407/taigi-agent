@@ -107,13 +107,9 @@ class TaigiBusAgentProcessor(FrameProcessor):
             if first is not None:
                 parts.append(first)
                 await self.push_frame(TextFrame(text=first), direction)
-                if self._send_event:
-                    self._send_event({"type": "agent_delta", "text": first, "role": "assistant"})
                 async for chunk in stream:
                     parts.append(chunk)
                     await self.push_frame(TextFrame(text=chunk), direction)
-                    if self._send_event:
-                        self._send_event({"type": "agent_delta", "text": chunk, "role": "assistant"})
             await self.push_frame(LLMFullResponseEndFrame(), direction)
 
             reply = "".join(parts)
