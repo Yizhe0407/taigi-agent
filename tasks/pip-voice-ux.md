@@ -2,9 +2,8 @@
 
 ## 目前狀態
 
-- 研究與規劃完成（2026-07-12），設計定案如下。
-- Phase 1（backend, opus）與 Phase 2（frontend, sonnet）並行實作中，事件契約已定死。
-- 下一步：兩邊回報後各自驗收＋commit，再派 Phase 3 fresh-context 審查。
+- Phase 1（backend）已 commit `2941c91`；Phase 2（frontend）驗收中（typecheck 綠）。
+- 下一步：commit Phase 2 → 派 Phase 3 fresh-context 審查兩個 diff。
 - 阻塞：無。
 
 ## 問題（研究佐證：scratchpad voice-ui-research.md、pip-flow-map.md）

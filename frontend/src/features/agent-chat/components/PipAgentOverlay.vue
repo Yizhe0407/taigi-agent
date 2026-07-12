@@ -2,6 +2,7 @@
 import { computed, ref, toRef, watch, onUnmounted } from "vue"
 
 import { usePipChat } from "@/features/agent-chat/composables/usePipChat"
+import { useConversationState } from "@/features/agent-chat/composables/useConversationState"
 import { useWebRTC } from "@/features/agent-chat/composables/useWebRTC"
 
 import PipChatPanel from "./PipChatPanel.vue"
@@ -35,7 +36,10 @@ const {
 } = usePipChat(toRef(props, "open"), suppressTts)
 
 const lastUserText = ref("")
-const isWebRTCThinking = ref(false)
+
+// Single source of truth for the voice conversation phase — see
+// useConversationState for the transition table and defensive handling.
+const conversation = useConversationState()
 
 // Playback-synced voice reply bubble state — reset per turn by onTranscript.
 // voiceReplyId: bubble built up from `subtitle` events as TTS audio plays.
@@ -130,29 +134,22 @@ function flushPendingReply() {
 
 function startTtsWatchdog() {
   clearTtsWatchdog()
+  // TTS-specific failure: the LLM answered (pendingReply is set) but audio
+  // never started (no subtitle/bot_speaking). Flush the text so it's not
+  // lost, and hand the state machine back — nothing is coming to leave
+  // `thinking` otherwise.
   ttsWatchdog = window.setTimeout(() => {
     ttsWatchdog = null
     flushPendingReply()
+    conversation.forceListening()
+    resetIdleTimer()
   }, 4000)
 }
 
-let idleTimeout: number | null = null
-
-function clearIdleTimeout() {
-  if (idleTimeout) {
-    clearTimeout(idleTimeout)
-    idleTimeout = null
-  }
-}
-
-function resetIdleTimeout() {
-  clearIdleTimeout()
-  idleTimeout = window.setTimeout(() => {
-    emit('close')
-  }, 60000)
-}
-
-// 30s safety fuse: if no reply/cancelled arrives, auto-reset thinking state
+// 30s safety fuse: total-failure fallback if neither a reply nor a cancel
+// ever arrives for a turn (distinct from the 4s TTS watchdog above, which
+// only fires once a reply text already exists) — force back to listening
+// rather than leaving the UI stuck in `thinking`.
 let thinkingFuse: number | null = null
 
 function clearThinkingFuse() {
@@ -162,13 +159,122 @@ function clearThinkingFuse() {
 function startThinkingFuse() {
   clearThinkingFuse()
   thinkingFuse = window.setTimeout(() => {
-    isWebRTCThinking.value = false
+    thinkingFuse = null
     lastUserText.value = ""
-    resetIdleTimeout()
+    conversation.forceListening()
+    resetIdleTimer()
   }, 30_000)
 }
 
-onUnmounted(() => { clearIdleTimeout(); clearThinkingFuse(); clearTtsWatchdog(); stopSubtitleReveal() })
+// ---- Idle timer: 45s of no activity -> warning card w/ 15s countdown ->
+// zero closes. Any voice event or touch (see markActivity) cancels and
+// returns to the prior state. Replaces the old blind 60s auto-close.
+const IDLE_WARN_AFTER_MS = 45_000
+const IDLE_WARN_COUNTDOWN_S = 15
+
+const showIdleWarning = ref(false)
+const idleWarnSecondsLeft = ref(IDLE_WARN_COUNTDOWN_S)
+let idleTimer: number | null = null
+let idleWarnInterval: number | null = null
+
+function clearIdleTimer() {
+  if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null }
+}
+
+function clearIdleWarnInterval() {
+  if (idleWarnInterval !== null) { clearInterval(idleWarnInterval); idleWarnInterval = null }
+}
+
+function dismissIdleWarning() {
+  showIdleWarning.value = false
+  clearIdleWarnInterval()
+}
+
+function startIdleWarning() {
+  showIdleWarning.value = true
+  idleWarnSecondsLeft.value = IDLE_WARN_COUNTDOWN_S
+  clearIdleWarnInterval()
+  idleWarnInterval = window.setInterval(() => {
+    idleWarnSecondsLeft.value -= 1
+    if (idleWarnSecondsLeft.value <= 0) {
+      clearIdleWarnInterval()
+      emit("close")
+    }
+  }, 1000)
+}
+
+function resetIdleTimer() {
+  clearIdleTimer()
+  dismissIdleWarning()
+  idleTimer = window.setTimeout(startIdleWarning, IDLE_WARN_AFTER_MS)
+}
+
+/** Any voice event or touch resets the 45s idle clock and cancels the warning card. */
+function markActivity() {
+  resetIdleTimer()
+}
+
+// ---- End-of-conversation confirm card. `end_conversation` arrives after the
+// agent has already spoken its farewell. Two timings to cover:
+//   - early (still `speaking`): wait for bot_silent so we don't cut the
+//     farewell audio off, then show the card.
+//   - late (already back to `listening`/elsewhere): show immediately.
+const END_CONFIRM_COUNTDOWN_S = 10
+
+const showEndConfirm = ref(false)
+const endConfirmSecondsLeft = ref(END_CONFIRM_COUNTDOWN_S)
+let endConfirmInterval: number | null = null
+let endConversationPending = false
+
+function clearEndConfirmInterval() {
+  if (endConfirmInterval !== null) { clearInterval(endConfirmInterval); endConfirmInterval = null }
+}
+
+function showEndConversationCard() {
+  clearIdleTimer()
+  dismissIdleWarning()
+  showEndConfirm.value = true
+  endConfirmSecondsLeft.value = END_CONFIRM_COUNTDOWN_S
+  clearEndConfirmInterval()
+  endConfirmInterval = window.setInterval(() => {
+    endConfirmSecondsLeft.value -= 1
+    if (endConfirmSecondsLeft.value <= 0) {
+      clearEndConfirmInterval()
+      emit("close")
+    }
+  }, 1000)
+}
+
+function onEndConversationEvent() {
+  if (conversation.state.value === "speaking") {
+    endConversationPending = true
+  } else {
+    showEndConversationCard()
+  }
+}
+
+function confirmEndNow() {
+  clearEndConfirmInterval()
+  showEndConfirm.value = false
+  emit("close")
+}
+
+function continueConversation() {
+  clearEndConfirmInterval()
+  showEndConfirm.value = false
+  endConversationPending = false
+  conversation.setListening()
+  resetIdleTimer()
+}
+
+onUnmounted(() => {
+  clearIdleTimer()
+  clearThinkingFuse()
+  clearTtsWatchdog()
+  clearIdleWarnInterval()
+  clearEndConfirmInterval()
+  stopSubtitleReveal()
+})
 
 const {
   state: webrtcState,
@@ -176,70 +282,88 @@ const {
   connect: webrtcConnect,
   disconnect: webrtcDisconnect,
 } = useWebRTC(
-  (text) => {
-    lastUserText.value = text
-    clearDisplayedText()
-    clearIdleTimeout()
-    isWebRTCThinking.value = true
-    startThinkingFuse()
-    stopSubtitleReveal()
-    voiceReplyId = null
-    pendingReply = null
-    clearTtsWatchdog()
-    messages.value.push({ id: `wrtc-user-${Date.now()}`, role: "user", text })
-  },
-  (text) => {
-    // Full-text signal — timing relative to playback varies (see scenarios
-    // 1-3 above the state declarations). Always just park it and arm the
-    // watchdog; subtitle/bot_speaking will cancel the watchdog if audio is
-    // actually playing, bot_silent (normal case) or the watchdog (TTS-failed
-    // case) does the actual flush.
-    clearThinkingFuse()
-    lastUserText.value = ""
-    isWebRTCThinking.value = false
-    resetIdleTimeout()
-    pendingReply = text
-    startTtsWatchdog()
+  {
+    onTranscript: (text) => {
+      lastUserText.value = text
+      clearDisplayedText()
+      conversation.onTranscript()
+      markActivity()
+      startThinkingFuse()
+      stopSubtitleReveal()
+      voiceReplyId = null
+      pendingReply = null
+      clearTtsWatchdog()
+      messages.value.push({ id: `wrtc-user-${Date.now()}`, role: "user", text })
+    },
+    onReply: (text) => {
+      // Full-text signal — timing relative to playback varies (see scenarios
+      // 1-3 above the state declarations). Always just park it and arm the
+      // watchdog; subtitle/bot_speaking will cancel the watchdog if audio is
+      // actually playing, bot_silent (normal case) or the watchdog (TTS-failed
+      // case) does the actual flush.
+      clearThinkingFuse()
+      lastUserText.value = ""
+      markActivity()
+      pendingReply = text
+      startTtsWatchdog()
+    },
+    onCancelled: () => {
+      // agent_cancelled (barge-in): leave the bubble/subtitle as-is, stopped at
+      // whatever was actually spoken — completing it here would show text the
+      // user never heard.
+      clearThinkingFuse()
+      lastUserText.value = ""
+      conversation.onAgentCancelled()
+      markActivity()
+      clearTtsWatchdog()
+      stopSubtitleReveal()
+    },
+    onSubtitle: (text, durationMs) => {
+      // fires as each TTS segment starts playing (see pipeline.py
+      // SubtitleSyncProcessor) — reveals over durationMs so the bubble tracks
+      // playback pace instead of dumping the whole segment at once.
+      // Audio is alive, so the TTS-failed watchdog no longer applies.
+      clearTtsWatchdog()
+      conversation.onSubtitle()
+      markActivity()
+      startSubtitleReveal(text, durationMs)
+    },
+    onBotSpeaking: () => {
+      // TTS audio is actively playing — pause the idle clock entirely (not
+      // just reschedule) so long replies don't get killed mid-playback.
+      clearTtsWatchdog()
+      clearThinkingFuse()
+      conversation.onBotSpeaking()
+      clearIdleTimer()
+      dismissIdleWarning()
+    },
+    onBotSilent: () => {
+      // Playback finished. Stop any still-running reveal loop first —
+      // flushPendingReply() overwrites the bubble/displayedAgentText outright, and
+      // a stale animateSubtitle() timer must not keep appending after that.
+      clearTtsWatchdog()
+      stopSubtitleReveal()
+      flushPendingReply()
+      conversation.onBotSilent()
+      if (endConversationPending) {
+        endConversationPending = false
+        showEndConversationCard()
+      } else {
+        resetIdleTimer()
+      }
+    },
+    onUserSpeaking: () => {
+      conversation.onUserSpeaking()
+      markActivity()
+    },
+    onUserSilent: () => {
+      conversation.onUserSilent()
+      markActivity()
+    },
+    onEndConversation: onEndConversationEvent,
   },
   // Share the existing chat session so voice and text have the same conversation context.
   sessionId,
-  () => {
-    // agent_cancelled (barge-in): leave the bubble/subtitle as-is, stopped at
-    // whatever was actually spoken — completing it here would show text the
-    // user never heard.
-    clearThinkingFuse()
-    isWebRTCThinking.value = false
-    lastUserText.value = ""
-    resetIdleTimeout()
-    clearTtsWatchdog()
-    stopSubtitleReveal()
-  },
-  (text, durationMs) => {
-    // subtitle: fires as each TTS segment starts playing (see pipeline.py
-    // SubtitleSyncProcessor) — reveals over durationMs so the bubble tracks
-    // playback pace instead of dumping the whole segment at once.
-    // Audio is alive, so the TTS-failed watchdog no longer applies.
-    clearTtsWatchdog()
-    startSubtitleReveal(text, durationMs)
-  },
-  // bot_speaking: TTS audio is actively playing — hold off both timers so
-  // long replies don't get killed mid-playback.
-  () => {
-    clearTtsWatchdog()
-    clearIdleTimeout()
-    clearThinkingFuse()
-  },
-  // bot_silent: playback finished. Stop any still-running reveal loop first —
-  // flushPendingReply() overwrites the bubble/displayedAgentText outright, and
-  // a stale animateSubtitle() timer must not keep appending after that.
-  // Flush the full-text reply the server sent earlier (idempotently covers
-  // any subtitle gaps) and restart the idle clock.
-  () => {
-    clearTtsWatchdog()
-    stopSubtitleReveal()
-    flushPendingReply()
-    resetIdleTimeout()
-  },
 )
 
 
@@ -248,29 +372,15 @@ const activeMouthAmplitude = computed(() =>
   webrtcState.value === "connected" ? webrtcAmplitude.value : mouthAmplitude.value
 )
 
-function toggleVoice() {
-  if (webrtcState.value === "disconnected" || webrtcState.value === "error") {
-    cancelTts()
-    clearDisplayedText()
-    void webrtcConnect()
-  } else {
-    // connected or connecting → abort/disconnect
-    webrtcDisconnect()
-  }
-}
-
-// Map WebRTC state → VoiceState for PipFrame's visual indicators.
-// 'recording' keeps the pip-listening border animation active whenever we're live.
-const voiceState = computed<"idle" | "recording" | "transcribing">(() => {
-  if (webrtcState.value === "connecting") return "transcribing"
-  if (webrtcState.value === "connected") return "recording"
-  return "idle"
-})
-
 watch(
   webrtcState,
   (state) => {
     suppressTts.value = state === "connected" || state === "connecting"
+    if (state === "connecting") conversation.setConnecting()
+    else if (state === "connected") {
+      conversation.setListening()
+      resetIdleTimer()
+    }
   },
   { immediate: true }
 )
@@ -279,6 +389,7 @@ watch(
   () => props.open,
   async (open) => {
     if (open) {
+      conversation.reset()
       if (webrtcState.value === "connecting") webrtcDisconnect()
       if (webrtcState.value !== "connected") {
         // Suppress REST TTS before ensureSession: the voice pipeline owns the
@@ -289,7 +400,6 @@ watch(
         if (!props.open) return // closed while awaiting session
         void webrtcConnect()
       }
-      resetIdleTimeout()
     } else {
       showChat.value = false
       moveMode.value = false
@@ -299,8 +409,15 @@ watch(
       stopSubtitleReveal()
       webrtcDisconnect()
       lastUserText.value = ""
-      isWebRTCThinking.value = false
-      clearIdleTimeout()
+      clearThinkingFuse()
+      clearTtsWatchdog()
+      clearIdleTimer()
+      clearIdleWarnInterval()
+      clearEndConfirmInterval()
+      showIdleWarning.value = false
+      showEndConfirm.value = false
+      endConversationPending = false
+      conversation.reset()
     }
   },
 )
@@ -347,6 +464,7 @@ const dirClass = computed(() =>
       v-if="open"
       class="fixed z-[9999] flex gap-3 items-end max-w-[calc(100vw-40px)]"
       :class="[posClass, dirClass]"
+      @pointerdown.capture="markActivity"
     >
       <Transition
         enter-active-class="transition-[opacity,transform] duration-[180ms]"
@@ -371,18 +489,20 @@ const dirClass = computed(() =>
         :height="frameSize.h"
         :size="size"
         :last-agent-text="displayedAgentText"
-        :is-sending="isSending || isWebRTCThinking"
+        :is-sending="isSending"
         :show-chat="showChat"
-        :voice-state="voiceState"
+        :conversation-state="conversation.state.value"
         :tts-state="ttsState"
         :mouth-amplitude="activeMouthAmplitude"
-        :webrtc-state="webrtcState"
         :last-user-text="lastUserText"
         :move-mode="moveMode"
         :settings-mode="settingsMode"
         :corner="corner"
+        :show-end-confirm="showEndConfirm"
+        :end-confirm-seconds-left="endConfirmSecondsLeft"
+        :show-idle-warning="showIdleWarning"
+        :idle-warn-seconds-left="idleWarnSecondsLeft"
         @close="emit('close')"
-        @toggle-voice="toggleVoice"
         @toggle-settings="settingsMode = !settingsMode"
         @cancel-settings="settingsMode = false"
         @set-size="size = $event"
@@ -390,6 +510,9 @@ const dirClass = computed(() =>
         @open-chat="openChatFromSettings"
         @select-corner="selectCorner"
         @cancel-move="moveMode = false"
+        @confirm-end="confirmEndNow"
+        @continue-conversation="continueConversation"
+        @dismiss-idle-warning="() => { dismissIdleWarning(); resetIdleTimer() }"
       />
     </div>
   </Transition>

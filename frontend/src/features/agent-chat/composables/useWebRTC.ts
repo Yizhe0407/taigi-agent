@@ -4,14 +4,30 @@ import { reportClientEvent } from "@/lib/report-client-event"
 
 export type WebRTCState = "disconnected" | "connecting" | "connected" | "error"
 
+export type WebRTCCallbacks = {
+  /** Final ASR transcript for the user's turn. */
+  onTranscript: (text: string) => void
+  /** Full-text agent reply (see PipAgentOverlay for playback-sync handling). */
+  onReply: (text: string) => void
+  /** Barge-in: the in-flight agent turn was cancelled mid-speech. */
+  onCancelled?: () => void
+  /** One TTS segment started playing; text + its audio duration. */
+  onSubtitle?: (text: string, durationMs: number) => void
+  /** TTS audio playback started. */
+  onBotSpeaking?: () => void
+  /** TTS audio playback finished. */
+  onBotSilent?: () => void
+  /** VAD: user started talking. */
+  onUserSpeaking?: () => void
+  /** VAD: user stopped talking. */
+  onUserSilent?: () => void
+  /** Agent detected a farewell/completion intent and has already spoken it. */
+  onEndConversation?: () => void
+}
+
 export function useWebRTC(
-  onTranscript: (text: string) => void,
-  onReply: (text: string) => void,
+  callbacks: WebRTCCallbacks,
   sessionId?: Readonly<Ref<string | null>>,
-  onCancelled?: () => void,
-  onSubtitle?: (text: string, durationMs: number) => void,
-  onBotSpeaking?: () => void,
-  onBotSilent?: () => void,
 ) {
   const state = ref<WebRTCState>("disconnected")
   const mouthAmplitude = ref(0)
@@ -147,13 +163,18 @@ export function useWebRTC(
     dc.onmessage = (evt) => {
       try {
         const msg = JSON.parse(evt.data as string) as { type: string; text?: string; durationMs?: number }
-        if (msg.type === "transcript") onTranscript(msg.text ?? "")
-        else if (msg.type === "subtitle") onSubtitle?.(msg.text ?? "", msg.durationMs ?? 0)
-        else if (msg.type === "agent_reply") onReply(msg.text ?? "")
-        else if (msg.type === "agent_cancelled") onCancelled?.()
-        else if (msg.type === "bot_speaking") onBotSpeaking?.()
-        else if (msg.type === "bot_silent") onBotSilent?.()
-        // unknown types: silently ignored (forward-compat)
+        switch (msg.type) {
+          case "transcript": callbacks.onTranscript(msg.text ?? ""); break
+          case "subtitle": callbacks.onSubtitle?.(msg.text ?? "", msg.durationMs ?? 0); break
+          case "agent_reply": callbacks.onReply(msg.text ?? ""); break
+          case "agent_cancelled": callbacks.onCancelled?.(); break
+          case "bot_speaking": callbacks.onBotSpeaking?.(); break
+          case "bot_silent": callbacks.onBotSilent?.(); break
+          case "user_speaking": callbacks.onUserSpeaking?.(); break
+          case "user_silent": callbacks.onUserSilent?.(); break
+          case "end_conversation": callbacks.onEndConversation?.(); break
+          // unknown types: silently ignored (forward-compat)
+        }
       } catch {}
     }
 
