@@ -69,11 +69,19 @@ export function useConversationState() {
     state.value = userIsSpeaking ? "userSpeaking" : "listening"
   }
 
-  /** Fallback for stuck timers (thinking fuse / TTS watchdog): the pipeline
-   * never followed up, so hand control back to the user instead of leaving
-   * the UI frozen mid-phase. */
+  /** Fallback for stuck timers (thinking/processing fuse, TTS watchdog): the
+   * pipeline never followed up, so hand control back to the user instead of
+   * leaving the UI frozen mid-phase. */
   function forceListening() {
     state.value = "listening"
+  }
+
+  /** WebRTC dropped (ICE failed/closed while the PiP is still open) — freeze
+   * into a static error visual; data-channel events can no longer arrive so
+   * no other transition will ever fire. Exit is the close/end button. */
+  function setError() {
+    state.value = "error"
+    userIsSpeaking = false
   }
 
   return {
@@ -89,5 +97,6 @@ export function useConversationState() {
     onBotSilent,
     onAgentCancelled,
     forceListening,
+    setError,
   }
 }

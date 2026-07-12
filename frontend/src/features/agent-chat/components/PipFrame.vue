@@ -70,6 +70,9 @@ const borderClass = computed(() => {
       return "border-[2px] border-kiosk-accent pip-pulse-accent"
     case "speaking":
       return "border-[2px] border-kiosk-accent"
+    case "error":
+      // Connection dropped — static, no animation; the chip explains the exit.
+      return "border-[2px] border-kiosk-err/60"
   }
 })
 
@@ -81,6 +84,7 @@ const statusChipText = computed(() => {
     case "connecting": return "連線中…"
     case "userSpeaking": return "我咧聽…"
     case "processing": return "辨識中…"
+    case "error": return "連線斷去，請按結束閣開一擺"
     default: return null
   }
 })

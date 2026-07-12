@@ -10,6 +10,7 @@ export type ConversationState =
   | "processing"
   | "thinking"
   | "speaking"
+  | "error"
 
 export const PIP_SIZES: Record<PipSize, { w: number; h: number }> = {
   sm: { w: 220, h: 275 },

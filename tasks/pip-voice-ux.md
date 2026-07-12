@@ -2,9 +2,11 @@
 
 ## 目前狀態
 
-- Phase 1（backend）已 commit `2941c91`；Phase 2（frontend）驗收中（typecheck 綠）。
-- 下一步：commit Phase 2 → 派 Phase 3 fresh-context 審查兩個 diff。
+- Phase 1 已 commit `2941c91`、Phase 2 已 commit `54cad4f`。
+- Phase 3 審查完：4 findings（end_conversation 早到判斷反了、WebRTC error 無狀態、processing 無 fuse、end-confirm 倒數不因開口取消）修復中。
+- 下一步：驗收修復 diff → commit 收尾。
 - 阻塞：無。
+- Backlog：前端無測試基礎設施（vitest 未裝），useConversationState 轉換表值得補測——另開任務。
 
 ## 問題（研究佐證：scratchpad voice-ui-research.md、pip-flow-map.md）
 
