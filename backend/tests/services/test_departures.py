@@ -348,18 +348,36 @@ def test_render_stop_on_route_not_found(use_provider):
     assert result.startswith("沒有")
 
 
-def test_render_arrivals_route_not_found_lists_stop_routes(use_provider):
-    """Route not found: error lists routes actually serving the stop (ASR rescue path)."""
+def test_render_arrivals_route_not_found_lists_similar_routes(use_provider):
+    """Route not found: error lists similarity-ranked candidates, not the full stop list (ASR rescue path)."""
     use_provider(
         FakeBusProvider(
             route_info={
                 "201": {"id": "201", "go_dest": "雲林科技大學", "back_dest": "高鐵雲林站"},
+                "701": {"id": "701", "go_dest": "雲林科技大學", "back_dest": "斗六火車站"},
                 "7126": {"id": "7126", "go_dest": "雲林科技大學", "back_dest": "斗六火車站"},
             },
         )
     )
-    result = asyncio.run(departures.render_arrivals("221", "雲林科技大學"))
-    assert result == "本站沒有路線 221。本站停靠路線：201、7126。"
+    result = asyncio.run(departures.render_arrivals("301", "雲林科技大學"))
+    assert result.startswith("本站沒有路線 301。相近路線：")
+    assert "201" in result
+    assert "701" in result
+    assert "7126" not in result
+
+
+def test_render_arrivals_route_not_found_unrelated_input_no_candidates(use_provider):
+    """Completely unrelated route input: no candidate list, just the plain not-found message."""
+    use_provider(
+        FakeBusProvider(
+            route_info={
+                "201": {"id": "201", "go_dest": "雲林科技大學", "back_dest": "高鐵雲林站"},
+            },
+        )
+    )
+    result = asyncio.run(departures.render_arrivals("ABCDE", "雲林科技大學"))
+    assert result == "本站沒有路線 ABCDE。"
+    assert "相近路線" not in result
 
 
 def test_render_arrivals_route_not_found_empty_route_info(use_provider):

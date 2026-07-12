@@ -14,6 +14,7 @@ from services.departures.normalize import (
     _fuzzy_candidates,
     _lookup_route,
     _name_matches,
+    _route_candidates,
     _stops_by_direction_with_seq,
 )
 from services.departures.provider import get_provider
@@ -61,10 +62,13 @@ async def _resolve_route_estimate(
 
     Returns (route_info, estimate_data) on success, or a user-facing error
     string. `fuzzy` uses loose route-key matching (`_lookup_route`); otherwise
-    exact dict lookup. When the route isn't found, the error lists the routes
-    actually serving `stop_name` (from `route_info`, already fetched — no
-    extra HTTP round-trip) so the LLM can pick a phonetically close match and
-    retry — this is the ASR mis-hearing rescue path.
+    exact dict lookup. When the route isn't found, the error lists up to 5
+    routes actually serving `stop_name` (from `route_info`, already fetched —
+    no extra HTTP round-trip) ranked by name similarity to `route`, so the
+    LLM can pick a phonetically close match and retry — this is the ASR
+    mis-hearing rescue path. A full route-name dump was tried in production
+    and caused the LLM to read the entire list back to the user instead of
+    picking one, hence the top-5 cap.
     """
     provider = get_provider()
     route_info = await _safe_provider_call(provider.load_route_info(stop_name))
@@ -74,10 +78,11 @@ async def _resolve_route_estimate(
     info = _lookup_route(route_info, route) if fuzzy else route_info.get(route)
     route_id = info.get("id") if info is not None else None
     if not route_id:
-        if not route_info:
-            return f"本站沒有路線 {route}。"
-        available = "、".join(sorted(route_info))
-        return f"本站沒有路線 {route}。本站停靠路線：{available}。"
+        candidates = _route_candidates(route, route_info)
+        if candidates:
+            top = "、".join(candidates)
+            return f"本站沒有路線 {route}。相近路線：{top}。"
+        return f"本站沒有路線 {route}。"
 
     data = await _safe_provider_call(provider.fetch_route_estimate(route_id))
     if data is None:

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
+from difflib import get_close_matches
 from zoneinfo import ZoneInfo
 
 from pipeline.normalize import count_to_chinese, to_halfwidth
@@ -26,6 +27,24 @@ def _mins_zh(n: int) -> str:
 def _normalize_route_key(s: str) -> str:
     """Halfwidth + strip trailing 路 + uppercase for loose route lookup."""
     return to_halfwidth(s).rstrip("路").upper()
+
+
+def _route_candidates(route: str, route_names: Iterable[str], limit: int = 5) -> list[str]:
+    """Return up to `limit` route names most similar to `route`, best first.
+
+    ASR mis-hearing rescue path for route numbers: matching is done on
+    `_normalize_route_key` (halfwidth/uppercase/no trailing 路) so e.g. "301"
+    vs "301路" still line up. cutoff=0.5 was picked by checking against a
+    real 32-route stop list — it keeps single-digit-off numeric neighbors
+    (e.g. "301" -> 701/302/201/101, all plausible ASR confusions) while
+    dropping unrelated route names (e.g. "ABCDE" -> no matches).
+    """
+    key_to_name: dict[str, str] = {}
+    query_key = _normalize_route_key(route)
+    for name in route_names:
+        key_to_name.setdefault(_normalize_route_key(name), name)
+    matched_keys = get_close_matches(query_key, key_to_name.keys(), n=limit, cutoff=0.5)
+    return [key_to_name[k] for k in matched_keys]
 
 
 def _lookup_route(route_info: dict, route: str) -> dict | None:
