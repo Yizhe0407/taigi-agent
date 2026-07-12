@@ -14,7 +14,7 @@ defineEmits<{
       class="h-10 px-6 bg-kiosk-accent text-white border-0 rounded-[12px] text-[13px] font-bold cursor-pointer font-[inherit]"
       @click="$emit('dismiss')"
     >
-      我猶佇咧
+      繼續對話
     </button>
   </div>
 </template>

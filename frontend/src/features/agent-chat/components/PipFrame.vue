@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue"
-import { LogOut, Settings, X } from "@lucide/vue"
+import { LogOut, Settings } from "@lucide/vue"
 
 import type { TtsState } from "../composables/useTts"
 import type { ConversationState, PipCorner, PipSize } from "../types"
@@ -105,24 +105,14 @@ const statusChipText = computed(() => {
       <Settings class="size-[15px]" :stroke-width="2" />
     </button>
 
-    <!-- End conversation — labeled, always visible (not just the small X) -->
+    <!-- End conversation — top-right, labeled; owns the close behavior (replaces the old X) -->
     <button
-      v-if="size !== 'sm'"
-      class="absolute top-2 left-1/2 -translate-x-1/2 z-[5] h-8 px-3 bg-white/15 text-white/80 border-0 rounded-full cursor-pointer p-0 inline-flex items-center gap-1 backdrop-blur-sm text-[12px] font-bold"
+      class="absolute top-2 right-2 z-[5] h-8 px-3 bg-white/20 text-white border-0 rounded-full cursor-pointer p-0 inline-flex items-center gap-1 backdrop-blur-sm text-[12px] font-bold"
       aria-label="結束對話"
       @click="emit('close')"
     >
       <LogOut class="size-[13px]" :stroke-width="2.4" />
       結束對話
-    </button>
-
-    <!-- Close — top-right -->
-    <button
-      class="absolute top-2 right-2 z-[5] w-8 h-8 bg-white/20 text-white border-0 rounded-full cursor-pointer p-0 inline-flex items-center justify-center backdrop-blur-sm"
-      aria-label="關閉"
-      @click="emit('close')"
-    >
-      <X class="size-[18px]" :stroke-width="2.6" />
     </button>
 
     <!-- Avatar — fills entire frame, button overlays on top -->
@@ -173,11 +163,19 @@ const statusChipText = computed(() => {
         v-if="size !== 'sm'"
         class="absolute bottom-5 left-2.5 right-2.5 z-[2] flex flex-col items-center gap-1.5 pointer-events-none"
       >
-        <!-- Status chip: connecting / userSpeaking / processing -->
+        <!-- Status chip: connecting / userSpeaking / processing / error.
+             Active phases carry a small motion cue (bars / dots) so the chip
+             feels alive without competing with the Live2D avatar. -->
         <div
           v-if="statusChipText"
-          class="bg-white/95 backdrop-blur-md border-2 border-kiosk-ink/10 py-2.5 px-4 rounded-[18px] shadow-[0_8px_24px_rgba(0,0,0,0.15)] flex items-center justify-center min-w-[120px]"
+          class="bg-white/95 backdrop-blur-md border-2 border-kiosk-ink/10 py-2.5 px-4 rounded-[18px] shadow-[0_8px_24px_rgba(0,0,0,0.15)] flex items-center justify-center gap-2.5 min-w-[120px]"
         >
+          <div v-if="conversationState === 'userSpeaking'" class="flex items-center gap-[3px] h-3.5">
+            <span v-for="i in 3" :key="i" class="voice-bar" :style="`animation-delay:${(i - 1) * 0.15}s`" />
+          </div>
+          <template v-else-if="conversationState === 'processing'">
+            <span v-for="i in 3" :key="i" class="pip-dot !bg-kiosk-accent !w-1.5 !h-1.5" :style="`animation-delay:${(i - 1) * 0.18}s`" />
+          </template>
           <span class="text-kiosk-ink text-[14px] font-bold">{{ statusChipText }}</span>
         </div>
 
