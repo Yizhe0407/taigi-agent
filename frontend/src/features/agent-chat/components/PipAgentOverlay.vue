@@ -61,6 +61,58 @@ function clearTtsWatchdog() {
   if (ttsWatchdog !== null) { clearTimeout(ttsWatchdog); ttsWatchdog = null }
 }
 
+// Subtitle reveal: each `subtitle` event carries one segment's text plus its
+// audio duration. We reveal it char-by-char over that duration (rhythm mirrors
+// usePipChat's animateText, but state lives here since voice owns its own bubble).
+// subtitleToken guards the in-flight setTimeout loop; subtitleRemaining tracks
+// how much of the *current* segment hasn't been appended yet.
+let subtitleToken = 0
+let subtitleRemaining: { text: string; index: number } | null = null
+
+function flushSubtitleReveal() {
+  // A new segment arrived while the previous one was still revealing — audio
+  // has already moved on, so instantly finish the old segment's text rather
+  // than let the subtitle lag behind.
+  if (!subtitleRemaining) return
+  const rest = subtitleRemaining.text.slice(subtitleRemaining.index)
+  subtitleRemaining = null
+  if (!rest || !voiceReplyId) return
+  const bubble = messages.value.find(m => m.id === voiceReplyId)
+  if (bubble) bubble.text += rest
+  displayedAgentText.value += rest
+}
+
+function stopSubtitleReveal() {
+  // Interruption / new turn: stop without flushing — leave the bubble at
+  // whatever was actually spoken (completing it here would show text the
+  // user never heard).
+  subtitleToken++
+  subtitleRemaining = null
+}
+
+async function animateSubtitle(text: string, durationMs: number, token: number) {
+  const delay = text.length ? Math.max(15, durationMs / text.length) : 0
+  for (let i = 0; i < text.length; i++) {
+    if (token !== subtitleToken) return // superseded by a newer segment, or stopped
+    const bubble = voiceReplyId ? messages.value.find(m => m.id === voiceReplyId) : null
+    if (bubble) bubble.text += text[i]
+    displayedAgentText.value += text[i]
+    subtitleRemaining = { text, index: i + 1 }
+    if (delay > 0) await new Promise<void>(r => setTimeout(r, delay))
+  }
+  if (token === subtitleToken) subtitleRemaining = null
+}
+
+function startSubtitleReveal(text: string, durationMs: number) {
+  flushSubtitleReveal() // finish whatever segment was still revealing
+  const token = ++subtitleToken
+  if (!voiceReplyId) {
+    voiceReplyId = `wrtc-reply-${Date.now()}`
+    messages.value.push({ id: voiceReplyId, role: "assistant", text: "" })
+  }
+  void animateSubtitle(text, durationMs, token)
+}
+
 function flushPendingReply() {
   if (pendingReply === null) return
   const text = pendingReply
@@ -116,7 +168,7 @@ function startThinkingFuse() {
   }, 30_000)
 }
 
-onUnmounted(() => { clearIdleTimeout(); clearThinkingFuse(); clearTtsWatchdog() })
+onUnmounted(() => { clearIdleTimeout(); clearThinkingFuse(); clearTtsWatchdog(); stopSubtitleReveal() })
 
 const {
   state: webrtcState,
@@ -130,6 +182,7 @@ const {
     clearIdleTimeout()
     isWebRTCThinking.value = true
     startThinkingFuse()
+    stopSubtitleReveal()
     voiceReplyId = null
     pendingReply = null
     clearTtsWatchdog()
@@ -159,20 +212,15 @@ const {
     lastUserText.value = ""
     resetIdleTimeout()
     clearTtsWatchdog()
+    stopSubtitleReveal()
   },
-  (text) => {
-    // subtitle: fires as each TTS chunk starts playing (see pipeline.py
-    // SubtitleSyncProcessor) — appending here tracks playback, not generation.
+  (text, durationMs) => {
+    // subtitle: fires as each TTS segment starts playing (see pipeline.py
+    // SubtitleSyncProcessor) — reveals over durationMs so the bubble tracks
+    // playback pace instead of dumping the whole segment at once.
     // Audio is alive, so the TTS-failed watchdog no longer applies.
     clearTtsWatchdog()
-    if (!voiceReplyId) {
-      voiceReplyId = `wrtc-reply-${Date.now()}`
-      messages.value.push({ id: voiceReplyId, role: "assistant", text })
-    } else {
-      const bubble = messages.value.find(m => m.id === voiceReplyId)
-      if (bubble) bubble.text += text
-    }
-    displayedAgentText.value += text
+    startSubtitleReveal(text, durationMs)
   },
   // bot_speaking: TTS audio is actively playing — hold off both timers so
   // long replies don't get killed mid-playback.
@@ -181,10 +229,14 @@ const {
     clearIdleTimeout()
     clearThinkingFuse()
   },
-  // bot_silent: playback finished. Flush the full-text reply the server sent
-  // earlier (idempotently covers any subtitle gaps) and restart the idle clock.
+  // bot_silent: playback finished. Stop any still-running reveal loop first —
+  // flushPendingReply() overwrites the bubble/displayedAgentText outright, and
+  // a stale animateSubtitle() timer must not keep appending after that.
+  // Flush the full-text reply the server sent earlier (idempotently covers
+  // any subtitle gaps) and restart the idle clock.
   () => {
     clearTtsWatchdog()
+    stopSubtitleReveal()
     flushPendingReply()
     resetIdleTimeout()
   },
@@ -244,6 +296,7 @@ watch(
       settingsMode.value = false
       cancelTts()
       clearDisplayedText()
+      stopSubtitleReveal()
       webrtcDisconnect()
       lastUserText.value = ""
       isWebRTCThinking.value = false

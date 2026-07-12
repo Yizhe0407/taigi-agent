@@ -6,7 +6,8 @@ Pipeline:
   2. Taibun     — 漢羅 → Tailo 台羅拼音
   3. Split      — Tailo 在 , 和 . 切段
   4. TTS HTTP   — 各段並發送至 /v1/audio/speech，回傳 WAV
-  5. PCM yield  — 從 WAV 提取 PCM，轉成 OutputAudioRawFrame 串流給前端
+  5. PCM yield  — 從 WAV 提取 PCM，先 yield SubtitleFrame（含總時長），再轉成
+                  OutputAudioRawFrame 串流給前端，讓字幕與音訊播放同步
 """
 
 import asyncio
@@ -15,10 +16,11 @@ import logging
 import time
 import wave
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from pipecat.frames.frames import Frame, TTSAudioRawFrame
+from pipecat.frames.frames import DataFrame, Frame, TTSAudioRawFrame
 from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TextAggregationMode, TTSService
 
@@ -29,6 +31,24 @@ from providers.http import get_http_client
 from telemetry import get_telemetry
 
 _log = logging.getLogger(__name__)
+
+
+@dataclass
+class SubtitleFrame(DataFrame):
+    """Carries the full display text for one run_tts() call plus its total
+    audio duration, yielded before any audio frames so a downstream processor
+    can start a playback-synced reveal animation at the moment audio starts
+    queuing (see SubtitleSyncProcessor in voice/pipeline.py).
+
+    Deliberately NOT a TTSTextFrame subclass: pipecat's WordCompletionTracker
+    still emits a default end-of-segment TTSTextFrame (push_text_frames stays
+    True — see tts_taigi.py module docstring/CLAUDE.md), and this frame must
+    stay distinguishable from that one. No `pts` is set (inherited as None),
+    so BaseOutputTransport queues it inline with audio at real-time speed.
+    """
+
+    text: str
+    duration_ms: int
 
 
 def _extract_pcm(wav_bytes: bytes) -> tuple[bytes, int, int]:
@@ -122,8 +142,10 @@ class TaigiTTSService(TTSService):
                 _log.info("TTS interrupted before any request completed")
                 raise
 
-            produced_audio = False
-            first_frame = True
+            # Decode all segments first so we know the total duration before
+            # yielding anything — the subtitle must precede the first audio
+            # frame (see SubtitleFrame docstring / module docstring above).
+            decoded: list[tuple[bytes, int, int, int]] = []  # pcm_bytes, sample_rate, num_channels, silence_ms
             for (seg_text, silence_ms), resp in zip(segments, responses, strict=True):
                 if isinstance(resp, BaseException):
                     _log.error("TTS HTTP request failed: %s", resp)
@@ -139,33 +161,41 @@ class TaigiTTSService(TTSService):
                     _log.error("WAV extraction failed: %s", exc)
                     continue
 
-                produced_audio = True
-                # 20ms chunks: sample_rate * 0.02 * num_channels * 2 bytes/sample
-                chunk_size = int(sample_rate * 0.02) * num_channels * 2
+                decoded.append((pcm_bytes, sample_rate, num_channels, silence_ms))
 
-                for i in range(0, len(pcm_bytes), chunk_size):
-                    if first_frame and self._turn_timer:
-                        self._turn_timer.mark_first_audio()
-                        first_frame = False
-                    yield TTSAudioRawFrame(
-                        audio=pcm_bytes[i : i + chunk_size],
-                        sample_rate=sample_rate,
-                        num_channels=num_channels,
-                    )
+            if decoded:
+                total_duration_ms = sum(
+                    (len(pcm_bytes) / (sample_rate * num_channels * 2)) * 1000 + silence_ms for pcm_bytes, sample_rate, num_channels, silence_ms in decoded
+                )
+                yield SubtitleFrame(text=text, duration_ms=round(total_duration_ms))
 
-                if silence_ms > 0:
-                    silence = _make_silence_pcm(silence_ms, sample_rate, num_channels, 2)
-                    for i in range(0, len(silence), chunk_size):
+                first_frame = True
+                for pcm_bytes, sample_rate, num_channels, silence_ms in decoded:
+                    # 20ms chunks: sample_rate * 0.02 * num_channels * 2 bytes/sample
+                    chunk_size = int(sample_rate * 0.02) * num_channels * 2
+
+                    for i in range(0, len(pcm_bytes), chunk_size):
                         if first_frame and self._turn_timer:
                             self._turn_timer.mark_first_audio()
                             first_frame = False
                         yield TTSAudioRawFrame(
-                            audio=silence[i : i + chunk_size],
+                            audio=pcm_bytes[i : i + chunk_size],
                             sample_rate=sample_rate,
                             num_channels=num_channels,
                         )
 
-            if produced_audio:
+                    if silence_ms > 0:
+                        silence = _make_silence_pcm(silence_ms, sample_rate, num_channels, 2)
+                        for i in range(0, len(silence), chunk_size):
+                            if first_frame and self._turn_timer:
+                                self._turn_timer.mark_first_audio()
+                                first_frame = False
+                            yield TTSAudioRawFrame(
+                                audio=silence[i : i + chunk_size],
+                                sample_rate=sample_rate,
+                                num_channels=num_channels,
+                            )
+
                 outcome = "ok"
             elif any(isinstance(r, httpx.TimeoutException) for r in responses):
                 outcome = "timeout"

@@ -6,8 +6,9 @@ import wave
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pipecat.frames.frames import TTSAudioRawFrame
 
-from voice.tts_taigi import TaigiTTSService
+from voice.tts_taigi import SubtitleFrame, TaigiTTSService
 
 
 def _make_wav_bytes(sample_rate: int = 16000, n_samples: int = 160) -> bytes:
@@ -55,7 +56,14 @@ def test_run_tts_ok_records_ok_outcome_and_marks_turn_timer():
         svc = TaigiTTSService(turn_timer=turn_timer)
         frames = asyncio.run(_collect(svc.run_tts("你好", "ctx-1")))
 
-    assert len(frames) > 0
+    assert len(frames) > 1
+    # SubtitleFrame must precede every audio frame so the frontend can start
+    # the reveal animation at the same moment audio starts queuing.
+    assert isinstance(frames[0], SubtitleFrame)
+    assert frames[0].text == "你好"
+    # 160 samples * 2 bytes / (16000 Hz * 1 channel * 2 bytes) * 1000 = 10ms, no punctuation -> no silence.
+    assert frames[0].duration_ms == 10
+    assert all(isinstance(f, TTSAudioRawFrame) for f in frames[1:])
     turn_timer.mark_first_audio.assert_called_once()
     mock_get_telemetry.return_value.record_pipeline_stage.assert_called_once()
     _, kwargs = mock_get_telemetry.return_value.record_pipeline_stage.call_args
@@ -95,7 +103,9 @@ def test_run_tts_all_segments_upstream_error_records_error_outcome():
         svc = TaigiTTSService()
         frames = asyncio.run(_collect(svc.run_tts("你好", "ctx-1")))
 
+    # All segments failed -> no SubtitleFrame (nothing was actually spoken).
     assert frames == []
+    assert not any(isinstance(f, SubtitleFrame) for f in frames)
     _, kwargs = mock_get_telemetry.return_value.record_pipeline_stage.call_args
     assert kwargs["outcome"] == "error"
 

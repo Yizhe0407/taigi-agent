@@ -167,19 +167,18 @@ def test_barge_in_processor_records_telemetry_counter():
 # ---------------------------------------------------------------------------
 
 
-def test_subtitle_sync_processor_emits_subtitle_for_tts_text_frame():
-    from pipecat.frames.frames import TTSTextFrame
-    from pipecat.utils.text.base_text_aggregator import AggregationType
+def test_subtitle_sync_processor_emits_subtitle_for_subtitle_frame():
+    from voice.tts_taigi import SubtitleFrame
 
     async def _run():
         events = []
         proc = SubtitleSyncProcessor(send_event=events.append)
         proc.push_frame = AsyncMock()
 
-        frame = TTSTextFrame(text="第一句。", aggregated_by=AggregationType.TOKEN)
+        frame = SubtitleFrame(text="第一句。", duration_ms=850)
         await proc.process_frame(frame, None)
 
-        assert events == [{"type": "subtitle", "text": "第一句。"}]
+        assert events == [{"type": "subtitle", "text": "第一句。", "durationMs": 850}]
         proc.push_frame.assert_called_once_with(frame, None)
 
     asyncio.run(_run())
@@ -193,7 +192,27 @@ def test_subtitle_sync_processor_passes_other_frames_through_without_event():
         proc = SubtitleSyncProcessor(send_event=events.append)
         proc.push_frame = AsyncMock()
 
-        frame = TextFrame(text="not a tts text frame")
+        frame = TextFrame(text="not a subtitle frame")
+        await proc.process_frame(frame, None)
+
+        assert events == []
+        proc.push_frame.assert_called_once_with(frame, None)
+
+    asyncio.run(_run())
+
+
+def test_subtitle_sync_processor_ignores_default_end_of_segment_tts_text_frame():
+    """Regression guard: pipecat's own end-of-segment TTSTextFrame (push_text_frames
+    default True) must NOT also emit a subtitle event, or subtitles would double up."""
+    from pipecat.frames.frames import TTSTextFrame
+    from pipecat.utils.text.base_text_aggregator import AggregationType
+
+    async def _run():
+        events = []
+        proc = SubtitleSyncProcessor(send_event=events.append)
+        proc.push_frame = AsyncMock()
+
+        frame = TTSTextFrame(text="第一句。", aggregated_by=AggregationType.TOKEN)
         await proc.process_frame(frame, None)
 
         assert events == []
@@ -203,14 +222,13 @@ def test_subtitle_sync_processor_passes_other_frames_through_without_event():
 
 
 def test_subtitle_sync_processor_no_send_event_is_optional():
-    from pipecat.frames.frames import TTSTextFrame
-    from pipecat.utils.text.base_text_aggregator import AggregationType
+    from voice.tts_taigi import SubtitleFrame
 
     async def _run():
         proc = SubtitleSyncProcessor()
         proc.push_frame = AsyncMock()
         # must not raise
-        await proc.process_frame(TTSTextFrame(text="x", aggregated_by=AggregationType.TOKEN), None)
+        await proc.process_frame(SubtitleFrame(text="x", duration_ms=100), None)
 
     asyncio.run(_run())
 

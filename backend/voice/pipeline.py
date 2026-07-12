@@ -16,7 +16,6 @@ from pipecat.frames.frames import (
     Frame,
     InterruptionFrame,
     TTSSpeakFrame,
-    TTSTextFrame,
     VADUserStartedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
@@ -34,7 +33,7 @@ from agent.diagnostics import log_diagnostic
 from telemetry import get_telemetry
 from voice.agent_processor import TaigiBusAgentProcessor
 from voice.stt_breeze import BreezeSTTService
-from voice.tts_taigi import TaigiTTSService
+from voice.tts_taigi import SubtitleFrame, TaigiTTSService
 
 _log = logging.getLogger(__name__)
 
@@ -120,14 +119,17 @@ class BargeInProcessor(FrameProcessor):
 
 
 class SubtitleSyncProcessor(FrameProcessor):
-    """Forwards TTSTextFrame chunks to the client as playback-synced subtitles.
+    """Forwards SubtitleFrames to the client as playback-synced subtitles.
 
     Placed after transport.output() in the pipeline: BaseOutputTransport's
     _audio_task_handler drains its internal audio queue at real playback
-    speed and only pushes each TTSTextFrame downstream once the audio chunk
-    it follows has actually been queued for playback. A processor sitting
-    after transport.output() therefore sees each TTSTextFrame at ~the moment
-    its audio starts playing, not at LLM-generation time.
+    speed and only pushes each frame downstream once it has actually been
+    queued for playback (frames with no `pts` queue inline with audio — see
+    SubtitleFrame's docstring in tts_taigi.py). A processor sitting after
+    transport.output() therefore sees each SubtitleFrame at ~the moment its
+    audio starts playing, not at LLM-generation time. The frontend uses
+    durationMs to reveal the text progressively over the actual playback
+    window instead of dumping it all at once.
     """
 
     def __init__(self, send_event: Callable[[Any], None] | None = None, **kwargs):
@@ -136,8 +138,8 @@ class SubtitleSyncProcessor(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
-        if isinstance(frame, TTSTextFrame) and self._send_event:
-            self._send_event({"type": "subtitle", "text": frame.text})
+        if isinstance(frame, SubtitleFrame) and self._send_event:
+            self._send_event({"type": "subtitle", "text": frame.text, "durationMs": frame.duration_ms})
         await self.push_frame(frame, direction)
 
 
