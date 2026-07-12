@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+from contextlib import suppress
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from services.departures import (
@@ -123,6 +127,53 @@ async def get_departures_here() -> StopDepartureSnapshotResponse:
     except DepartureSnapshotUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     return _snapshot_to_response(snapshot)
+
+
+# ── SSE push ──────────────────────────────────────────────────────────────────
+#
+# The ETA warmup loop (api/__init__._eta_warmup_loop) refreshes the provider
+# cache every 25 s and calls notify_snapshot_refreshed(); connected clients
+# get a fresh snapshot the moment the backend has one, instead of polling out
+# of phase with the cache.
+
+# Fresh Event per tick: set-then-replace means every waiter of the old tick
+# wakes exactly once and new waiters latch onto the next tick — no clear() race.
+_refresh_event = asyncio.Event()
+# Warmup tick is 25 s; if it stalls, degrade to slow self-refresh instead of
+# leaving the dashboard frozen.
+_STREAM_FALLBACK_SECONDS = 40.0
+
+
+def notify_snapshot_refreshed() -> None:
+    """Wake departure SSE clients after an ETA cache refresh."""
+    global _refresh_event
+    _refresh_event.set()
+    _refresh_event = asyncio.Event()
+
+
+async def _departure_events():
+    """無限 SSE 事件流：snapshot JSON 或 {"error": …}，每次 cache 更新推一筆。"""
+    while True:
+        # Capture before building so a tick that lands mid-build isn't missed.
+        wakeup = _refresh_event
+        try:
+            snapshot = await get_departure_snapshot_here()
+            payload = _snapshot_to_response(snapshot).model_dump_json(by_alias=True)
+        except DepartureSnapshotUnavailable as error:
+            payload = json.dumps({"error": str(error)}, ensure_ascii=False)
+        yield f"data: {payload}\n\n"
+        with suppress(TimeoutError):
+            await asyncio.wait_for(wakeup.wait(), timeout=_STREAM_FALLBACK_SECONDS)
+
+
+@router.get("/api/departures/stream")
+async def stream_departures_here() -> StreamingResponse:
+    """SSE：每次 ETA cache 更新即推最新 snapshot。"""
+    return StreamingResponse(
+        _departure_events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get(

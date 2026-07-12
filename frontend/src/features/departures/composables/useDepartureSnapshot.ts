@@ -1,37 +1,68 @@
-import { useQuery } from "@tanstack/vue-query"
+import { useQuery, useQueryClient } from "@tanstack/vue-query"
 import { computed, onUnmounted, ref } from "vue"
 
+import { apiBaseUrl } from "@/lib/api"
 import { UI_FALLBACK_MESSAGES } from "@/lib/api-messages"
 
 import { DeparturesApiError, fetchDeparturesHere } from "../api/departures"
+import type { StopDepartureSnapshot } from "../types"
 
+/** Polling cadence, used only while the SSE stream is down. */
 const REFRESH_MS = 15_000
+/** Backend ETA warmup tick cadence — SSE pushes land on this rhythm. */
+const SSE_PUSH_MS = 25_000
 
 export function useDepartureSnapshot() {
+  const queryClient = useQueryClient()
+  const sseConnected = ref(false)
+  const ssePushError = ref("")
+
   const query = useQuery({
     queryKey: ["departures", "here"],
     queryFn: ({ signal }) => fetchDeparturesHere(signal),
-    refetchInterval: REFRESH_MS,
+    // SSE is the primary transport; poll only while it's disconnected.
+    refetchInterval: () => (sseConnected.value ? false : REFRESH_MS),
     retry: false,
   })
+
+  // Server push: the backend notifies right after each ETA cache refresh, so
+  // the dashboard updates the moment fresh data exists instead of polling out
+  // of phase. EventSource reconnects on its own; while it's down the query
+  // above falls back to interval polling.
+  const source = new EventSource(`${apiBaseUrl}/api/departures/stream`)
+  source.onopen = () => { sseConnected.value = true }
+  source.onerror = () => { sseConnected.value = false }
+  source.onmessage = (event) => {
+    const payload = JSON.parse(event.data) as StopDepartureSnapshot | { error: string }
+    if ("error" in payload) {
+      ssePushError.value = payload.error
+      return
+    }
+    ssePushError.value = ""
+    queryClient.setQueryData(["departures", "here"], payload)
+  }
+  onUnmounted(() => source.close())
 
   const now = ref(Date.now())
   const ticker = setInterval(() => { now.value = Date.now() }, 1000)
   onUnmounted(() => clearInterval(ticker))
 
   const secondsUntilRefresh = computed(() => {
+    const intervalMs = sseConnected.value ? SSE_PUSH_MS : REFRESH_MS
     const elapsed = now.value - query.dataUpdatedAt.value
-    return Math.max(0, Math.round((REFRESH_MS - elapsed) / 1000))
+    return Math.max(0, Math.round((intervalMs - elapsed) / 1000))
   })
 
   const snapshot = computed(() => query.data.value ?? null)
   const isLoading = computed(() => query.isLoading.value)
   const errorMessage = computed(() => {
     const err = query.error.value
-    if (!err) return ""
-    return err instanceof DeparturesApiError
-      ? err.message
-      : UI_FALLBACK_MESSAGES.departuresUnavailable
+    if (err) {
+      return err instanceof DeparturesApiError
+        ? err.message
+        : UI_FALLBACK_MESSAGES.departuresUnavailable
+    }
+    return ssePushError.value
   })
 
   /** Background refetch failed but cached data still available. */

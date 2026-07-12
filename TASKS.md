@@ -51,6 +51,7 @@
 - 後台管理：`/admin` 站牌切換 UI；runtime `KioskConfig` singleton；`/api/admin/kiosk` GET/PUT、`/api/admin/stops`；不需重啟即可切換站牌與方向。
 - **公車資料來源雙 provider 架構**：`providers/hybrid.py` 為唯一線上 `BusProvider` runtime；路線目錄（`load_route_info`、`fetch_routes_at_stop`）由 TDX 提供，ETA（`fetch_eta_at_stop`、`fetch_route_estimate`）由 ebus.yunlin.gov.tw 主力，ebus 空值時 fallback 至 TDX intercity。TDX Direction 0/1，`route_id` 全層為 SubRouteName string，`_classify_stop` 讀 `stop_status`/`estimate_seconds`。
 - 語音基礎：ASR proxy、前端錄音、TTS proxy、台語文字處理、分段播放；ASR 錯誤訊息不外洩原始 Python exception。
+- 串流回覆：`AgentSession.respond_stream` 逐句輸出 → 語音逐句 TTS（首音不等完整回覆）、chat SSE 逐字上屏、departures SSE 隨 ETA warmup tick 推播（取代輪詢相位差）。
 - 方向過濾 auto-detect：`_is_terminal_direction()` 自動過濾終點到站方向；admin 設定「去回程都有」時啟動，設定單方向時直接照設定過濾；循環路線不過濾。
 
 ## 文件

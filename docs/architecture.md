@@ -9,6 +9,7 @@
 - 公車資料來源集中在 provider，分類與決策集中在 service，Agent 看到的是 tool facade 回傳的字串。
 - 路線規劃不是聊天文字 tool；前端確認目的地座標後呼叫 `POST /api/route-plans`。
 - Context 以輪為單位硬上限（`MAX_EXCHANGES=5`）加 token budget trim；過長 tool result 直接截斷成預覽（不另外保存完整內容），避免單則訊息吃光 budget。
+- 回覆是串流的：`AgentSession.respond_stream()` 逐句 yield（`respond()` = 串接所有 chunk，單一路徑）。首輪 forced tool call 不串流；auto 輪的 content delta 經 `pipeline/normalize.StreamNormalizer`（增量 think 剝除 + 逐句 s2twp）輸出。不變式：完整回覆 == 所有 chunk 串接；串流輪的歷史 assistant content == 實際播出文字。
 - Telemetry 只記 model、tool name、outcome、error type、latency 等 metadata，預設不記內容。
 
 ## 後端
@@ -32,8 +33,8 @@ backend/
 
 - `api/__init__.py`：FastAPI app、CORS、router include、telemetry setup。
 - `api/admin.py`：`/api/admin/kiosk`（GET/PUT）與 `/api/admin/stops`（GET）；供後台 UI 讀寫 runtime 站牌設定與站牌目錄。
-- `api/chat.py`：`/api/chat/*`，SQLite-backed `ChatSessionStore`。
-- `api/departures.py`：`/api/departures/here` 與路線詳情。
+- `api/chat.py`：`/api/chat/*`，SQLite-backed `ChatSessionStore`。`respond_in_session_stream` 為唯一實作路徑（voice 與 SSE 共用）；`POST /api/chat/sessions/{id}/messages/stream` 以 SSE 推 `{delta}`/`{done}`/`{error}` 事件，非串流 endpoint 保留。
+- `api/departures.py`：`/api/departures/here` 與路線詳情；`GET /api/departures/stream` SSE 推播——ETA warmup loop（25 s）每次刷新 cache 後 `notify_snapshot_refreshed()` 喚醒連線推最新 snapshot，40 s fallback 自刷新兜底。
 - `api/route_plans.py`：`/api/route-plans` 與 `/api/kiosk`（含 direction）。
 - `api/moovo.py`：`/api/moovo/*`。
 - `api/asr.py`：Breeze ASR proxy（提供給文字模式與語音模組共用的辨識邏輯）。
@@ -44,7 +45,7 @@ backend/
 
 - `voice/pipeline.py`：Pipecat 語音管線組裝（SmallWebRTCTransport、VAD、中斷處理）與連線生命週期管理。
 - `voice/stt_breeze.py`：繼承 Pipecat `STTService`，搭配 VAD 收集完整語句後呼叫 ASR 轉文字。
-- `voice/agent_processor.py`：將原本的 `AgentSession` 封裝為 Pipecat 的 `FrameProcessor`，介接文字與語音的資料流。
+- `voice/agent_processor.py`：將原本的 `AgentSession` 封裝為 Pipecat 的 `FrameProcessor`，介接文字與語音的資料流。消費 `respond_in_session_stream` 逐 chunk 推 `TextFrame`——Pipecat TTS 句子聚合器在 LLM 還在生成時就開始逐句合成，首音延遲不再等完整回覆。
 - `voice/tts_taigi.py`：繼承 Pipecat `TTSService`，封裝原有的文字前處理與 Piper TTS，輸出 PCM 音訊流供 WebRTC 播放。
 
 ### Agent
@@ -87,7 +88,7 @@ frontend/
 ```
 
 - `App.vue`：Kiosk shell，控制首頁與路線規劃 view。
-- `features/departures/`：離站決策首頁、路線詳情、route colors、輪詢與顯示狀態。
+- `features/departures/`：離站決策首頁、路線詳情、route colors、顯示狀態。資料以 `EventSource`（`/api/departures/stream`）為主，斷線時自動降級為輪詢。
 - `features/route-planner/`：MapCN destination picker、路線規劃 request、指定時間 wheel；地圖顯示當前站牌名稱與方向。
 - `features/admin/`：後台站牌切換 UI（`/admin`）；地圖搜尋選站、方向設定、即時套用；無密碼保護，設定立即生效。
 - `features/agent-chat/`：PIP 對話 session 管理。整合 WebRTC 語音串流、打字動畫、與共用對話上下文 (Shared Session)，並保留 REST fallback 機制。

@@ -44,6 +44,9 @@ async def _eta_warmup_loop() -> None:
             await provider.fetch_eta_at_stop(stop_name)
         except Exception as exc:
             _log.warning("ETA cache warmup failed for %s: %s", stop_name, exc)
+        else:
+            # Cache is fresh — push the new snapshot to departure SSE clients.
+            notify_snapshot_refreshed()
         await asyncio.sleep(_ETA_WARMUP_INTERVAL)
 
 
@@ -52,6 +55,7 @@ from .asr import router as asr_router  # noqa: E402
 from .chat import router as chat_router  # noqa: E402
 from .chat import run_lock_purge_loop  # noqa: E402
 from .client_events import router as client_events_router  # noqa: E402
+from .departures import notify_snapshot_refreshed  # noqa: E402
 from .departures import router as departures_router  # noqa: E402
 from .moovo import router as moovo_router  # noqa: E402
 from .route_plans import router as route_plans_router  # noqa: E402
