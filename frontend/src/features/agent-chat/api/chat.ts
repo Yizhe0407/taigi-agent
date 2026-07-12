@@ -99,3 +99,22 @@ export async function deleteChatSession(sessionId: string): Promise<void> {
     // ignore — TTL will clean up
   }
 }
+
+/**
+ * Fire a session DELETE that survives page unload (`pagehide`/tab kill).
+ *
+ * `navigator.sendBeacon` can only issue POST, but the endpoint is DELETE and
+ * already idempotent, so we use `keepalive` fetch instead — it keeps the
+ * request in flight past document teardown without needing a POST-shaped alias
+ * on the backend. Best-effort: if it never lands, the server TTL reaps the row.
+ */
+export function deleteChatSessionBeacon(sessionId: string): void {
+  try {
+    void fetch(`${apiBaseUrl}/api/chat/sessions/${sessionId}`, {
+      method: "DELETE",
+      keepalive: true,
+    }).catch(() => {})
+  } catch {
+    // ignore — TTL will clean up
+  }
+}

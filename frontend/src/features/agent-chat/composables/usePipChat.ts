@@ -4,7 +4,6 @@ import {
   ref,
   type Ref,
   useTemplateRef,
-  watch,
 } from "vue"
 
 import { UI_FALLBACK_MESSAGES } from "@/lib/api-messages"
@@ -13,6 +12,7 @@ import {
   ChatApiError,
   createChatSession,
   deleteChatSession,
+  deleteChatSessionBeacon,
   sendChatMessageStream,
 } from "../api/chat"
 import type { PipChatMessage } from "../types"
@@ -25,9 +25,19 @@ function nextMessageId(): string {
   return `${Date.now()}-${messageCounter}`
 }
 
+/**
+ * Text-chat side of the PiP. The overlay drives its lifecycle explicitly
+ * (`ensureSession` on open, `endSession` on close) — this composable no longer
+ * watches `open` itself, so the teardown order lives in one place (see
+ * PipAgentOverlay's single open-watcher).
+ *
+ * `onActivity` is the shared idle-timer signal: every text interaction (typing,
+ * send, each streamed reply chunk) feeds the same `markActivity` the voice
+ * events use, so text and voice keep the PiP alive identically.
+ */
 export function usePipChat(
-  isOpen: Readonly<Ref<boolean>>,
   suppressTts: Readonly<Ref<boolean>> = ref(false),
+  onActivity: () => void = () => {},
 ) {
   const sessionId = ref<string | null>(null)
   const messages = ref<PipChatMessage[]>([])
@@ -119,10 +129,20 @@ export function usePipChat(
     }
   }
 
+  // Abort handle for the in-flight streamed reply — used by teardown so a
+  // closed PiP stops pulling SSE (and the backend discards the partial turn).
+  let streamAbort: AbortController | null = null
+
+  function abortStream() {
+    streamAbort?.abort()
+    streamAbort = null
+  }
+
   async function sendMessage() {
     const text = userInput.value.trim()
     if (!text || isSending.value) return
 
+    onActivity()
     await ensureSession()
     if (!sessionId.value) return
 
@@ -133,20 +153,29 @@ export function usePipChat(
 
     isSending.value = true
     const replyId = `${id}-reply`
+    streamAbort = new AbortController()
     try {
       // Reply streams into the chat bubble as the LLM generates it; the
       // avatar subtitle + TTS still use the full text so audio stays in sync.
-      const reply = await sendChatMessageStream(sessionId.value, text, (delta) => {
-        const bubble = messages.value.find(m => m.id === replyId)
-        if (bubble) bubble.text += delta
-        else messages.value.push({ id: replyId, role: "assistant", text: delta })
-        void scrollToBottom()
-      })
+      const reply = await sendChatMessageStream(
+        sessionId.value,
+        text,
+        (delta) => {
+          onActivity() // a live reply counts as activity — don't idle-close mid-stream
+          const bubble = messages.value.find(m => m.id === replyId)
+          if (bubble) bubble.text += delta
+          else messages.value.push({ id: replyId, role: "assistant", text: delta })
+          void scrollToBottom()
+        },
+        streamAbort.signal,
+      )
       if (!messages.value.some(m => m.id === replyId)) {
         messages.value.push({ id: replyId, role: "assistant", text: reply })
       }
       speakWithAnimation(reply)
     } catch (error) {
+      // Aborted by teardown — the PiP is closing, don't surface an error bubble.
+      if (error instanceof DOMException && error.name === "AbortError") return
       const message =
         error instanceof ChatApiError
           ? error.message
@@ -158,19 +187,24 @@ export function usePipChat(
       })
       void animateText(`（${message}）`)
     } finally {
+      streamAbort = null
       isSending.value = false
       await scrollToBottom()
     }
   }
 
   function handleKeydown(event: KeyboardEvent) {
+    onActivity() // any keystroke while typing keeps the PiP alive
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault()
       void sendMessage()
     }
   }
 
-  function reset() {
+  /** Tear down the text-chat session: stop the stream, drop local state, and
+   * DELETE the server session. The single close path (overlay) calls this. */
+  function endSession() {
+    abortStream()
     sessionGeneration++
     typewriterToken++
     displayedAgentText.value = ""
@@ -184,17 +218,20 @@ export function usePipChat(
     }
   }
 
-  watch(
-    isOpen,
-    (open) => {
-      if (open) void ensureSession()
-      else reset()
-    },
-    { immediate: true },
-  )
+  // Tab kill / navigation never runs the close path — keepalive DELETE is the
+  // only chance to free the server session before the document tears down.
+  function handlePageHide(event: PageTransitionEvent) {
+    // bfcache freeze is not a teardown — the page may come back with this
+    // sessionId still live on the client, so the server row must survive.
+    if (event.persisted) return
+    if (sessionId.value) deleteChatSessionBeacon(sessionId.value)
+  }
+  window.addEventListener("pagehide", handlePageHide)
 
   onBeforeUnmount(() => {
-    // Safety net if component unmounts without going through close path
+    window.removeEventListener("pagehide", handlePageHide)
+    // Safety net if the component unmounts without going through the close path.
+    abortStream()
     if (sessionId.value) void deleteChatSession(sessionId.value)
   })
 
@@ -208,9 +245,10 @@ export function usePipChat(
     clearDisplayedText,
     ttsState,
     mouthAmplitude,
-    cancelTts,
     ensureSession,
     sendMessage,
     handleKeydown,
+    abortStream,
+    endSession,
   }
 }
