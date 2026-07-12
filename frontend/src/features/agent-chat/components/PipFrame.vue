@@ -81,9 +81,9 @@ const borderClass = computed(() => {
 // feedback already) intentionally show nothing here.
 const statusChipText = computed(() => {
   switch (props.conversationState) {
-    case "connecting": return "連線中…"
-    case "userSpeaking": return "我咧聽…"
-    case "processing": return "辨識中…"
+    case "connecting": return "連線中"
+    case "userSpeaking": return "我咧聽"
+    case "processing": return "辨識中"
     case "error": return "連線斷去，請按結束閣開一擺"
     default: return null
   }
@@ -175,6 +175,9 @@ const statusChipText = computed(() => {
           </div>
           <template v-else-if="conversationState === 'processing'">
             <span v-for="i in 3" :key="i" class="pip-dot !bg-kiosk-accent !w-1.5 !h-1.5" :style="`animation-delay:${(i - 1) * 0.18}s`" />
+          </template>
+          <template v-else-if="conversationState === 'connecting'">
+            <span v-for="i in 3" :key="i" class="pip-dot !bg-kiosk-muted !w-1.5 !h-1.5" :style="`animation-delay:${(i - 1) * 0.18}s`" />
           </template>
           <span class="text-kiosk-ink text-[14px] font-bold">{{ statusChipText }}</span>
         </div>
