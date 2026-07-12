@@ -25,3 +25,9 @@
 - 根因：timer 只認 data channel 文字事件為「活動」，TTS 音訊走 media track 完全不觸發
 - 規則：設計 idle/watchdog timer 時先列舉「所有算活動的訊號」，音訊/串流這類非請求式通道要有顯式心跳（bot_speaking/bot_silent）
 - 證據：commit 609e54b
+
+## 2026-07-12 播放同步字幕做反：段「播畢」當成「起播」
+- 症狀：字幕在語音播完該段才成批冒出，體感嚴重落後
+- 根因：pipecat 預設 TTSTextFrame 排在該段音訊「之後」進實時佇列；查證回報寫「音訊已送出播放」，被解讀成起播，實為播畢
+- 規則：任何「與播放同步」的設計，規格必須明寫同步點是「起播」還是「播畢」，並在佇列順序層面確認 frame 在音訊前/後；相對時序類機制上線前先實測體感
+- 證據：commit 91b5d0a（SubtitleFrame 改排音訊前 + durationMs 逐字揭示）
