@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Iterator
-from difflib import get_close_matches
+from difflib import SequenceMatcher, get_close_matches
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
@@ -32,13 +32,38 @@ def _normalize_route_key(s: str) -> str:
     return to_halfwidth(s).rstrip("路").upper()
 
 
-def _weighted_route_edit_distance(a: str, b: str, *, sub_cost: float = 1.0, indel_cost: float = 2.0) -> float:
-    """Levenshtein distance with insertion/deletion costing more than substitution.
+# Digit pairs that speech recognition routinely confuses, so a substitution
+# between them is cheaper than an unrelated one and the true route outranks a
+# mere arithmetic neighbour. (The previous abs()-based tie-break pulled every
+# ambiguous "71xx" query toward the numerically central 7133.) Pairs, symmetric:
+# 1/7 (Mandarin yī/qī, Taiwanese it/chhit), 0/4 (4 的尾音 vs 十/零), 2/8, 6/9
+# (liù/jiǔ). Source: eval v5 route_digit_confusion failures R11/R13/R15.
+_DIGIT_CONFUSION = frozenset(frozenset(pair) for pair in ("17", "04", "28", "69"))
+_CONFUSED_SUB_COST = 0.4
+_TRANSPOSE_COST = 0.9  # adjacent digit swap ("7112"→"7121"), a common ASR reorder (R5)
 
-    Route-number ASR errors are almost always a same-position digit swap
-    ("7112"→"7132"), not a length change ("7112"→"711"). Weighting indel at
-    2x substitution keeps same-length numeric neighbors ranked ahead of
-    shorter/longer route codes regardless of how many digits differ.
+
+def _digit_sub_cost(a: str, b: str, base: float, *, leading: bool) -> float:
+    if a == b:
+        return 0.0
+    # Never discount the leading digit: it selects the route *series*
+    # (7xx vs 1xx), and discounting there made "702" resolve to 102 instead of
+    # 701 (eval v6 iter-1 regression on R3). Observed ASR digit confusions are
+    # all tail-position.
+    if not leading and frozenset((a, b)) in _DIGIT_CONFUSION:
+        return _CONFUSED_SUB_COST
+    return base
+
+
+def _weighted_route_edit_distance(a: str, b: str, *, sub_cost: float = 1.0, indel_cost: float = 2.0) -> float:
+    """Damerau-Levenshtein distance tuned for route-number ASR errors.
+
+    Route-number mis-hearings are same-length edits: a same-position digit swap
+    ("7112"→"7132"), an adjacent transposition ("7112"→"7121"), or a
+    phonetically-confused digit ("7134"→"7130", 0/4). Insertions/deletions cost
+    2x substitution so same-length neighbours rank ahead of shorter/longer
+    codes; confused-digit substitutions and transpositions cost <1 so the
+    phonetic target beats an equidistant but unrelated route.
     """
     n, m = len(a), len(b)
     dp = [[0.0] * (m + 1) for _ in range(n + 1)]
@@ -48,8 +73,13 @@ def _weighted_route_edit_distance(a: str, b: str, *, sub_cost: float = 1.0, inde
         dp[0][j] = j * indel_cost
     for i in range(1, n + 1):
         for j in range(1, m + 1):
-            cost = 0.0 if a[i - 1] == b[j - 1] else sub_cost
-            dp[i][j] = min(dp[i - 1][j] + indel_cost, dp[i][j - 1] + indel_cost, dp[i - 1][j - 1] + cost)
+            dp[i][j] = min(
+                dp[i - 1][j] + indel_cost,
+                dp[i][j - 1] + indel_cost,
+                dp[i - 1][j - 1] + _digit_sub_cost(a[i - 1], b[j - 1], sub_cost, leading=i == 1 and j == 1),
+            )
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                dp[i][j] = min(dp[i][j], dp[i - 2][j - 2] + _TRANSPOSE_COST)
     return dp[n][m]
 
 
@@ -110,6 +140,23 @@ def _name_matches(needle: str, hay: str) -> bool:
     return needle in hay or hay in needle
 
 
+def _resolve_forward_match(query: str, names: Iterable[str]) -> str | None:
+    """Canonical name for `query` among `names`, or None if not served here.
+
+    Forward-only (`query` a substring of the real name — e.g. missing-suffix
+    ASR errors like "西螺轉運" → "西螺轉運站"). Deliberately excludes the
+    reverse direction (`_name_matches`'s "real name is a substring of the
+    query"): a short, unrelated real stop like "虎尾" is a substring of
+    "虎尾科大" purely by prefix coincidence, and matching it directly
+    pre-empts the fuzzy-rescue path that would otherwise correctly rank the
+    actual target "虎尾科技大學" first. [eval E3] Ties (`query` is itself a
+    valid stop name, so several downstream names contain it as a substring)
+    go to the shortest match, i.e. the exact one.
+    """
+    forward = [n for n in names if query in n]
+    return min(forward, key=len) if forward else None
+
+
 def _token_jaccard(a_tokens: tuple[str, ...], b_tokens: tuple[str, ...]) -> float:
     """Set + adjacent-bigram Jaccard over arbitrary string tokens (chars or pinyin syllables)."""
     if not a_tokens or not b_tokens:
@@ -154,16 +201,34 @@ def _stop_similarity(a: str, b: str) -> float:
     return max(char_score, pinyin_score)
 
 
+def _core_pinyin_str(name: str) -> str:
+    core = tuple(c for c in name if c not in _STOP_SUFFIX)
+    return "".join(_pinyin_syllables(core))
+
+
+def _ordered_pinyin_ratio(a: str, b: str) -> float:
+    """Order-sensitive pinyin similarity (difflib ratio over syllable strings).
+
+    Used only to break ties between candidates the set-based Jaccard scores
+    identically: 林奈 vs 林內 and 大林 both share exactly one character with the
+    query, but 林內 (linnei) keeps the query's syllable *order* (linnai) while
+    大林 (dalin) reverses it — this ratio prefers 林內. Eval case D5.
+    """
+    return SequenceMatcher(None, _core_pinyin_str(a), _core_pinyin_str(b)).ratio()
+
+
 def _fuzzy_candidates(destination: str, stop_names: set[str]) -> list[tuple[str, float]]:
     """Return (name, score) pairs sorted by similarity, score > 0.25 only.
 
     Threshold is low: ASR mis-hearing 1-2 characters in a 3-character stop
     name can drop the charset Jaccard score to as low as 0.2-0.33, so 0.35
     would exclude the very mis-hearings this rescue path exists to catch.
+    Ties in the (order-insensitive) Jaccard score are broken by ordered pinyin
+    similarity so a same-order homophone outranks a reordered one.
     """
-    scored = [(name, _stop_similarity(destination, name)) for name in stop_names if name != destination]
-    scored.sort(key=lambda x: -x[1])
-    return [(name, score) for name, score in scored if score > 0.25]
+    scored = [(name, _stop_similarity(destination, name), _ordered_pinyin_ratio(destination, name)) for name in stop_names if name != destination]
+    scored.sort(key=lambda x: (-x[1], -x[2]))
+    return [(name, score) for name, score, _ in scored if score > 0.25]
 
 
 def _as_int(value: object) -> int | None:

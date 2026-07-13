@@ -27,12 +27,21 @@ from telemetry import configure_telemetry
 
 _GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 _GROQ_DEFAULT_MODEL = "qwen/qwen3-32b"
+# Anti-degeneration sampling. On confirmation turns ("對") Qwen3.5-4B loops the
+# same 1-2 sentences separated by blank lines until timeout; stopping at the
+# first blank line ends the turn after the (complete, ≤2-sentence) first block,
+# and max_tokens is the backstop when no blank line appears. Do NOT add
+# repetition/frequency penalties here: llama.cpp applies them over a context
+# window that includes the prompt tail, which corrupts tool-call JSON
+# (penalized closing quote → 500s) and punishes the verbatim tool-text copying
+# this agent's renderers rely on. [eval v5 hole #2]
+_SAMPLING = {"max_tokens": 200, "stop": ["\n\n"]}
 # Local Qwen3 endpoints (vLLM / llama.cpp) read this to suppress thinking tokens.
 # Confirmed accepted by llama-server's OpenAI endpoint (returns 200, thinking off).
-_LOCAL_EXTRA_BODY = {"chat_template_kwargs": {"enable_thinking": False}}
+_LOCAL_EXTRA_BODY = {"chat_template_kwargs": {"enable_thinking": False}, **_SAMPLING}
 # Groq qwen3-32b emits <think>...</think> reasoning by default; hiding it
 # saves the reasoning tokens' latency on every tool-call round.
-_GROQ_EXTRA_BODY = {"reasoning_format": "hidden"}
+_GROQ_EXTRA_BODY = {"reasoning_format": "hidden", **_SAMPLING}
 
 
 def parse_cors_origins() -> list[str]:

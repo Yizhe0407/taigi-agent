@@ -15,6 +15,7 @@ from services.departures.normalize import (
     _fuzzy_candidates,
     _lookup_route,
     _name_matches,
+    _resolve_forward_match,
     _route_candidates,
     _stops_by_direction_with_seq,
 )
@@ -47,9 +48,16 @@ class _RouteMiss:
     candidates: list[str]
 
 
-def _rescue_prefix(heard: str, best: str) -> str:
-    """Prefix that turns an auto-resolved candidate result into a confirmation cue."""
-    return f"你問的「{heard}」查無，最接近的是「{best}」。{best}的狀態："
+def _rescue_prefix(best: str) -> str:
+    """Confirmation cue for an auto-resolved ASR-rescue candidate.
+
+    Deliberately never restates the mis-heard original: a compressive
+    downstream model (Qwen3.5-4B) treats a repeated original term as license
+    to echo it back in its final reply instead of the resolved canonical name
+    `best` (eval E3 「虎尾科大」→虎尾科技大學 collapsed back to the mis-heard
+    form; eval R9 "YO2"→Y02 likewise). `best` is the sentence's sole subject.
+    """
+    return f"最接近的是「{best}」。{best}的狀態："
 
 
 def _is_real_status(text: str) -> bool:
@@ -59,7 +67,7 @@ def _is_real_status(text: str) -> bool:
     legitimate negative answer ("沒有，201 不停X。") starts with it, and the
     two miss-message templates are already caught by the "本站沒有" prefix.
     """
-    return text != _QUERY_FAILED and not text.startswith(("你問的", "本站沒有", "查無", "路線 "))
+    return text != _QUERY_FAILED and not text.startswith(("本站沒有", "查無", "路線 "))
 
 
 def _mark_incoming(status_text: str) -> str:
@@ -136,7 +144,7 @@ async def render_arrivals(
             best = resolved.candidates[0]
             inner = await render_arrivals(best, stop_name, go_back, _rescue=False)
             if _is_real_status(inner):
-                return f"{_rescue_prefix(route, best)}\n{inner}"
+                return f"{_rescue_prefix(best)}\n{inner}"
         return _miss_to_str(resolved)
     if isinstance(resolved, str):
         return resolved
@@ -206,7 +214,7 @@ async def render_route_stops(route: str, stop_name: str, *, _rescue: bool = True
             best = resolved.candidates[0]
             inner = await render_route_stops(best, stop_name, _rescue=False)
             if _is_real_status(inner):
-                return f"{_rescue_prefix(route, best)}\n{inner}"
+                return f"{_rescue_prefix(best)}\n{inner}"
         return _miss_to_str(resolved)
     if isinstance(resolved, str):
         return resolved
@@ -249,7 +257,7 @@ async def render_stop_on_route(
             best = resolved.candidates[0]
             inner = await render_stop_on_route(best, stop_name, kiosk_stop, _rescue=False)
             if _is_real_status(inner):
-                return f"{_rescue_prefix(route, best)}\n{inner}"
+                return f"{_rescue_prefix(best)}\n{inner}"
         return _miss_to_str(resolved)
     if isinstance(resolved, str):
         return resolved
@@ -274,17 +282,25 @@ def _dest_arrival_text(
     destination: str,
     now: datetime,
 ) -> str:
-    """Build ', 預計 HH:MM 抵達X（車程約N分鐘）' suffix, or ', 共N站' fallback."""
+    """Build ', 預計 HH:MM 抵達X（車程約N分鐘）' suffix, or '' when unknowable.
+
+    Emitted only when the kiosk row itself has a live estimate AND the
+    destination's estimate is later: TDX stop ETAs are per-stop "next bus",
+    so when the kiosk bus hasn't departed the destination row belongs to an
+    *earlier* trip already past the kiosk — quoting it produces impossible
+    replies like「預計22:46發車，22:37抵達」. [eval v6 case D9]
+
+    `destination` here must already be the resolved canonical stop name
+    (caller's job) — quoting the raw user query would print an abbreviated
+    or mis-heard form back at the rider instead of the real stop name.
+    """
     if dest_rows:
         dest_est = dest_rows[0].get("estimate_seconds")
-        if dest_est is not None:
+        kiosk_est = kiosk_row.get("estimate_seconds")
+        if dest_est is not None and kiosk_est is not None and dest_est > kiosk_est:
             dest_arrival = now + timedelta(seconds=dest_est)
-            kiosk_est = kiosk_row.get("estimate_seconds")
-            travel_str = ""
-            if kiosk_est is not None and dest_est > kiosk_est:
-                travel_min = round((dest_est - kiosk_est) / 60)
-                travel_str = f"，車程約 {travel_min} 分鐘"
-            return f"，預計 {dest_arrival.strftime('%H:%M')} 抵達{destination}{travel_str}"
+            travel_min = round((dest_est - kiosk_est) / 60)
+            return f"，預計 {dest_arrival.strftime('%H:%M')} 抵達{destination}，車程約 {travel_min} 分鐘"
 
     return ""
 
@@ -298,19 +314,24 @@ async def _check_route_arrivals(
     destination: str,
     route_info: dict,
     now: datetime,
-) -> tuple[list[tuple[str, int, DepartureSection]], set[str]]:
-    """Fetch estimate for one route; return (hits, all_downstream_stop_names).
+) -> tuple[list[tuple[str, int, DepartureSection]], set[str], str | None]:
+    """Fetch estimate for one route; return (hits, all_downstream_stop_names, canonical_dest).
 
     hits: list of (display_text, sort_minutes, section).
     all_downstream: union of all downstream stop names seen (used for fuzzy remap).
+    canonical_dest: the real stop name `destination` resolved to here (see
+    `_resolve_forward_match`), or None if this route doesn't serve it — callers
+    use it instead of the raw, possibly abbreviated/mis-heard `destination`
+    string when building rider-facing text. [eval E3/E4/E8]
     """
     try:
         data = await provider.fetch_route_estimate(route_id)
     except Exception:
-        return [], set()
+        return [], set(), None
 
     hits: list[tuple[str, int, DepartureSection]] = []
     all_downstream: set[str] = set()
+    canonical_dest: str | None = None
     for direction, stops in _stops_by_direction_with_seq(data).items():
         if go_back is not None and direction != go_back:
             continue
@@ -318,8 +339,10 @@ async def _check_route_arrivals(
         if downstream is None:
             continue
         all_downstream.update(downstream)
-        if not any(_name_matches(destination, n) for n in downstream):
+        canonical = _resolve_forward_match(destination, downstream)
+        if canonical is None:
             continue
+        canonical_dest = canonical
 
         dir_label = _direction_label_from_info(route_info, route_name, direction)
         if _name_matches(kiosk_stop, dir_label.removeprefix("往")):
@@ -338,15 +361,15 @@ async def _check_route_arrivals(
             dest_rows = [
                 row
                 for row in data
-                if _name_matches(destination, row.get("stop_name", "")) and row.get("direction") == direction and (row.get("stop_sequence") or 0) >= kiosk_seq
+                if _name_matches(canonical, row.get("stop_name", "")) and row.get("direction") == direction and (row.get("stop_sequence") or 0) >= kiosk_seq
             ]
             dest_rows = _dedup_stop_rows_by_direction(dest_rows)
-            dest_suffix = _dest_arrival_text(dest_rows, kiosk_rows[0], destination, now)
+            dest_suffix = _dest_arrival_text(dest_rows, kiosk_rows[0], canonical, now)
             hits.append((f"{route_name} {dir_label}：{status_text}{dest_suffix}", c.sort_minutes, c.section))
         else:
             hits.append((f"{route_name} {dir_label}：無即時資料", 9999, DepartureSection.UNKNOWN))
 
-    return hits, all_downstream
+    return hits, all_downstream, canonical_dest
 
 
 async def render_arrivals_to_destination(
@@ -379,14 +402,23 @@ async def render_arrivals_to_destination(
     # causes 429 storms when cache is cold.
     sem = asyncio.Semaphore(3)
 
-    async def _guarded(name: str, rid: str) -> tuple[list[tuple[str, int, DepartureSection]], set[str]]:
+    async def _guarded(name: str, rid: str) -> tuple[list[tuple[str, int, DepartureSection]], set[str], str | None]:
         async with sem:
             return await _check_route_arrivals(name, rid, provider, kiosk_stop, go_back, destination, route_info, now)
 
     tasks_guarded = [_guarded(name, rid) for name, rid in valid if rid]
     results = await asyncio.gather(*tasks_guarded)
-    raw = [item for hits, _ in results for item in hits]
-    all_stops = {name for _, stops in results for name in stops}
+    raw = [item for hits, _, _ in results for item in hits]
+    all_stops = {name for _, stops, _ in results for name in stops}
+    # Real stop name `destination` resolved to (see `_resolve_forward_match`) —
+    # used in rider-facing text below instead of a possibly abbreviated or
+    # mis-heard `destination` string. Different routes can resolve to
+    # differently-specific real names sharing the same prefix (a route ending
+    # at "北港朝天宮" vs one continuing through bare "北港") — shortest wins,
+    # same exact-match-preferred tie-break as `_resolve_forward_match` itself.
+    # Falls back to `destination` when `raw` is empty (nothing resolved).
+    canonical_candidates = {c for _, _, c in results if c}
+    canonical = min(canonical_candidates, key=len) if canonical_candidates else destination
 
     if not raw:
         candidates = [name for name, _ in _fuzzy_candidates(destination, all_stops)]
@@ -394,17 +426,24 @@ async def render_arrivals_to_destination(
             best = candidates[0]
             inner = await render_arrivals_to_destination(best, kiosk_stop, go_back, _rescue=False)
             if _is_real_status(inner):
-                return f"{_rescue_prefix(destination, best)}\n{inner}"
+                return f"{_rescue_prefix(best)}\n{inner}"
         if candidates:
             return f"本站沒有直達「{destination}」的路線。相近站名：{'、'.join(candidates[:5])}。"
         return f"本站沒有直達「{destination}」的路線。"
 
     raw.sort(key=lambda x: x[1])
     # Return only the highest-priority group so LLM sees one consistent situation.
-    for section in (DepartureSection.AVAILABLE, DepartureSection.NOT_DEPARTED, DepartureSection.LAST_DEPARTED):
+    for section in (DepartureSection.AVAILABLE, DepartureSection.NOT_DEPARTED):
         group = [d for d, _, s in raw if s == section]
         if group:
             return "\n".join(group)
+    # Every serving route has run its last bus today. Collapse the per-route
+    # "末班駛離" lines into one closed conclusion the LLM can only copy: the 4B
+    # was re-reading the granular list as 無直達 (route doesn't exist),
+    # conflating "no bus left today" with "no such route". The wording avoids
+    # 沒有 so it can't slip back into the 無直達 template. [eval v5 hole #1]
+    if any(s == DepartureSection.LAST_DEPARTED for _, _, s in raw):
+        return f"去{canonical}的公車今天班次都跑完了，末班已經開走囉。"
     return "\n".join(d for d, _, __ in raw)
 
 

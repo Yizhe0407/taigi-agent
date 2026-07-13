@@ -30,6 +30,7 @@ class FakeBusProvider(BusProvider):
         route_info: dict[str, dict] | None = None,
         eta_at_stop: list[dict] | None = None,
         route_estimate: list[dict] | None = None,
+        route_estimate_by_id: dict[str, list[dict]] | None = None,
         routes_at_stop: list[dict] | None = None,
         eta_error: Exception | None = None,
         route_estimate_error: Exception | None = None,
@@ -37,6 +38,10 @@ class FakeBusProvider(BusProvider):
         self._route_info = route_info or {}
         self._eta_at_stop = eta_at_stop or []
         self._route_estimate = route_estimate or []
+        # Per-route override for tests where different routes must expose
+        # different stop sequences (e.g. one route terminating at a landmark,
+        # another continuing through the plain town stop past it).
+        self._route_estimate_by_id = route_estimate_by_id or {}
         self._routes_at_stop = routes_at_stop or []
         self._eta_error = eta_error
         self._route_estimate_error = route_estimate_error
@@ -52,6 +57,8 @@ class FakeBusProvider(BusProvider):
     async def fetch_route_estimate(self, sub_route_name: str) -> list[dict]:
         if self._route_estimate_error is not None:
             raise self._route_estimate_error
+        if sub_route_name in self._route_estimate_by_id:
+            return self._route_estimate_by_id[sub_route_name]
         return self._route_estimate
 
     async def load_route_info(self, stop_name: str) -> dict[str, dict]:
@@ -444,6 +451,10 @@ def test_render_arrivals_mishearing_auto_resolves_top_candidate(use_provider):
     assert "最接近的是「7126」" in result
     assert "分鐘後" not in result  # no fabricated ETA leaked in
     assert "本站沒有路線" not in result  # took the auto-resolve path, not the fallback
+    # The mis-heard route number must not be restated: a compressive downstream
+    # model treats a repeated original term as license to echo it back instead
+    # of the resolved canonical route (eval R9 "YO2"→Y02).
+    assert "7226" not in result
 
 
 # ── render_arrivals_to_destination ───────────────────────────────────────────
@@ -467,6 +478,47 @@ def test_render_arrivals_to_destination_returns_all_sorted(use_provider):
     assert "201" in result
     assert "301" in result
     assert "八分" in result
+
+
+def test_render_arrivals_to_destination_no_dest_eta_when_kiosk_not_departed(use_provider):
+    """Kiosk row 未發車 but the destination row carries an ETA from an *earlier*
+    trip already past the kiosk — quoting it yields impossible replies like
+    「預計22:46發車，22:37抵達」. The 抵達 suffix must be suppressed. Eval v6 case D9.
+    """
+    use_provider(
+        FakeBusProvider(
+            route_info={"201": {"id": "201", "go_dest": "高鐵雲林站", "back_dest": "雲林科技大學"}},
+            route_estimate=[
+                {"direction": 0, "stop_sequence": 1, "stop_name": "雲林科技大學", "stop_status": 1, "estimate_seconds": None},
+                {"direction": 0, "stop_sequence": 2, "stop_name": "高鐵雲林站", "stop_status": 0, "estimate_seconds": 300},
+            ],
+        )
+    )
+    result = asyncio.run(departures.render_arrivals_to_destination("高鐵雲林站", "雲林科技大學"))
+    assert "未發車" in result
+    assert "抵達" not in result
+
+
+def test_render_arrivals_to_destination_all_last_departed_single_conclusion(use_provider):
+    """Routes serve the destination but every one has run its last bus.
+
+    The reply must be one closed 末班 conclusion — never the per-route list and
+    never the 沒有直達 (no such route) template — so the 4B can't misread
+    "last bus gone" as "route doesn't exist". Eval v5 hole #1 (C1/C2/C5, D3, E3/E4/E7/E8).
+    """
+    use_provider(
+        FakeBusProvider(
+            route_info={"7700": {"id": "7700", "go_dest": "北港", "back_dest": "雲林科技大學"}},
+            route_estimate=[
+                {"direction": 0, "stop_sequence": 1, "stop_name": "雲林科技大學", "stop_status": 3, "estimate_seconds": None},
+                {"direction": 0, "stop_sequence": 2, "stop_name": "北港", "stop_status": 3, "estimate_seconds": None},
+            ],
+        )
+    )
+    result = asyncio.run(departures.render_arrivals_to_destination("北港", "雲林科技大學"))
+    assert result == "去北港的公車今天班次都跑完了，末班已經開走囉。"
+    assert "沒有直達" not in result
+    assert "7700" not in result
 
 
 def test_render_arrivals_to_destination_no_routes(use_provider):
@@ -515,6 +567,78 @@ def test_render_arrivals_to_destination_no_routes_with_fuzzy_candidate(use_provi
     # returns its real ETA behind a confirmation prefix (no fabricated time).
     assert "最接近的是「斗六火車站」" in result
     assert "201" in result
+
+
+def test_render_arrivals_to_destination_direct_match_uses_canonical_name(use_provider):
+    """Abbreviated/truncated destination that still substring-matches a real
+    stop must report the real stop name, not the rider's raw wording, in the
+    末班 collapse sentence. Eval E4 "西螺轉運"→西螺轉運站, E8 "古坑鄉公"→古坑鄉公所.
+    """
+    use_provider(
+        FakeBusProvider(
+            route_info={"7000D": {"id": "7000D", "go_dest": "西螺轉運站", "back_dest": "雲林科技大學"}},
+            route_estimate=[
+                {"direction": 0, "stop_sequence": 1, "stop_name": "雲林科技大學", "stop_status": 3, "estimate_seconds": None},
+                {"direction": 0, "stop_sequence": 2, "stop_name": "西螺轉運站", "stop_status": 3, "estimate_seconds": None},
+            ],
+        )
+    )
+    result = asyncio.run(departures.render_arrivals_to_destination("西螺轉運", "雲林科技大學"))
+    assert result == "去西螺轉運站的公車今天班次都跑完了，末班已經開走囉。"
+
+
+def test_render_arrivals_to_destination_rejects_reverse_substring_match(use_provider):
+    """A short, unrelated real stop must not swallow a longer, more specific
+    query merely because it's a prefix of it — that pre-empts the fuzzy-rescue
+    path, which correctly ranks the actual target instead. Eval E3: "虎尾科大"
+    (mis-hearing of 虎尾科技大學) must not resolve to the unrelated "虎尾" stop
+    just because "虎尾" ⊂ "虎尾科大".
+    """
+    use_provider(
+        FakeBusProvider(
+            route_info={"7123": {"id": "7123", "go_dest": "虎尾科技大學", "back_dest": "雲林科技大學"}},
+            route_estimate=[
+                {"direction": 0, "stop_sequence": 1, "stop_name": "雲林科技大學", "stop_status": 3, "estimate_seconds": None},
+                {"direction": 0, "stop_sequence": 2, "stop_name": "虎尾", "stop_status": 3, "estimate_seconds": None},
+                {"direction": 0, "stop_sequence": 3, "stop_name": "虎尾科技大學", "stop_status": 3, "estimate_seconds": None},
+            ],
+        )
+    )
+    result = asyncio.run(departures.render_arrivals_to_destination("虎尾科大", "雲林科技大學"))
+    assert "最接近的是「虎尾科技大學」" in result
+    assert "去虎尾科技大學的公車今天班次都跑完了" in result
+    assert "「虎尾」" not in result
+
+
+def test_render_arrivals_to_destination_canonical_prefers_more_specific_route(use_provider):
+    """Different routes can resolve the same query to differently-specific real
+    names sharing a prefix (a shuttle terminating at a landmark vs a local
+    route continuing through the plain town stop past it) — the shortest
+    (most exact) resolved name wins, not whichever route's async task settles
+    first. Eval D3/C2: querying "北港" must report "北港", never "北港朝天宮",
+    even when a landmark-only route resolves first.
+    """
+    use_provider(
+        FakeBusProvider(
+            route_info={
+                "Y02": {"id": "Y02", "go_dest": "北港朝天宮", "back_dest": "雲林科技大學"},
+                "7123": {"id": "7123", "go_dest": "北港", "back_dest": "雲林科技大學"},
+            },
+            route_estimate_by_id={
+                "Y02": [
+                    {"direction": 0, "stop_sequence": 1, "stop_name": "雲林科技大學", "stop_status": 3, "estimate_seconds": None},
+                    {"direction": 0, "stop_sequence": 2, "stop_name": "北港朝天宮", "stop_status": 3, "estimate_seconds": None},
+                ],
+                "7123": [
+                    {"direction": 0, "stop_sequence": 1, "stop_name": "雲林科技大學", "stop_status": 3, "estimate_seconds": None},
+                    {"direction": 0, "stop_sequence": 2, "stop_name": "北港", "stop_status": 3, "estimate_seconds": None},
+                    {"direction": 0, "stop_sequence": 3, "stop_name": "北港朝天宮", "stop_status": 3, "estimate_seconds": None},
+                ],
+            },
+        )
+    )
+    result = asyncio.run(departures.render_arrivals_to_destination("北港", "雲林科技大學"))
+    assert result == "去北港的公車今天班次都跑完了，末班已經開走囉。"
 
 
 # ── geo-awareness ────────────────────────────────────────────────────────────

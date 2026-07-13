@@ -36,4 +36,12 @@ def test_settings_groq_api_key_satisfies_requirement(monkeypatch):
     assert s.llm_base_url == "https://api.groq.com/openai/v1"
     assert s.llm_model == "qwen/qwen3-32b"
     assert s.llm_api_key == "gsk_test"
-    assert s.llm_extra_body == {"reasoning_format": "hidden"}
+    assert s.llm_extra_body["reasoning_format"] == "hidden"
+    # Anti-degeneration sampling merged into every backend's extra_body.
+    assert s.llm_extra_body["max_tokens"] == 200
+    assert s.llm_extra_body["stop"] == ["\n\n"]
+    # Guard: repetition penalties must never come back — llama.cpp's penalty
+    # window includes the prompt tail, which corrupts tool-call JSON and
+    # punishes the verbatim tool-text copying the renderers depend on.
+    assert "frequency_penalty" not in s.llm_extra_body
+    assert "repeat_penalty" not in s.llm_extra_body

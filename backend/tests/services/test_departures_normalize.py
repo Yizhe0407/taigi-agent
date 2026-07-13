@@ -83,3 +83,45 @@ def test_route_candidates_numeric_does_not_regress_existing_case():
 def test_route_candidates_non_numeric_query_unaffected():
     """Non-numeric queries still use the original difflib path, unchanged."""
     assert _route_candidates("ABCDE", ["201", "701"]) == []
+
+
+# ── digit-confusion + transposition: fix systematic pull toward 7133 ───────────
+
+
+def test_route_candidates_confused_digit_beats_arithmetic_neighbor():
+    """7134→7130 (0/4 confusion). Both 7130 and 7133 are one same-position edit
+    away, but the old abs()-tie-break picked the numerically closer 7133. The
+    0/4 confusion discount must now rank 7130 first. Eval case R13."""
+    assert _route_candidates("7134", ["7130", "7133"])[0] == "7130"
+
+
+def test_route_candidates_confused_digit_2_8():
+    """7183→7123 (2/8 confusion) must outrank 7133. Eval case R15."""
+    assert _route_candidates("7183", ["7123", "7133"])[0] == "7123"
+
+
+def test_route_candidates_confused_digit_1_7():
+    """7137→7131 (1/7 confusion) must outrank the arithmetically closer 7138. Eval case R11."""
+    assert _route_candidates("7137", ["7131", "7138"])[0] == "7131"
+
+
+def test_route_candidates_transposition_beats_substitution():
+    """7112→7121 is an adjacent digit swap (one transposition) and must outrank
+    7122 (one plain substitution). Eval case R5."""
+    assert _route_candidates("7112", ["7121", "7122"])[0] == "7121"
+
+
+def test_route_candidates_no_confusion_discount_on_leading_digit():
+    """702→701, not 102: the 1/7 discount must not apply to the leading digit,
+    which selects the route series. Eval case R3 (v6 iter-1 regression)."""
+    assert _route_candidates("702", ["701", "102"])[0] == "701"
+
+
+# ── fuzzy stop tie-break: ordered pinyin resolves equal-Jaccard candidates ─────
+
+
+def test_fuzzy_candidates_prefers_same_order_homophone():
+    """林奈→林內, not 大林: all three share one character (Jaccard tie), but 林內
+    keeps the query's syllable order (linnai→linnei) while 大林 reverses it. D5."""
+    candidates = _fuzzy_candidates("林奈", {"林內", "大林", "西螺"})
+    assert candidates[0][0] == "林內"
