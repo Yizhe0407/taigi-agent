@@ -31,3 +31,9 @@
 - 根因：pipecat 預設 TTSTextFrame 排在該段音訊「之後」進實時佇列；查證回報寫「音訊已送出播放」，被解讀成起播，實為播畢
 - 規則：任何「與播放同步」的設計，規格必須明寫同步點是「起播」還是「播畢」，並在佇列順序層面確認 frame 在音訊前/後；相對時序類機制上線前先實測體感
 - 證據：commit 91b5d0a（SubtitleFrame 改排音訊前 + durationMs 逐字揭示）
+
+## 2026-07-13 subagent 起背景長跑後停 turn 等不到通知（兩次踩雷）
+- 症狀：subagent 用 run_in_background 起 eval/批次腳本後結束 turn，回報「等通知後繼續」，實際永遠不會被叫醒，任務停在半路
+- 根因：subagent 的背景 bash 完成通知不可靠（或其 Monitor 語意與主線不同），停 turn = 任務死掉，要靠指揮官手動 SendMessage 推
+- 規則：派長跑任務（eval、批次、多分鐘腳本）的 prompt 必須寫死「同步輪詢到完成再回報，不要結束 turn 等背景通知」；指揮官收到「等通知中」的中間回報一律立刻推一次
+- 證據：2026-07-12 ASR eval agent 停在 13/20、2026-07-13 eval 重跑 agent 停在剛起跑，皆需 SendMessage 推才完成
