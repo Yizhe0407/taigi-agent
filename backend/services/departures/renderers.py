@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from providers.bus import BusProvider
@@ -38,6 +39,29 @@ _SECTION_GROUP_LABEL: dict[DepartureSection, str] = {
 }
 
 
+@dataclass
+class _RouteMiss:
+    """Route not found at this stop, with ASR-rescue candidates (ranked, may be empty)."""
+
+    route: str
+    candidates: list[str]
+
+
+def _rescue_prefix(heard: str, best: str) -> str:
+    """Prefix that turns an auto-resolved candidate result into a confirmation cue."""
+    return f"你問的「{heard}」查無，最接近的是「{best}」。{best}的狀態："
+
+
+def _is_real_status(text: str) -> bool:
+    """True when a render result carries actual arrival status (not an error / miss).
+
+    Bare "沒有" is deliberately *not* excluded here: `render_stop_on_route`'s
+    legitimate negative answer ("沒有，201 不停X。") starts with it, and the
+    two miss-message templates are already caught by the "本站沒有" prefix.
+    """
+    return text != _QUERY_FAILED and not text.startswith(("你問的", "本站沒有", "查無", "路線 "))
+
+
 def _mark_incoming(status_text: str) -> str:
     """Relative-time ETA (ends with 後) → append 到這站. Anchors the arrival to a
     *place* (這站 = here) so it contrasts with 抵達{destination} rather than both
@@ -57,18 +81,16 @@ async def _resolve_route_estimate(
     stop_name: str,
     *,
     fuzzy: bool = False,
-) -> tuple[dict, list[dict]] | str:
+) -> tuple[dict, list[dict]] | _RouteMiss | str:
     """Shared prologue for single-route renderers.
 
-    Returns (route_info, estimate_data) on success, or a user-facing error
-    string. `fuzzy` uses loose route-key matching (`_lookup_route`); otherwise
-    exact dict lookup. When the route isn't found, the error lists up to 5
-    routes actually serving `stop_name` (from `route_info`, already fetched —
-    no extra HTTP round-trip) ranked by name similarity to `route`, so the
-    LLM can pick a phonetically close match and retry — this is the ASR
-    mis-hearing rescue path. A full route-name dump was tried in production
-    and caused the LLM to read the entire list back to the user instead of
-    picking one, hence the top-5 cap.
+    Returns (route_info, estimate_data) on success, `_RouteMiss` when the route
+    isn't served here (carrying similarity-ranked ASR-rescue candidates from the
+    already-fetched `route_info` — no extra HTTP round-trip), or an error string
+    on provider failure. `fuzzy` uses loose route-key matching (`_lookup_route`);
+    otherwise exact dict lookup. Callers decide how to handle a miss:
+    `render_arrivals` auto-resolves the top candidate (see there); the others
+    stringify it via `_miss_to_str`.
     """
     provider = get_provider()
     route_info = await _safe_provider_call(provider.load_route_info(stop_name))
@@ -78,11 +100,7 @@ async def _resolve_route_estimate(
     info = _lookup_route(route_info, route) if fuzzy else route_info.get(route)
     route_id = info.get("id") if info is not None else None
     if not route_id:
-        candidates = _route_candidates(route, route_info)
-        if candidates:
-            top = "、".join(candidates)
-            return f"本站沒有路線 {route}。相近路線：{top}。"
-        return f"本站沒有路線 {route}。"
+        return _RouteMiss(route, _route_candidates(route, route_info))
 
     data = await _safe_provider_call(provider.fetch_route_estimate(route_id))
     if data is None:
@@ -90,13 +108,36 @@ async def _resolve_route_estimate(
     return route_info, data
 
 
+def _miss_to_str(miss: _RouteMiss) -> str:
+    if miss.candidates:
+        return f"本站沒有路線 {miss.route}。相近路線：{'、'.join(miss.candidates)}。"
+    return f"本站沒有路線 {miss.route}。"
+
+
 async def render_arrivals(
     route: str,
     stop_name: str,
     go_back: int | None = None,
+    *,
+    _rescue: bool = True,
 ) -> str:
-    """Render `route` arrivals at `stop_name` as a kiosk-style string."""
+    """Render `route` arrivals at `stop_name` as a kiosk-style string.
+
+    ASR-rescue: on a mis-heard route (`_RouteMiss`) the renderer *itself*
+    re-queries the top-ranked candidate and returns its real status behind a
+    confirmation prefix. Qwen3.5-4B will not issue a second tool call on a text
+    instruction — it fabricates an ETA instead — so resolving here is the only
+    reliable way to keep the confirmation sentence truthful. `_rescue=False`
+    guards the one-hop recursion.
+    """
     resolved = await _resolve_route_estimate(route, stop_name, fuzzy=True)
+    if isinstance(resolved, _RouteMiss):
+        if _rescue and resolved.candidates:
+            best = resolved.candidates[0]
+            inner = await render_arrivals(best, stop_name, go_back, _rescue=False)
+            if _is_real_status(inner):
+                return f"{_rescue_prefix(route, best)}\n{inner}"
+        return _miss_to_str(resolved)
     if isinstance(resolved, str):
         return resolved
     route_info, data = resolved
@@ -152,9 +193,21 @@ async def render_stop_arrival_statuses(
     return "\n".join(results)
 
 
-async def render_route_stops(route: str, stop_name: str) -> str:
-    """Render the full stop sequence (both directions) of `route`."""
+async def render_route_stops(route: str, stop_name: str, *, _rescue: bool = True) -> str:
+    """Render the full stop sequence (both directions) of `route`.
+
+    ASR-rescue mirrors `render_arrivals`: on a mis-heard route the renderer
+    re-queries the top-ranked candidate itself and returns its real stop list
+    behind a confirmation prefix. `_rescue=False` guards the one-hop recursion.
+    """
     resolved = await _resolve_route_estimate(route, stop_name)
+    if isinstance(resolved, _RouteMiss):
+        if _rescue and resolved.candidates:
+            best = resolved.candidates[0]
+            inner = await render_route_stops(best, stop_name, _rescue=False)
+            if _is_real_status(inner):
+                return f"{_rescue_prefix(route, best)}\n{inner}"
+        return _miss_to_str(resolved)
     if isinstance(resolved, str):
         return resolved
     route_info, data = resolved
@@ -176,14 +229,28 @@ async def render_stop_on_route(
     route: str,
     stop_name: str,
     kiosk_stop: str,
+    *,
+    _rescue: bool = True,
 ) -> str:
     """Return a yes/no string: can you reach stop_name from kiosk on this route?
 
     Geo-aware: only directions where stop_name appears at or after the kiosk's
     position in the stop sequence count as 有. Substring matching so aliases
     like '斗六' match '斗六火車站'. LLM reads result verbatim.
+
+    ASR-rescue mirrors `render_arrivals`: on a mis-heard route the renderer
+    re-queries the top-ranked candidate itself and returns its real 有/沒有
+    answer behind a confirmation prefix. `_rescue=False` guards the one-hop
+    recursion.
     """
     resolved = await _resolve_route_estimate(route, kiosk_stop)
+    if isinstance(resolved, _RouteMiss):
+        if _rescue and resolved.candidates:
+            best = resolved.candidates[0]
+            inner = await render_stop_on_route(best, stop_name, kiosk_stop, _rescue=False)
+            if _is_real_status(inner):
+                return f"{_rescue_prefix(route, best)}\n{inner}"
+        return _miss_to_str(resolved)
     if isinstance(resolved, str):
         return resolved
     route_info, data = resolved
@@ -286,6 +353,8 @@ async def render_arrivals_to_destination(
     destination: str,
     kiosk_stop: str,
     go_back: int | None = None,
+    *,
+    _rescue: bool = True,
 ) -> str:
     """Find routes to destination and return each route's next ETA at kiosk_stop.
 
@@ -293,6 +362,11 @@ async def render_arrivals_to_destination(
     fetch_route_estimate call). Results are sorted by arrival time so the LLM
     can directly answer "which is faster" without a follow-up tool call.
     Routes with no real-time data appear last with status_text from _classify_stop.
+
+    ASR-rescue mirrors `render_arrivals`: on a mis-heard destination the renderer
+    re-queries the top phonetic candidate itself and returns its real ETAs behind
+    a confirmation prefix, rather than handing the 4B a candidate list it answers
+    with a fabricated time. `_rescue=False` guards the one-hop recursion.
     """
     provider = get_provider()
     route_info = await _safe_provider_call(provider.load_route_info(kiosk_stop))
@@ -315,10 +389,14 @@ async def render_arrivals_to_destination(
     all_stops = {name for _, stops in results for name in stops}
 
     if not raw:
-        candidates = _fuzzy_candidates(destination, all_stops)
+        candidates = [name for name, _ in _fuzzy_candidates(destination, all_stops)]
+        if _rescue and candidates:
+            best = candidates[0]
+            inner = await render_arrivals_to_destination(best, kiosk_stop, go_back, _rescue=False)
+            if _is_real_status(inner):
+                return f"{_rescue_prefix(destination, best)}\n{inner}"
         if candidates:
-            top = "、".join(name for name, _ in candidates[:5])
-            return f"本站沒有直達「{destination}」的路線。相近站名：{top}。"
+            return f"本站沒有直達「{destination}」的路線。相近站名：{'、'.join(candidates[:5])}。"
         return f"本站沒有直達「{destination}」的路線。"
 
     raw.sort(key=lambda x: x[1])

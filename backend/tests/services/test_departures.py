@@ -305,6 +305,23 @@ def test_render_route_stops_lists_both_directions(use_provider):
     )
 
 
+def test_render_route_stops_mishearing_auto_resolves_top_candidate(use_provider):
+    """ASR rescue: mis-heard route auto-resolves the top candidate's real stop list."""
+    use_provider(
+        FakeBusProvider(
+            route_info={"7126": {"id": "7126", "go_dest": "斗六火車站", "back_dest": "雲林科技大學"}},
+            route_estimate=[
+                {"stop_name": "雲林科技大學", "stop_sequence": 1, "direction": 0, "stop_status": 0, "estimate_seconds": 0},
+                {"stop_name": "斗六火車站", "stop_sequence": 2, "direction": 0, "stop_status": 0, "estimate_seconds": 600},
+            ],
+        )
+    )
+    result = asyncio.run(departures.render_route_stops("7226", "雲林科技大學"))
+    assert "最接近的是「7126」" in result
+    assert "往斗六火車站：雲林科技大學、斗六火車站" in result
+    assert "本站沒有路線" not in result  # took the auto-resolve path, not the fallback
+
+
 def test_render_routes_at_stop_lists_unique_routes(use_provider):
     use_provider(
         FakeBusProvider(
@@ -348,6 +365,23 @@ def test_render_stop_on_route_not_found(use_provider):
     assert result.startswith("沒有")
 
 
+def test_render_stop_on_route_mishearing_auto_resolves_top_candidate(use_provider):
+    """ASR rescue: mis-heard route auto-resolves the top candidate's real 有/沒有 answer."""
+    use_provider(
+        FakeBusProvider(
+            route_info={"7126": {"id": "7126", "go_dest": "斗六火車站", "back_dest": "雲林科技大學"}},
+            route_estimate=[
+                {"direction": 0, "stop_sequence": 1, "stop_name": "雲林科技大學", "stop_status": 0, "estimate_seconds": 0},
+                {"direction": 0, "stop_sequence": 2, "stop_name": "斗六火車站", "stop_status": 0, "estimate_seconds": 600},
+            ],
+        )
+    )
+    result = asyncio.run(departures.render_stop_on_route("7226", "斗六火車站", "雲林科技大學"))
+    assert "最接近的是「7126」" in result
+    assert "有，7126" in result
+    assert "本站沒有路線" not in result  # took the auto-resolve path, not the fallback
+
+
 def test_render_arrivals_route_not_found_lists_similar_routes(use_provider):
     """Route not found: error lists similarity-ranked candidates, not the full stop list (ASR rescue path)."""
     use_provider(
@@ -360,6 +394,8 @@ def test_render_arrivals_route_not_found_lists_similar_routes(use_provider):
         )
     )
     result = asyncio.run(departures.render_arrivals("301", "雲林科技大學"))
+    # No estimate data for the candidates → auto-resolve can't produce a real
+    # status → fall back to the plain candidate-list miss message.
     assert result.startswith("本站沒有路線 301。相近路線：")
     assert "201" in result
     assert "701" in result
@@ -385,6 +421,29 @@ def test_render_arrivals_route_not_found_empty_route_info(use_provider):
     use_provider(FakeBusProvider(route_info={}))
     result = asyncio.run(departures.render_arrivals("221", "雲林科技大學"))
     assert result == "本站沒有路線 221。"
+
+
+def test_render_arrivals_mishearing_auto_resolves_top_candidate(use_provider):
+    """ASR rescue: mis-heard route auto-resolves the top candidate's real status.
+
+    The 4B won't issue a second tool call, so the renderer re-queries itself and
+    returns the candidate's actual arrival status behind a confirmation prefix —
+    no fabricated ETA. Guards against the turn-1 time-hallucination regression.
+    """
+    use_provider(
+        FakeBusProvider(
+            route_info={"7126": {"id": "7126", "go_dest": "斗六火車站", "back_dest": "雲林科技大學"}},
+            route_estimate=[
+                {"direction": 0, "stop_sequence": 1, "stop_name": "雲林科技大學", "stop_status": 3, "estimate_seconds": None},
+            ],
+        )
+    )
+    # 7226 is not served; 7126 is the phonetic candidate and its real status is
+    # "末班已過" (stop_status=3) — the reply must carry that, not a made-up time.
+    result = asyncio.run(departures.render_arrivals("7226", "雲林科技大學"))
+    assert "最接近的是「7126」" in result
+    assert "分鐘後" not in result  # no fabricated ETA leaked in
+    assert "本站沒有路線" not in result  # took the auto-resolve path, not the fallback
 
 
 # ── render_arrivals_to_destination ───────────────────────────────────────────
@@ -452,7 +511,10 @@ def test_render_arrivals_to_destination_no_routes_with_fuzzy_candidate(use_provi
         )
     )
     result = asyncio.run(departures.render_arrivals_to_destination("斗溜火車站", "雲林科技大學"))
-    assert result == "本站沒有直達「斗溜火車站」的路線。相近站名：斗六火車站。"
+    # Auto-resolve: renderer re-queries the top phonetic candidate itself and
+    # returns its real ETA behind a confirmation prefix (no fabricated time).
+    assert "最接近的是「斗六火車站」" in result
+    assert "201" in result
 
 
 # ── geo-awareness ────────────────────────────────────────────────────────────
