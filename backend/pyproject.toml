@@ -20,6 +20,7 @@ dependencies = [
     "uvicorn>=0.47.0",
     "opencc-python-reimplemented>=0.1.7",
     "pipecat-ai[silero,webrtc]>=1.4.0",
+    "pypinyin>=0.55.0",
 ]
 
 [tool.uv.sources]

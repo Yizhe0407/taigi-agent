@@ -3,7 +3,10 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Iterator
 from difflib import get_close_matches
+from functools import lru_cache
 from zoneinfo import ZoneInfo
+
+from pypinyin import Style, pinyin
 
 from pipeline.normalize import count_to_chinese, to_halfwidth
 from telemetry import get_telemetry
@@ -29,20 +32,66 @@ def _normalize_route_key(s: str) -> str:
     return to_halfwidth(s).rstrip("路").upper()
 
 
+def _weighted_route_edit_distance(a: str, b: str, *, sub_cost: float = 1.0, indel_cost: float = 2.0) -> float:
+    """Levenshtein distance with insertion/deletion costing more than substitution.
+
+    Route-number ASR errors are almost always a same-position digit swap
+    ("7112"→"7132"), not a length change ("7112"→"711"). Weighting indel at
+    2x substitution keeps same-length numeric neighbors ranked ahead of
+    shorter/longer route codes regardless of how many digits differ.
+    """
+    n, m = len(a), len(b)
+    dp = [[0.0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n + 1):
+        dp[i][0] = i * indel_cost
+    for j in range(m + 1):
+        dp[0][j] = j * indel_cost
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            cost = 0.0 if a[i - 1] == b[j - 1] else sub_cost
+            dp[i][j] = min(dp[i - 1][j] + indel_cost, dp[i][j - 1] + indel_cost, dp[i - 1][j - 1] + cost)
+    return dp[n][m]
+
+
 def _route_candidates(route: str, route_names: Iterable[str], limit: int = 5) -> list[str]:
     """Return up to `limit` route names most similar to `route`, best first.
 
     ASR mis-hearing rescue path for route numbers: matching is done on
     `_normalize_route_key` (halfwidth/uppercase/no trailing 路) so e.g. "301"
-    vs "301路" still line up. cutoff=0.5 was picked by checking against a
-    real 32-route stop list — it keeps single-digit-off numeric neighbors
-    (e.g. "301" -> 701/302/201/101, all plausible ASR confusions) while
+    vs "301路" still line up.
+
+    When the query is a plain digit string, ranking uses
+    `_weighted_route_edit_distance` against other digit-only route keys
+    instead of `difflib`: with many same-length numeric routes (a real stop
+    can serve a dozen "71xx"-style codes), `difflib.SequenceMatcher.ratio()`
+    ties every single-digit-off neighbor at the same score, so which ones
+    survive the top-`limit` cut becomes an accident of dict iteration order
+    — this previously squeezed the actual target out of the list. Distance
+    ties are broken by numeric closeness (`abs(int(a) - int(b))`), and the
+    threshold (half the digit length, minimum 2) mirrors the old cutoff=0.5
+    behavior of allowing roughly half the digits to differ.
+
+    Non-numeric queries (and numeric queries when no digit-only route names
+    exist) fall back to the original `difflib` matching — cutoff=0.5 keeps
+    single-digit-off or short alias matches (e.g. "301" -> 701/302/201) while
     dropping unrelated route names (e.g. "ABCDE" -> no matches).
     """
     key_to_name: dict[str, str] = {}
     query_key = _normalize_route_key(route)
     for name in route_names:
         key_to_name.setdefault(_normalize_route_key(name), name)
+
+    if query_key.isdigit():
+        numeric_keys = [k for k in key_to_name if k.isdigit()]
+        if numeric_keys:
+            threshold = max(2, len(query_key) // 2)
+            scored = sorted(
+                ((k, _weighted_route_edit_distance(query_key, k), abs(int(query_key) - int(k))) for k in numeric_keys),
+                key=lambda x: (x[1], x[2]),
+            )
+            matched_keys = [k for k, dist, _ in scored if dist <= threshold][:limit]
+            return [key_to_name[k] for k in matched_keys]
+
     matched_keys = get_close_matches(query_key, key_to_name.keys(), n=limit, cutoff=0.5)
     return [key_to_name[k] for k in matched_keys]
 
@@ -61,22 +110,48 @@ def _name_matches(needle: str, hay: str) -> bool:
     return needle in hay or hay in needle
 
 
+def _token_jaccard(a_tokens: tuple[str, ...], b_tokens: tuple[str, ...]) -> float:
+    """Set + adjacent-bigram Jaccard over arbitrary string tokens (chars or pinyin syllables)."""
+    if not a_tokens or not b_tokens:
+        return 0.0
+    a_set, b_set = set(a_tokens), set(b_tokens)
+    char_ratio = len(a_set & b_set) / len(a_set | b_set)
+    a_bi = {a_tokens[i] + a_tokens[i + 1] for i in range(len(a_tokens) - 1)}
+    b_bi = {b_tokens[i] + b_tokens[i + 1] for i in range(len(b_tokens) - 1)}
+    bi_ratio = len(a_bi & b_bi) / len(a_bi | b_bi) if (a_bi or b_bi) else 0.0
+    return max(char_ratio, bi_ratio)
+
+
+@lru_cache(maxsize=512)
+def _pinyin_syllables(core: tuple[str, ...]) -> tuple[str, ...]:
+    """No-tone pinyin syllable per character, cached — the same station name is
+    scored against many candidates, and pypinyin's per-call overhead adds up.
+    """
+    if not core:
+        return ()
+    return tuple(p[0] for p in pinyin(list(core), style=Style.NORMAL))
+
+
 def _stop_similarity(a: str, b: str) -> float:
-    """Character-set union + bigram Jaccard similarity for Chinese station names.
+    """Character-token Jaccard, plus a no-tone-pinyin dimension for homophone ASR errors.
 
     Strips common geographic suffixes so '雲林高鐵站' vs '高鐵雲林站' scores 1.0
     (identical character sets) and auto-remaps without LLM intervention.
+
+    The pinyin dimension exists because ASR mis-hearings are homophone-driven,
+    not orthographic: "刺同" vs "莿桐" share zero characters (莿 is a rare,
+    visually unrelated glyph) yet are pronounced identically. Tones are
+    dropped before comparing — ASR substitutes a similar-sounding character,
+    which usually keeps the syllable but not the tone (e.g. "背港" bei4-gang3
+    vs "北港" bei3-gang3).
     """
     a_core = [c for c in a if c not in _STOP_SUFFIX]
     b_core = [c for c in b if c not in _STOP_SUFFIX]
     if not a_core or not b_core:
         return 0.0
-    a_set, b_set = set(a_core), set(b_core)
-    char_ratio = len(a_set & b_set) / len(a_set | b_set)
-    a_bi = {a_core[i] + a_core[i + 1] for i in range(len(a_core) - 1)}
-    b_bi = {b_core[i] + b_core[i + 1] for i in range(len(b_core) - 1)}
-    bi_ratio = len(a_bi & b_bi) / len(a_bi | b_bi) if (a_bi or b_bi) else 0.0
-    return max(char_ratio, bi_ratio)
+    char_score = _token_jaccard(tuple(a_core), tuple(b_core))
+    pinyin_score = _token_jaccard(_pinyin_syllables(tuple(a_core)), _pinyin_syllables(tuple(b_core)))
+    return max(char_score, pinyin_score)
 
 
 def _fuzzy_candidates(destination: str, stop_names: set[str]) -> list[tuple[str, float]]:
