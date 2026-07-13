@@ -36,4 +36,4 @@
 - 症狀：subagent 用 run_in_background 起 eval/批次腳本後結束 turn，回報「等通知後繼續」，實際永遠不會被叫醒，任務停在半路
 - 根因：subagent 的背景 bash 完成通知不可靠（或其 Monitor 語意與主線不同），停 turn = 任務死掉，要靠指揮官手動 SendMessage 推
 - 規則：派長跑任務（eval、批次、多分鐘腳本）的 prompt 必須寫死「同步輪詢到完成再回報，不要結束 turn 等背景通知」；指揮官收到「等通知中」的中間回報一律立刻推一次
-- 證據：2026-07-12 ASR eval agent 停在 13/20、2026-07-13 eval 重跑 agent 停在剛起跑，皆需 SendMessage 推才完成
+- 證據：2026-07-12 ASR eval agent 停在 13/20、2026-07-13 eval 重跑 agent 停在剛起跑、2026-07-13 opus 攻堅 agent prompt 已寫死禁令仍停——**prompt 指令擋不住此行為**，指揮官要預期每個長跑任務至少手動推一次，收到「等通知」回報立刻 SendMessage
