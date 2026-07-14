@@ -45,6 +45,28 @@ def test_unclosed_think_block_is_dropped_not_spoken():
     assert normalizer.flush() == []
 
 
+def test_orphan_closing_think_tag_is_dropped():
+    """Qwen3.5-9B (IQ4_NL) 於確認回合尾端吐出裸露 </think>，全程無對應開標籤。"""
+    normalizer = StreamNormalizer()
+    pieces = normalizer.feed("答案講完了。\n</think>")
+    pieces += normalizer.flush()
+    joined = "".join(pieces)
+    assert "think" not in joined
+    assert joined.strip() == "答案講完了。"
+
+
+def test_orphan_closing_think_tag_split_across_deltas_never_leaks():
+    normalizer = StreamNormalizer()
+    pieces = normalizer.feed("答案。</th")
+    pieces += normalizer.feed("ink>")
+    pieces += normalizer.flush()
+    assert "".join(pieces) == "答案。"
+
+
+def test_batch_normalize_drops_orphan_closing_think_tag():
+    assert normalize_llm_output("答案講完了。\n</think>") == "答案講完了。"
+
+
 def test_long_enumeration_emits_at_pause_boundaries():
     """站名清單（整句只有「、」）不能憋到句號才輸出，否則首音延遲等於整句生成時間。"""
     normalizer = StreamNormalizer()

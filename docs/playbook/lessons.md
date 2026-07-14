@@ -37,3 +37,9 @@
 - 根因：subagent 的背景 bash 完成通知不可靠（或其 Monitor 語意與主線不同），停 turn = 任務死掉，要靠指揮官手動 SendMessage 推
 - 規則：派長跑任務（eval、批次、多分鐘腳本）的 prompt 必須寫死「同步輪詢到完成再回報，不要結束 turn 等背景通知」；指揮官收到「等通知中」的中間回報一律立刻推一次
 - 證據：2026-07-12 ASR eval agent 停在 13/20、2026-07-13 eval 重跑 agent 停在剛起跑、2026-07-13 opus 攻堅 agent prompt 已寫死禁令仍停——**prompt 指令擋不住此行為**，指揮官要預期每個長跑任務至少手動推一次，收到「等通知」回報立刻 SendMessage
+
+## 2026-07-14 llama.cpp + Qwen3.5-9B 裸露 </think> 洩漏，任何請求參數都關不掉
+- 症狀：9B（IQ4_NL）確認回合（回「對」後）回覆尾端多一個孤兒 `</think>`（全程無對應 `<think>`），v9 eval 60 案中 31 案中鏢，會直達 TTS
+- 根因：llama.cpp 對 Qwen3.5 的 `chat_template_kwargs.enable_thinking` 已失效/棄用（ggml-org/llama.cpp#20182、#20409、discussion #23351）；同一對話狀態實測 5 種參數組合（巢狀/頂層 enable_thinking、reasoning_format:none、/no_think、reasoning_effort:none）greedy 解碼輸出逐位元組相同、全部照樣洩漏——server 端 reasoning parser 吃掉樣板前導空 think 塊後，把模型後續吐的孤兒閉標籤當一般 content 放行，客戶端參數無從干預
+- 規則：LLM 輸出淨化不能假設 think 標籤必成對，孤兒 `</think>`/`<think>` 一律當雜訊剝除（`pipeline/normalize.py` `_ORPHAN_THINK_TAG_RE` + `StreamNormalizer` 孤兒閉標籤分支）；換 GGUF 模型後要用「同狀態多參數對照 probe」驗證參數真的有作用，不能只看 200 OK
+- 證據：scratchpad `probe_d1_variants.py`（5 組合全洩漏）、`rescue_results_v10_qwen9b_fixed.jsonl`（修復後 22 案 0 洩漏）

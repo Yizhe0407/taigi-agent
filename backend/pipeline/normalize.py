@@ -11,6 +11,15 @@ _FULLWIDTH_RE = re.compile(r"[！-～]")
 
 # Strip <think>…</think> blocks that reasoning models include in content
 _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+# Orphan think tags with no matching pair — observed on Qwen3.5-9B (IQ4_NL)
+# confirmation-turn replies via llama.cpp: a lone trailing "</think>" with no
+# preceding "<think>" anywhere in the same completion (llama.cpp's reasoning-
+# parser exits think-capture after consuming the template's leading empty
+# `<think>\n\n</think>\n\n` block, then passes a later stray "</think>" the
+# model emits through as plain content). No known extra_body/chat_template_kwargs
+# combination suppresses it (verified empirically — see docs/playbook/lessons.md);
+# a legitimate answer never contains this literal text, so drop it unconditionally.
+_ORPHAN_THINK_TAG_RE = re.compile(r"</?think>\s*")
 
 # Simplified → Traditional Chinese (Taiwan phonetic)
 _S2TWP = opencc.OpenCC("s2twp")
@@ -77,8 +86,9 @@ def count_to_chinese(n: int) -> str:
 
 
 def normalize_llm_output(text: str) -> str:
-    """Strip <think> blocks and convert simplified Chinese to traditional."""
-    return _S2TWP.convert(_THINK_RE.sub("", text).strip())
+    """Strip <think> blocks (incl. orphan tags) and convert to Traditional Chinese."""
+    text = _ORPHAN_THINK_TAG_RE.sub("", _THINK_RE.sub("", text))
+    return _S2TWP.convert(text.strip())
 
 
 # ── Streaming normalization ────────────────────────────────────────────────────
@@ -144,17 +154,26 @@ class StreamNormalizer:
                 self._raw = self._raw[end + len(_THINK_CLOSE) :]
                 self._in_think = False
             else:
-                start = self._raw.find(_THINK_OPEN)
-                if start >= 0:
-                    self._clean += self._raw[:start]
-                    self._raw = self._raw[start + len(_THINK_OPEN) :]
+                open_start = self._raw.find(_THINK_OPEN)
+                close_start = self._raw.find(_THINK_CLOSE)
+                # Orphan "</think>" (no preceding "<think>") is dropped as
+                # noise rather than entering think-capture — see
+                # _ORPHAN_THINK_TAG_RE for why this happens on Qwen3.5-9B.
+                if close_start >= 0 and (open_start < 0 or close_start < open_start):
+                    self._clean += self._raw[:close_start]
+                    self._raw = self._raw[close_start + len(_THINK_CLOSE) :]
+                    continue
+                if open_start >= 0:
+                    self._clean += self._raw[:open_start]
+                    self._raw = self._raw[open_start + len(_THINK_OPEN) :]
                     self._in_think = True
                     continue
                 hold = 0
-                for size in range(len(_THINK_OPEN) - 1, 0, -1):
-                    if self._raw.endswith(_THINK_OPEN[:size]):
-                        hold = size
-                        break
+                for tag in (_THINK_OPEN, _THINK_CLOSE):
+                    for size in range(len(tag) - 1, 0, -1):
+                        if self._raw.endswith(tag[:size]):
+                            hold = max(hold, size)
+                            break
                 cut = len(self._raw) - hold
                 self._clean += self._raw[:cut]
                 self._raw = self._raw[cut:]
