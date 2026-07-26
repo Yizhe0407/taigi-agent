@@ -69,12 +69,16 @@ def _time_sub(m: re.Match[str]) -> str:
     h, mn = int(m.group(1)), int(m.group(2))
     if h == 0:
         period, dh = "凌晨", 0  # 00:xx is midnight — never bare "零點"
+    elif h < 5:
+        period, dh = "凌晨", h  # 1-4 時：仍算凌晨
+    elif h < 12:
+        period, dh = "", h
     elif h == 12:
         period, dh = "中午", 12
-    elif h > 12:
+    elif h < 18:
         period, dh = "下午", h - 12
     else:
-        period, dh = "", h
+        period, dh = "晚上", h - 12  # 18-23 時
     return _format_time_zh(period, dh, mn)
 
 
@@ -96,6 +100,10 @@ def normalize_for_tts(text: str) -> str:
     # 2. Strip all bracket types, keep inner content
     text = re.sub(r"[「」『』【】《》〈〉]", "", text)
     text = re.sub(r"[（(]\s*([^）)]{0,40})\s*[）)]", r"\1", text)
+    # Fallback for content longer than the 40-char cap above (the bounded pattern
+    # doesn't match at all in that case, leaving the parens in place): still strip
+    # the bracket delimiters themselves so TTS never has to speak a literal "（".
+    text = re.sub(r"[（(]([^）)]*)[）)]", r"\1", text)
 
     # 3a. Period-prefixed 12h time: 下午/上午/中午/凌晨 + N:MM → Chinese
     # Must run before plain HH:MM step to avoid double-adding the period prefix.

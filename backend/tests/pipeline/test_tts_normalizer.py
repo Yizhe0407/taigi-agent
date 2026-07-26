@@ -22,6 +22,16 @@ def test_no_brackets_unchanged():
     assert normalize_for_tts("雲林科技大學") == "雲林科技大學"
 
 
+def test_strip_paren_over_length_cap_still_removes_delimiters():
+    # Content longer than the bounded pattern's 40-char cap must still lose the
+    # literal （） symbols themselves, even though it can't match the bounded rule.
+    long_content = "站" * 45
+    result = normalize_for_tts(f"（{long_content}）")
+    assert "（" not in result
+    assert "）" not in result
+    assert long_content in result
+
+
 # ── time conversion ──────────────────────────────────────────────────────────
 
 
@@ -51,6 +61,30 @@ def test_time_midnight():
 
 def test_time_midnight_with_minutes():
     assert normalize_for_tts("00:05") == "凌晨十二點零五分"
+
+
+def test_time_predawn():
+    assert normalize_for_tts("3:15") == "凌晨三點十五分"
+
+
+def test_time_predawn_upper_bound():
+    assert normalize_for_tts("4:00") == "凌晨四點"
+
+
+def test_time_morning_no_prefix_lower_bound():
+    assert normalize_for_tts("5:00") == "五點"
+
+
+def test_time_evening():
+    assert normalize_for_tts("18:00") == "晚上六點"
+
+
+def test_time_evening_late():
+    assert normalize_for_tts("23:45") == "晚上十一點四十五分"
+
+
+def test_time_afternoon_upper_bound():
+    assert normalize_for_tts("17:59") == "下午五點五十九分"
 
 
 def test_time_embedded():
