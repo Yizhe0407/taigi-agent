@@ -62,9 +62,9 @@ backend/
 
 - `providers/bus.py`：`BusProvider` Protocol（TDX-native flat dict schema；`sub_route_name`/`direction`/`stop_status`/`estimate_seconds` 等欄位）。
 - `providers/http.py`：process-wide 共用 `httpx.AsyncClient`（連線池重用）；TTS/ASR/OTP/TDX/ebus 都透過它發請求，各呼叫點自帶 per-request timeout，app shutdown 時由 lifespan 關閉。
-- `providers/ebus.py`：ebus.yunlin.gov.tw `BusProvider` 實作。首次 miss 以 20 個並行 request 掃描路線，一次建立所有精確站名的 route index；完整索引原子寫入 `.agent_state/ebus-route-index.json` 並保留 24 小時，重新啟動不必重掃。route estimate 結果快取 30 s。
-- `providers/tdx_bus.py`：TDX `BusProvider` 實作。同時查 `City/YunlinCounty`（市區公車）與 `InterCity`（公路客運）兩個 endpoint 並合併。OAuth2 token 自動快取，route estimate 採 256-entry LRU。route_id 以 SubRouteName string 為主鍵。
-- `providers/hybrid.py`：`HybridBusProvider`，線上唯一 `BusProvider` runtime 實例。`load_route_info`、ETA 與 route estimate 以 ebus 為主、TDX 為備援；`fetch_routes_at_stop` 直接使用 TDX，ebus 站名缺字時也由 TDX 補終點名稱。
+- `providers/ebus.py`：ebus.yunlin.gov.tw `BusProvider` 實作。首次 miss 以 20 個並行 request 掃描路線，一次建立所有精確站名的 route index；完整索引原子寫入 `.agent_state/ebus-route-index.json` 並保留 24 小時，重新啟動不必重掃。route estimate 結果快取 30 s，並發 miss 以 per-key lock 合流。`fetch_eta_rows_for_stop` 回傳 `list | None`：`None` = 全部查詢失敗（供 hybrid fallback 判斷），`[]` = 成功但無資料。
+- `providers/tdx_bus.py`：TDX `BusProvider` 實作。同時查 `City/YunlinCounty`（市區公車）與 `InterCity`（公路客運）兩個 endpoint 並合併。OAuth2 token 自動快取，route estimate 採 256-entry LRU；ETA 與 route estimate 的並發 miss 皆以 per-key lock 合流避免 429 cascade。StopOfRoute 單邊 endpoint 失敗時結果以 60 s partial TTL 快取（正常 600 s）。route_id 以 SubRouteName string 為主鍵。
+- `providers/hybrid.py`：`HybridBusProvider`，線上唯一 `BusProvider` runtime 實例。`load_route_info`、ETA 與 route estimate 以 ebus 為主、TDX 為備援；ETA 與 route estimate 都以 ebus 的 `None`-vs-`[]` sentinel 區分「查詢失敗才 fallback TDX」與「成功但無資料不 fallback」。`fetch_routes_at_stop` 直接使用 TDX，ebus 站名缺字時也由 TDX 補終點名稱。
 - `providers/otp.py`：OpenTripPlanner GraphQL provider。
 - `providers/moovo.py`：TDX bike provider。
 - `services/kiosk_config.py`：Runtime kiosk 設定 singleton（stop_name、direction、lat/lon）；先原子落盤再發布記憶體狀態，並用 mtime 觀察其他 worker 的更新。持久化至 `.agent_state/kiosk_config.json`，預設雲林科技大學／回程。

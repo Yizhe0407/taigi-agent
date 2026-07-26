@@ -61,6 +61,7 @@ class TdxBikeProvider:
         self._city = city
         self._timeout = timeout
         self._token_cache: tuple[float, str] | None = None
+        self._token_lock = asyncio.Lock()
 
     async def fetch_station_payloads(self) -> tuple[list[Any], list[Any]]:
         """Return raw (stations, availability) lists for the configured city."""
@@ -89,32 +90,38 @@ class TdxBikeProvider:
         if hit and self._token_cache is not None:
             return self._token_cache[1]
 
-        client_id, client_secret = _tdx_credentials()
-        try:
-            response = await client.post(
-                _TOKEN_URL,
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                },
-                timeout=self._timeout,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except httpx.HTTPError as error:
-            raise MoovoApiError(f"TDX token request failed: {error}") from error
-        except ValueError as error:
-            raise MoovoApiError("TDX token response is not valid JSON") from error
+        async with self._token_lock:
+            # Re-check after acquiring: first caller refreshes, subsequent callers reuse it.
+            now = time.monotonic()
+            if self._token_cache is not None and now < self._token_cache[0]:
+                return self._token_cache[1]
 
-        token = payload.get("access_token")
-        if not isinstance(token, str) or not token:
-            raise MoovoApiError("TDX token response has no access_token")
+            client_id, client_secret = _tdx_credentials()
+            try:
+                response = await client.post(
+                    _TOKEN_URL,
+                    data={
+                        "grant_type": "client_credentials",
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                    },
+                    timeout=self._timeout,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except httpx.HTTPError as error:
+                raise MoovoApiError(f"TDX token request failed: {error}") from error
+            except ValueError as error:
+                raise MoovoApiError("TDX token response is not valid JSON") from error
 
-        expires_in = payload.get("expires_in")
-        ttl = int(expires_in) if isinstance(expires_in, int | float) else 3600
-        self._token_cache = (now + max(60, ttl - 60), token)
-        return token
+            token = payload.get("access_token")
+            if not isinstance(token, str) or not token:
+                raise MoovoApiError("TDX token response has no access_token")
+
+            expires_in = payload.get("expires_in")
+            ttl = int(expires_in) if isinstance(expires_in, int | float) else 3600
+            self._token_cache = (now + max(60, ttl - 60), token)
+            return token
 
     async def _get_json(
         self,

@@ -88,15 +88,21 @@ class HybridBusProvider:
         return await self._tdx.fetch_route_estimate(sub_route_name)
 
     async def fetch_eta_at_stop(self, stop_name: str) -> list[dict]:
-        """ebus for all routes (city + 7xxx intercity); TDX full fallback if ebus down."""
+        """ebus for all routes (city + 7xxx intercity); TDX full fallback if ebus down.
+
+        `fetch_eta_rows_for_stop` returns None only when every route query
+        failed outright; a real (possibly empty) list means ebus is up and
+        genuinely has nothing to report, so that must NOT trigger a TDX call.
+        """
+        rows: list[dict] | None = None
         try:
             route_info = await self._ebus.find_routes_at_stop(stop_name)
             rows = await self._ebus.fetch_eta_rows_for_stop(stop_name, list(route_info))
-            if rows:
-                get_telemetry().record_provider_fallback(operation="eta", outcome="ebus_hit")
-                return rows
         except Exception as exc:
             _log.warning("ebus fetch_eta_at_stop failed for %s: %s", stop_name, exc)
+        if rows is not None:
+            get_telemetry().record_provider_fallback(operation="eta", outcome="ebus_hit")
+            return rows
         _log.warning("ebus returned nothing for %s; falling back to TDX", stop_name)
         try:
             tdx_rows = await self._tdx.fetch_eta_at_stop(stop_name)

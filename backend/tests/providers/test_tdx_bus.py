@@ -468,6 +468,95 @@ def test_get_raises_after_max_retries(monkeypatch):
         assert "429" in str(e)
 
 
+def test_fetch_route_estimate_concurrent_miss_calls_upstream_once(monkeypatch):
+    """Two concurrent cache misses for the same sub_route_name must only hit TDX once
+    (per-key lock mirrors the fetch_eta_at_stop stampede guard)."""
+    calls = []
+
+    class SlowClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            await asyncio.sleep(0.05)  # force both callers to be in-flight together
+            return _FakeResp(_ETA_ROWS)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: SlowClient())
+    provider = TdxBusProvider("id", "secret")
+
+    async def run():
+        await asyncio.gather(
+            provider.fetch_route_estimate("201"),
+            provider.fetch_route_estimate("201"),
+        )
+
+    asyncio.run(run())
+    assert len(calls) == 1
+
+
+def test_load_route_info_uses_short_ttl_when_stop_of_route_partially_fails(monkeypatch):
+    """When one StopOfRoute endpoint fails, the (partial) result is cached with the
+    short _ROUTE_INFO_PARTIAL_TTL instead of the full route-info TTL, so it gets
+    re-checked soon instead of pinning an incomplete route list for 600s."""
+    import httpx
+
+    calls = []
+
+    class PartialClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            if "InterCity" in url:
+                raise httpx.HTTPStatusError("500", request=None, response=_FakeResp([], status_code=500))
+            return _FakeResp(_STOP_OF_ROUTE)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: PartialClient())
+    fake_now = [0.0]
+    provider = TdxBusProvider("id", "secret", route_info_ttl_seconds=600.0, clock=lambda: fake_now[0])
+
+    asyncio.run(provider.load_route_info("雲林科技大學"))
+    first_call_count = len(calls)
+    assert provider._route_info_by_stop["雲林科技大學"][2] is True  # had_failures recorded
+
+    # Within the 60s partial TTL → still served from cache.
+    fake_now[0] += 30
+    asyncio.run(provider.load_route_info("雲林科技大學"))
+    assert len(calls) == first_call_count
+
+    # Past the 60s partial TTL (but well within the 600s full TTL) → re-fetched.
+    fake_now[0] += 40
+    asyncio.run(provider.load_route_info("雲林科技大學"))
+    assert len(calls) > first_call_count
+
+
+def test_load_route_info_uses_full_ttl_when_stop_of_route_succeeds(monkeypatch):
+    """Sanity check: a clean (no-failure) fetch keeps the full TTL, not the partial one."""
+    calls = []
+
+    class CountingClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            return _FakeResp(_STOP_OF_ROUTE)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: CountingClient())
+    fake_now = [0.0]
+    provider = TdxBusProvider("id", "secret", route_info_ttl_seconds=600.0, clock=lambda: fake_now[0])
+
+    asyncio.run(provider.load_route_info("雲林科技大學"))
+    assert provider._route_info_by_stop["雲林科技大學"][2] is False
+    first_call_count = len(calls)
+
+    fake_now[0] += 70  # past the 60s partial TTL but this fetch had no failures
+    asyncio.run(provider.load_route_info("雲林科技大學"))
+    assert len(calls) == first_call_count
+
+
 def test_fetch_eta_at_stop_returns_stale_on_error(monkeypatch):
     """When TDX fails but stale cache exists, return stale data instead of raising."""
 

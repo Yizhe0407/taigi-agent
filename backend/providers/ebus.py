@@ -165,6 +165,8 @@ class EbusBusProvider:
         self._stop_route_cache: dict[str, tuple[float, dict[str, dict], bool]] = {}
         # A single scan builds every stop, so all misses share one lock.
         self._route_index_lock = asyncio.Lock()
+        # per-route-id locks prevent concurrent cache-miss storms on fetch_route_estimate
+        self._route_estimate_locks: dict[int, asyncio.Lock] = {}
         self._route_index_path = Path(route_index_path) if route_index_path is not None else None
         self._load_persisted_route_index()
 
@@ -322,21 +324,33 @@ class EbusBusProvider:
         if cached is not None and not self._expired(cached[0], self._estimate_ttl):
             return cached[1]
 
-        raw = await self._get(f"{_BASE}/route/{route_id}/estimate")
-        rows = [_norm_route_estimate_row(r) for r in raw]
-        self._estimate_cache[route_id] = (self._clock(), rows)
-        return rows
+        lock = self._route_estimate_locks.setdefault(route_id, asyncio.Lock())
+        async with lock:
+            # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
+            cached = self._estimate_cache.get(route_id)
+            if cached is not None and not self._expired(cached[0], self._estimate_ttl):
+                return cached[1]
+
+            raw = await self._get(f"{_BASE}/route/{route_id}/estimate")
+            rows = [_norm_route_estimate_row(r) for r in raw]
+            self._estimate_cache[route_id] = (self._clock(), rows)
+            return rows
 
     async def fetch_eta_rows_for_stop(
         self,
         stop_name: str,
         route_names: list[str],
-    ) -> list[dict]:
-        """ETA rows at stop_name for the given city routes.
+    ) -> list[dict] | None:
+        """ETA rows at stop_name for the given city routes, or None if every
+        route query failed outright.
 
         Fetches all route estimates in parallel (no rate limit). Each route's
         estimate is cached and shared with fetch_route_estimate callers.
-        Per-route failures are logged and skipped (partial degradation).
+        Per-route failures are logged and skipped (partial degradation) as
+        long as at least one route succeeded; an empty list is then a
+        genuine "no ETA" answer, not a fetch failure. Only when every route
+        query raised is None returned, so callers (HybridBusProvider) can
+        tell "ebus is down" apart from "ebus is up but has nothing to show".
         """
 
         async def _one(name: str) -> list[dict]:
@@ -346,8 +360,15 @@ class EbusBusProvider:
             matching = [r for r in route_rows if str(r.get("stop_name") or "").strip() == stop_name.strip()]
             return _dedup_eta_by_min_seq([_route_est_to_eta(r, name) for r in matching])
 
+        if not route_names:
+            return []
+
         tasks = [_one(name) for name in route_names]
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        if all(isinstance(result, BaseException) for result in results):
+            for name, result in zip(route_names, results):
+                _log.warning("ebus ETA failed for %s: %s", name, result)
+            return None
         rows: list[dict] = []
         for name, result in zip(route_names, results):
             if isinstance(result, list):

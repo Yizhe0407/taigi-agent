@@ -268,6 +268,57 @@ def test_fetch_eta_rows_for_stop_per_route_failure_does_not_abort(monkeypatch):
     assert not any(r["sub_route_name"] == "101" for r in rows)
 
 
+def test_fetch_route_estimate_concurrent_miss_calls_upstream_once(monkeypatch):
+    """Two concurrent cache misses for the same route must only fetch the estimate once
+    (per-route-id lock mirrors find_routes_at_stop's _route_index_lock stampede guard)."""
+    calls = []
+
+    class SlowClient:
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            if "estimate" in url:
+                await asyncio.sleep(0.05)  # force both callers to be in-flight together
+                return _FakeResp(_ESTIMATE_201)
+            return _FakeResp(_ROUTE_LIST)
+
+    monkeypatch.setattr(ebus_module, "get_http_client", lambda: SlowClient())
+    p = EbusBusProvider()
+
+    async def run():
+        await asyncio.gather(
+            p.fetch_route_estimate("201"),
+            p.fetch_route_estimate("201"),
+        )
+
+    asyncio.run(run())
+    estimate_calls = [c for c in calls if "estimate" in c]
+    assert len(estimate_calls) == 1
+
+
+def test_fetch_eta_rows_for_stop_returns_none_when_every_route_fails(monkeypatch):
+    """All per-route queries failing must surface as None (fetch failure), not []
+    (genuine empty), so HybridBusProvider can tell the two apart."""
+
+    class FailingClient:
+        async def get(self, url, **kwargs):
+            if "/route" in url and "estimate" not in url:
+                return _FakeResp(_ROUTE_LIST)
+            return _FakeResp({}, status_code=500)
+
+    monkeypatch.setattr(ebus_module, "get_http_client", lambda: FailingClient())
+    p = EbusBusProvider()
+    result = asyncio.run(p.fetch_eta_rows_for_stop("斗六火車站", ["201", "101"]))
+    assert result is None
+
+
+def test_fetch_eta_rows_for_stop_returns_empty_list_when_genuinely_no_data(monkeypatch):
+    """A successful scan with no matching rows is a real [] answer, not a failure."""
+    _patch_http(monkeypatch, {"/route": _ROUTE_LIST, "65036/estimate": []})
+    p = EbusBusProvider()
+    result = asyncio.run(p.fetch_eta_rows_for_stop("斗六火車站", ["201"]))
+    assert result == []
+
+
 def test_fetch_eta_rows_shares_cache_with_fetch_route_estimate(monkeypatch):
     """fetch_route_estimate and fetch_eta_rows_for_stop use the same route cache."""
     call_count = 0

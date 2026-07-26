@@ -67,12 +67,16 @@ _CITY = "YunlinCounty"
 _TOKEN_BUFFER_SECONDS = 60.0
 
 _DEFAULT_ROUTE_INFO_TTL = 600.0
+_ROUTE_INFO_PARTIAL_TTL = 60.0  # short TTL when a StopOfRoute endpoint failed mid-fetch
 _DEFAULT_ROUTE_ESTIMATE_TTL = 30.0  # TDX updates ~30 s; 10 s caused 429 rate-limit hits
 _MAX_ROUTE_ESTIMATE_CACHE_ENTRIES = 256
 _DEFAULT_ETA_TTL = 60.0  # must exceed wait_for(12s) + warmup_sleep(25s) = 37s to break 429 cascade
 _MAX_RETRIES = 1  # retries on HTTP 429; Retry-After is 20-40 s so 3 retries = 60-120 s blocking
 _MAX_UIDS_PER_FILTER = 15  # keeps encoded $filter well under typical gateway URL-length limits
 _MAX_STALE_SECONDS = 300.0  # upstream-down grace period; beyond this, stop serving stale data
+_ETA_FETCH_TIMEOUT = 12.0  # outer budget for fetch_eta_at_stop's asyncio.wait_for
+_REQUEST_TIMEOUT_SECONDS = 10.0  # per-request timeout; must stay < _ETA_FETCH_TIMEOUT or the
+# wait_for cancels the request before its own timeout can ever fire
 
 _INTERCITY_RE = re.compile(r"^7\d{3}")
 
@@ -135,8 +139,11 @@ class TdxBusProvider(BusProvider):
         self._token: str = ""
         self._token_expires_at: float = 0.0
         self._token_lock = asyncio.Lock()
-        # stop_name → (fetched_at, route_info_dict)
-        self._route_info_by_stop: dict[str, tuple[float, dict[str, dict]]] = {}
+        # stop_name → (fetched_at, route_info_dict, had_failures)
+        # had_failures=True uses _ROUTE_INFO_PARTIAL_TTL so a StopOfRoute endpoint
+        # that failed mid-fetch gets re-checked soon instead of caching a partial
+        # result for the full TTL.
+        self._route_info_by_stop: dict[str, tuple[float, dict[str, dict], bool]] = {}
         # stop_name → set of boarding StopUIDs (first occurrence of that stop in each route)
         self._kiosk_uids: dict[str, set[str]] = {}
         # sub_route_name → (fetched_at, rows)
@@ -145,6 +152,7 @@ class TdxBusProvider(BusProvider):
         self._eta_cache: dict[str, tuple[float, list[dict]]] = {}
         # per-key locks prevent concurrent cache-miss storms (thundering herd)
         self._eta_locks: dict[str, asyncio.Lock] = {}
+        self._route_estimate_locks: dict[str, asyncio.Lock] = {}
 
     # ── Auth ──────────────────────────────────────────────────────────────────
 
@@ -192,7 +200,7 @@ class TdxBusProvider(BusProvider):
                 url,
                 params={**params, "$format": "JSON"},
                 headers={"Authorization": f"Bearer {token}"},
-                timeout=15.0,
+                timeout=_REQUEST_TIMEOUT_SECONDS,
             )
             if resp.status_code == 401 and not refreshed_token:
                 # Token was revoked/expired early server-side; force a refresh and
@@ -241,7 +249,7 @@ class TdxBusProvider(BusProvider):
 
     async def fetch_routes_at_stop(self, stop_name: str) -> list[dict]:
         """Unique subroutes at `stop_name` (city + intercity)."""
-        city, intercity = await self._stop_of_route(stop_name)
+        city, intercity, _had_failures = await self._stop_of_route(stop_name)
         seen: set[str] = set()
         result: list[dict] = []
         for rec in city + intercity:
@@ -275,7 +283,7 @@ class TdxBusProvider(BusProvider):
             uids = self._kiosk_uids.get(stop_name)
             try:
                 fetch = self._fetch_eta_by_uids(uids) if uids else self._fetch_eta_by_name(stop_name)
-                rows = await asyncio.wait_for(fetch, timeout=12.0)
+                rows = await asyncio.wait_for(fetch, timeout=_ETA_FETCH_TIMEOUT)
             except Exception:
                 # Serve stale data without bumping fetched_at, so staleness keeps
                 # accumulating toward _MAX_STALE_SECONDS instead of resetting on
@@ -296,41 +304,50 @@ class TdxBusProvider(BusProvider):
             self._route_estimate_cache.move_to_end(sub_route_name)
             return cached[1]
 
-        # Only query the endpoint that owns this route — halves request volume.
-        try:
-            if _is_intercity(sub_route_name):
-                raw = await self._get(
-                    f"{_BASE}/EstimatedTimeOfArrival/InterCity",
-                    {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(sub_route_name)}'"},
-                )
-            else:
-                raw = await self._get(
-                    f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
-                    {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(sub_route_name)}'"},
-                )
-        except Exception:
-            if cached is not None and not self._expired(cached[0], self._stale_ttl(self._route_estimate_ttl)):
-                _log.warning("TDX route estimate fetch failed; serving stale cache for %s", sub_route_name)
+        lock = self._route_estimate_locks.setdefault(sub_route_name, asyncio.Lock())
+        async with lock:
+            # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
+            cached = self._route_estimate_cache.get(sub_route_name)
+            if cached is not None and not self._expired(cached[0], self._route_estimate_ttl):
+                self._route_estimate_cache.move_to_end(sub_route_name)
                 return cached[1]
-            raise
 
-        rows = [self._norm_stop_eta(r) for r in raw]
-        self._route_estimate_cache[sub_route_name] = (self._clock(), rows)
-        self._route_estimate_cache.move_to_end(sub_route_name)
-        while len(self._route_estimate_cache) > _MAX_ROUTE_ESTIMATE_CACHE_ENTRIES:
-            self._route_estimate_cache.popitem(last=False)
-        return rows
+            # Only query the endpoint that owns this route — halves request volume.
+            try:
+                if _is_intercity(sub_route_name):
+                    raw = await self._get(
+                        f"{_BASE}/EstimatedTimeOfArrival/InterCity",
+                        {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(sub_route_name)}'"},
+                    )
+                else:
+                    raw = await self._get(
+                        f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
+                        {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(sub_route_name)}'"},
+                    )
+            except Exception:
+                if cached is not None and not self._expired(cached[0], self._stale_ttl(self._route_estimate_ttl)):
+                    _log.warning("TDX route estimate fetch failed; serving stale cache for %s", sub_route_name)
+                    return cached[1]
+                raise
+
+            rows = [self._norm_stop_eta(r) for r in raw]
+            self._route_estimate_cache[sub_route_name] = (self._clock(), rows)
+            self._route_estimate_cache.move_to_end(sub_route_name)
+            while len(self._route_estimate_cache) > _MAX_ROUTE_ESTIMATE_CACHE_ENTRIES:
+                self._route_estimate_cache.popitem(last=False)
+            return rows
 
     async def load_route_info(self, stop_name: str) -> dict[str, dict]:
         cached = self._route_info_by_stop.get(stop_name)
-        hit = cached is not None and not self._expired(cached[0], self._route_info_ttl)
+        ttl = self._route_info_ttl if cached is None or not cached[2] else _ROUTE_INFO_PARTIAL_TTL
+        hit = cached is not None and not self._expired(cached[0], ttl)
         get_telemetry().record_cache_lookup(cache="tdx.route_info", hit=hit)
         if cached is not None and hit:
             return cached[1]
 
-        city, intercity = await self._stop_of_route(stop_name)
+        city, intercity, had_failures = await self._stop_of_route(stop_name)
         info, boarding_uids = self._build_route_info(city + intercity, stop_name)
-        self._route_info_by_stop[stop_name] = (self._clock(), info)
+        self._route_info_by_stop[stop_name] = (self._clock(), info, had_failures)
         if boarding_uids:
             self._kiosk_uids[stop_name] = boarding_uids
         return info
@@ -417,8 +434,13 @@ class TdxBusProvider(BusProvider):
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    async def _stop_of_route(self, stop_name: str) -> tuple[list[dict], list[dict]]:
-        """Fetch StopOfRoute for City and InterCity; degrade gracefully on error."""
+    async def _stop_of_route(self, stop_name: str) -> tuple[list[dict], list[dict], bool]:
+        """Fetch StopOfRoute for City and InterCity; degrade gracefully on error.
+
+        Returns (city_rows, intercity_rows, had_failures) — had_failures is True
+        when either endpoint errored, so callers can cache the (possibly
+        incomplete) result with a short TTL instead of the full route-info TTL.
+        """
         results = await asyncio.gather(
             self._get(
                 f"{_BASE}/StopOfRoute/City/{_CITY}",
@@ -430,7 +452,8 @@ class TdxBusProvider(BusProvider):
             ),
             return_exceptions=True,
         )
-        return _safe_list(results[0]), _safe_list(results[1])
+        had_failures = any(isinstance(r, BaseException) for r in results)
+        return _safe_list(results[0]), _safe_list(results[1]), had_failures
 
     @staticmethod
     def _build_route_info(records: list[dict], kiosk_stop: str) -> tuple[dict[str, dict], set[str]]:

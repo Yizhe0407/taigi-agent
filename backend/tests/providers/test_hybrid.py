@@ -11,21 +11,29 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from providers.hybrid import HybridBusProvider
 
+_UNSET = object()  # distinguishes "not specified" from an explicit None (ebus failure signal)
+
 
 def _make_hybrid(
     *,
     ebus_route_estimate=None,
-    ebus_eta_rows=None,
+    ebus_eta_rows=_UNSET,
     ebus_routes_at_stop=None,
     tdx_route_estimate=None,
     tdx_eta=None,
     tdx_route_info=None,
     tdx_routes_at_stop=None,
 ):
-    """Build a HybridBusProvider with AsyncMock ebus and tdx internals."""
+    """Build a HybridBusProvider with AsyncMock ebus and tdx internals.
+
+    ebus_eta_rows follows fetch_eta_rows_for_stop's None-vs-[] sentinel:
+    a list (possibly empty) means ebus genuinely answered; None means every
+    route query failed. Defaults to [] (a genuine, unremarkable answer) when
+    not specified.
+    """
     ebus = MagicMock()
     ebus.fetch_route_estimate = AsyncMock(return_value=ebus_route_estimate)
-    ebus.fetch_eta_rows_for_stop = AsyncMock(return_value=ebus_eta_rows or [])
+    ebus.fetch_eta_rows_for_stop = AsyncMock(return_value=[] if ebus_eta_rows is _UNSET else ebus_eta_rows)
     ebus.find_routes_at_stop = AsyncMock(
         return_value=ebus_routes_at_stop if ebus_routes_at_stop is not None else {"Y01": {"id": "Y01"}, "7120": {"id": "7120"}}
     )
@@ -103,16 +111,28 @@ def test_fetch_eta_at_stop_passes_all_routes_to_ebus():
     tdx.fetch_eta_at_stop.assert_not_awaited()
 
 
-def test_fetch_eta_at_stop_tdx_fallback_when_ebus_returns_empty():
-    """TDX full ETA is called only when ebus returns no rows at all."""
+def test_fetch_eta_at_stop_tdx_fallback_when_ebus_signals_failure():
+    """TDX full ETA is called only when ebus signals total failure (None), not on a genuine empty list."""
     ebus_info = {"7120": {"id": "7120"}}
     tdx_rows = [{"sub_route_name": "7120", "direction": 0, "stop_status": 0, "estimate_seconds": 300}]
 
-    h, ebus, tdx = _make_hybrid(ebus_eta_rows=[], ebus_routes_at_stop=ebus_info, tdx_eta=tdx_rows)
+    h, ebus, tdx = _make_hybrid(ebus_eta_rows=None, ebus_routes_at_stop=ebus_info, tdx_eta=tdx_rows)
     result = asyncio.run(h.fetch_eta_at_stop("斗六火車站"))
 
     assert result == tdx_rows
     tdx.fetch_eta_at_stop.assert_awaited_once_with("斗六火車站")
+
+
+def test_fetch_eta_at_stop_no_tdx_fallback_when_ebus_genuinely_empty():
+    """A real (non-None) empty list from ebus means 'no ETA right now', not a failure —
+    must NOT trigger a redundant TDX call."""
+    ebus_info = {"7120": {"id": "7120"}}
+
+    h, ebus, tdx = _make_hybrid(ebus_eta_rows=[], ebus_routes_at_stop=ebus_info)
+    result = asyncio.run(h.fetch_eta_at_stop("斗六火車站"))
+
+    assert result == []
+    tdx.fetch_eta_at_stop.assert_not_awaited()
 
 
 def test_fetch_eta_at_stop_ebus_failure_falls_back_to_tdx():
@@ -251,14 +271,24 @@ def test_fetch_eta_at_stop_records_ebus_hit():
 
 def test_fetch_eta_at_stop_records_tdx_fallback_when_tdx_has_rows():
     tdx_rows = [{"sub_route_name": "7120", "direction": 0, "stop_status": 0, "estimate_seconds": 300}]
-    h, _, _ = _make_hybrid(ebus_eta_rows=[], tdx_eta=tdx_rows)
+    h, _, _ = _make_hybrid(ebus_eta_rows=None, tdx_eta=tdx_rows)
     with patch("providers.hybrid.get_telemetry") as mock_get_telemetry:
         asyncio.run(h.fetch_eta_at_stop("斗六火車站"))
     mock_get_telemetry.return_value.record_provider_fallback.assert_called_once_with(operation="eta", outcome="tdx_fallback")
 
 
+def test_fetch_eta_at_stop_records_ebus_hit_when_ebus_genuinely_empty():
+    """A genuine empty ebus answer still counts as an ebus hit, not a fallback."""
+    h, _, tdx = _make_hybrid(ebus_eta_rows=[])
+    with patch("providers.hybrid.get_telemetry") as mock_get_telemetry:
+        result = asyncio.run(h.fetch_eta_at_stop("斗六火車站"))
+    assert result == []
+    tdx.fetch_eta_at_stop.assert_not_awaited()
+    mock_get_telemetry.return_value.record_provider_fallback.assert_called_once_with(operation="eta", outcome="ebus_hit")
+
+
 def test_fetch_eta_at_stop_records_both_empty_when_tdx_also_empty():
-    h, _, _ = _make_hybrid(ebus_eta_rows=[], tdx_eta=[])
+    h, _, _ = _make_hybrid(ebus_eta_rows=None, tdx_eta=[])
     with patch("providers.hybrid.get_telemetry") as mock_get_telemetry:
         asyncio.run(h.fetch_eta_at_stop("斗六火車站"))
     mock_get_telemetry.return_value.record_provider_fallback.assert_called_once_with(operation="eta", outcome="both_empty")
