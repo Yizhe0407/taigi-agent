@@ -268,14 +268,32 @@ def _downstream_names(
     Returns None when kiosk doesn't appear in this direction — caller should
     skip it.  Includes the kiosk itself so「有沒有停 X」when X is the kiosk
     answers 有.
+
+    `stops` arrives in raw TDX row order, not guaranteed sorted by sequence.
+    Sorting first (like `render_route_stops`'s `sorted(stops)`) ensures the
+    lowest-sequence kiosk occurrence is picked as the boarding point — matters
+    for circular routes where the kiosk's stop name repeats later in the same
+    direction as the loop-completion arrival; picking that later occurrence
+    would report a shorter downstream list than actually available.
     """
+    ordered = sorted(stops)
     kiosk_seq = next(
-        (s for s, n in stops if _name_matches(kiosk_stop, n)),
+        (s for s, n in ordered if _name_matches(kiosk_stop, n)),
         None,
     )
     if kiosk_seq is None:
         return None
-    return [n for s, n in stops if s >= kiosk_seq]
+    return [n for s, n in ordered if s >= kiosk_seq]
+
+
+def _is_traffic_controlled(stop: dict) -> bool:
+    """True for TDX StopStatus 2 (交管不停靠) — a row callers must drop before
+    `_classify_stop`, never classify. Shared by every call site that walks raw
+    TDX rows (`iter_scoped_stop_etas`, `render_arrivals`, `_check_route_arrivals`,
+    `build_route_detail`) so a traffic-controlled stop is silently skipped
+    everywhere instead of surfacing as "狀態不明" wherever a caller forgets.
+    """
+    return stop.get("stop_status") == 2
 
 
 def _dedup_stop_rows_by_direction(rows: list[dict]) -> list[dict]:
@@ -324,7 +342,7 @@ def iter_scoped_stop_etas(
     go_back parameter uses TDX Direction encoding: 0=去程, 1=回程.
     """
     for stop in eta_data:
-        if stop.get("stop_status") == 2:
+        if _is_traffic_controlled(stop):
             continue
         stop_direction = stop.get("direction", 0)
         sub_route_name = stop.get("sub_route_name")

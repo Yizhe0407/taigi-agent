@@ -6,7 +6,7 @@ matching needs a pinyin dimension) and numeric route candidates getting
 squeezed out of top-5 by ties (route matching needs edit-distance ranking).
 """
 
-from services.departures.normalize import _fuzzy_candidates, _route_candidates, _stop_similarity
+from services.departures.normalize import _downstream_names, _fuzzy_candidates, _route_candidates, _stop_similarity
 
 # ── fuzzy stop-name matching: pinyin rescue for homophone ASR errors ──────────
 
@@ -125,3 +125,25 @@ def test_fuzzy_candidates_prefers_same_order_homophone():
     keeps the query's syllable order (linnai→linnei) while 大林 reverses it. D5."""
     candidates = _fuzzy_candidates("林奈", {"林內", "大林", "西螺"})
     assert candidates[0][0] == "林內"
+
+
+# ── _downstream_names: circular routes need the min-seq occurrence ─────────────
+
+
+def test_downstream_names_picks_lowest_seq_when_stops_unordered():
+    """Circular route: the kiosk stop name appears twice in one direction — once
+    as the boarding point (low seq) and once as the loop-completion arrival
+    (high seq). `stops` arrives in raw TDX row order (not guaranteed sorted),
+    so the input here is deliberately scrambled. The boarding point (seq=1)
+    must still be picked, not the later occurrence (seq=4) — picking seq=4
+    would wrongly truncate the downstream list to just the tail of the loop.
+    """
+    # Scrambled order on purpose; seq 1 and 4 share the kiosk's name.
+    stops = [(3, "站A"), (5, "終點"), (1, "起點站"), (4, "起點站"), (2, "站B")]
+    result = _downstream_names(stops, "起點站")
+    assert result == ["起點站", "站B", "站A", "起點站", "終點"]
+
+
+def test_downstream_names_no_match_returns_none_regardless_of_order():
+    stops = [(2, "站B"), (1, "站A")]
+    assert _downstream_names(stops, "不存在站") is None

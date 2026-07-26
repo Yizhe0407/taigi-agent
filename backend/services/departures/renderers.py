@@ -13,6 +13,7 @@ from services.departures.normalize import (
     _direction_label_from_info,
     _downstream_names,
     _fuzzy_candidates,
+    _is_traffic_controlled,
     _lookup_route,
     _name_matches,
     _resolve_forward_match,
@@ -150,7 +151,11 @@ async def render_arrivals(
         return resolved
     route_info, data = resolved
 
-    matches = [stop for stop in data if stop_name in stop.get("stop_name", "") and (go_back is None or stop.get("direction") == go_back)]
+    matches = [
+        stop
+        for stop in data
+        if stop_name in stop.get("stop_name", "") and (go_back is None or stop.get("direction") == go_back) and not _is_traffic_controlled(stop)
+    ]
     matches = _dedup_stop_rows_by_direction(matches)
     if not matches:
         return f"路線 {route} 不停 {stop_name}。"
@@ -348,7 +353,9 @@ async def _check_route_arrivals(
         if _name_matches(kiosk_stop, dir_label.removeprefix("往")):
             dir_label = "（循環）"
 
-        kiosk_rows = [row for row in data if kiosk_stop in row.get("stop_name", "") and row.get("direction", 0) == direction]
+        kiosk_rows = [
+            row for row in data if kiosk_stop in row.get("stop_name", "") and row.get("direction", 0) == direction and not _is_traffic_controlled(row)
+        ]
         kiosk_rows = _dedup_stop_rows_by_direction(kiosk_rows)
         if kiosk_rows:
             c = _classify_stop(kiosk_rows[0], now)
@@ -418,7 +425,10 @@ async def render_arrivals_to_destination(
     # same exact-match-preferred tie-break as `_resolve_forward_match` itself.
     # Falls back to `destination` when `raw` is empty (nothing resolved).
     canonical_candidates = {c for _, _, c in results if c}
-    canonical = min(canonical_candidates, key=len) if canonical_candidates else destination
+    # Secondary sort key (the string itself) makes the tie-break deterministic
+    # across restarts: `min()` over a `set` with tied `len()` keys otherwise
+    # depends on hash-seed-dependent iteration order.
+    canonical = min(canonical_candidates, key=lambda s: (len(s), s)) if canonical_candidates else destination
 
     if not raw:
         candidates = [name for name, _ in _fuzzy_candidates(destination, all_stops)]

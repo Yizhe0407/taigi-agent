@@ -241,6 +241,31 @@ def test_build_route_detail_returns_structured_stop_order(use_provider):
     assert direction.stops[2].status_text == "未發車"
 
 
+def test_build_route_detail_skips_traffic_controlled_stop(use_provider):
+    """StopStatus=2 (交管不停靠) rows must be dropped before classify, not shown
+    as "狀態不明" in the stop-order detail."""
+    use_provider(
+        FakeBusProvider(
+            route_info={
+                "201": {"id": "201", "go_dest": "雲林科技大學", "back_dest": "高鐵雲林站"},
+            },
+            route_estimate=[
+                {"stop_name": "雲林科技大學", "stop_sequence": 1, "direction": 1, "stop_status": 0, "estimate_seconds": 0},
+                {"stop_name": "大學路口", "stop_sequence": 2, "direction": 1, "stop_status": 2, "estimate_seconds": None},
+                {"stop_name": "高鐵雲林站", "stop_sequence": 3, "direction": 1, "stop_status": 1, "estimate_seconds": None},
+            ],
+        )
+    )
+
+    detail = asyncio.run(departures.build_route_detail("201", "雲林科技大學", go_back=1))
+
+    direction = detail.directions[0]
+    names = [stop.name for stop in direction.stops]
+    assert "大學路口" not in names  # traffic-controlled stop dropped, not shown as 狀態不明
+    assert names == ["雲林科技大學", "高鐵雲林站"]
+    assert all(stop.status_text != "狀態不明" for stop in direction.stops)
+
+
 def test_build_route_detail_raises_not_found_for_non_kiosk_route(use_provider):
     use_provider(FakeBusProvider(route_info={}))
 
@@ -290,6 +315,26 @@ def test_render_arrivals_uses_classify(use_provider):
     )
 
     assert asyncio.run(departures.render_arrivals("201", "雲林科技大學")) == ("往雲林科技大學：即將到站\n往高鐵雲林站：約十二分鐘後到這站")
+
+
+def test_render_arrivals_skips_traffic_controlled_stop(use_provider):
+    """StopStatus=2 (交管不停靠) rows must be dropped before classify, not shown
+    as "狀態不明" — consistent with `iter_scoped_stop_etas`'s silent skip."""
+    use_provider(
+        FakeBusProvider(
+            route_info={
+                "201": {"id": "201", "go_dest": "雲林科技大學", "back_dest": "高鐵雲林站"},
+            },
+            route_estimate=[
+                {"stop_name": "雲林科技大學", "stop_sequence": 1, "direction": 0, "stop_status": 2, "estimate_seconds": None},
+                {"stop_name": "雲林科技大學", "stop_sequence": 1, "direction": 1, "stop_status": 0, "estimate_seconds": 720},
+            ],
+        )
+    )
+    result = asyncio.run(departures.render_arrivals("201", "雲林科技大學"))
+    assert "狀態不明" not in result
+    assert "往高鐵雲林站：約十二分鐘後到這站" in result
+    assert "往雲林科技大學" not in result  # the traffic-controlled direction is dropped entirely
 
 
 def test_render_route_stops_lists_both_directions(use_provider):

@@ -14,6 +14,7 @@ from services.departures.classification import (
 from services.departures.normalize import (
     TAIPEI_TZ,
     _direction_label_from_info,
+    _is_traffic_controlled,
     iter_scoped_stop_etas,
 )
 from services.departures.provider import get_provider
@@ -221,6 +222,8 @@ async def build_route_detail(
     for row in estimate_data:
         row_direction = row.get("direction", 0)
         if go_back is not None and row_direction != go_back:
+            continue
+        if _is_traffic_controlled(row):
             continue
 
         stop_detail = _stop_detail_from_row(row, stop_name, now)
