@@ -68,7 +68,7 @@ async def webrtc_offer(body: dict) -> dict:
             session_id = client_session_id
             _log.info("Voice pipeline reusing existing session %s", session_id)
         else:
-            session_id = store.create()
+            session_id = await asyncio.to_thread(store.create)
             _log.info("Voice pipeline created new session %s (no valid session_id from client)", session_id)
 
         def _on_pipeline_done(fut: asyncio.Task) -> None:

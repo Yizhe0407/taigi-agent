@@ -24,6 +24,35 @@ def test_rate_limit_rejects_requests_over_capacity(monkeypatch):
     assert error.headers and "Retry-After" in error.headers
 
 
+def test_prune_evicts_least_recently_active_not_oldest_inserted(monkeypatch):
+    """_prune() must evict by LRU (least recently active), not insertion
+    order — otherwise a client active since before the table filled up keeps
+    getting evicted-and-recreated on every subsequent request, handing it a
+    fresh token bucket that bypasses the rate limit.
+    """
+    import api.request_limits as request_limits_module
+
+    monkeypatch.setattr(request_limits_module, "_MAX_RATE_LIMIT_CLIENTS", 3)
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
+    policy = RateLimit(100, 60.0)  # generous capacity so token exhaustion never interferes
+
+    def _request(host: str) -> Request:
+        return Request({"type": "http", "method": "GET", "path": "/", "headers": [], "client": (host, 1)})
+
+    async def run():
+        await policy(_request("A"))
+        await policy(_request("B"))
+        await policy(_request("A"))  # A reactivated — now more recently active than B
+        await policy(_request("C"))  # table fills to capacity (3), no eviction needed yet
+        await policy(_request("D"))  # 4th distinct client — forces an eviction
+
+    asyncio.run(run())
+
+    # B is the only client never touched again after its first request — it
+    # must be the one evicted, not A (oldest by insertion, but recently active).
+    assert set(policy._buckets.keys()) == {"A", "C", "D"}
+
+
 def test_body_limit_rejects_chunked_upload_before_app_finishes(monkeypatch):
     app_completed = False
     sent: list[dict] = []

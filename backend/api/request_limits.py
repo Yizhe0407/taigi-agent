@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
@@ -103,7 +104,10 @@ class RateLimit:
     def __init__(self, requests: int, per_seconds: float) -> None:
         self._capacity = float(requests)
         self._refill_per_second = requests / per_seconds
-        self._buckets: dict[str, _Bucket] = {}
+        # Ordered by recency of activity (see move_to_end below) so eviction
+        # under _prune() drops the least-recently-active client, not just
+        # whichever one happened to be inserted first.
+        self._buckets: OrderedDict[str, _Bucket] = OrderedDict()
         self._lock = asyncio.Lock()
 
     async def __call__(self, request: Request) -> None:
@@ -122,6 +126,7 @@ class RateLimit:
                 elapsed = max(0.0, now - bucket.updated_at)
                 bucket.tokens = min(self._capacity, bucket.tokens + elapsed * self._refill_per_second)
                 bucket.updated_at = now
+            self._buckets.move_to_end(client)
 
             if bucket.tokens < 1.0:
                 retry_after = max(1, int((1.0 - bucket.tokens) / self._refill_per_second) + 1)
@@ -139,7 +144,10 @@ class RateLimit:
         for key in stale:
             self._buckets.pop(key, None)
         while len(self._buckets) >= _MAX_RATE_LIMIT_CLIENTS:
-            self._buckets.pop(next(iter(self._buckets)))
+            # Least-recently-active entry is at the front (move_to_end keeps
+            # active clients at the back) — evict that one, not an arbitrary
+            # insertion-order-oldest entry that might still be active.
+            self._buckets.popitem(last=False)
 
 
 TTS_RATE_LIMIT = RateLimit(10, 60.0)
@@ -150,3 +158,4 @@ VOICE_RATE_LIMIT = RateLimit(10, 60.0)
 CLIENT_EVENT_RATE_LIMIT = RateLimit(20, 60.0)
 ADMIN_WRITE_RATE_LIMIT = RateLimit(10, 60.0)
 ROUTE_PLAN_RATE_LIMIT = RateLimit(30, 60.0)
+MOOVO_RATE_LIMIT = RateLimit(30, 60.0)

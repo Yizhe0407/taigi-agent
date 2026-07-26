@@ -48,6 +48,22 @@ def test_stream_endpoint_missing_session_is_404(tmp_path):
     assert response.status_code == 404
 
 
+def test_stream_endpoint_expired_session_is_404(tmp_path):
+    """The pre-stream check now goes through ChatSessionStore.exists() instead
+    of a second load_messages() call — must keep the same TTL verdict.
+    """
+    import time
+
+    store = ChatSessionStore(tmp_path / "sessions.db", ttl_seconds=0.01)
+    set_store(store)
+    session_id = store.create()
+    time.sleep(0.05)
+
+    response = TestClient(app).post(f"/api/chat/sessions/{session_id}/messages/stream", json={"message": "hi"})
+
+    assert response.status_code == 404
+
+
 def test_stream_endpoint_midstream_error_becomes_error_event(tmp_path, monkeypatch):
     client, session_id = _make_session(tmp_path)
 

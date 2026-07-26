@@ -166,7 +166,10 @@ async def respond_in_session_stream(
     behaviour is unchanged.
     """
     store = _get_store()
-    lock = _session_locks.setdefault(session_id, asyncio.Lock())
+    lock = _session_locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _session_locks[session_id] = lock
     async with lock:
         # SQLite I/O is synchronous — run it off the event loop
         messages = await asyncio.to_thread(store.load_messages, session_id)
@@ -223,8 +226,9 @@ async def send_chat_message_stream(session_id: str, body: ChatMessageRequest) ->
     `{"error": 訊息}` 事件收尾（HTTP status 已送出，無法改）。
     """
     # SSE 開始後無法再改 status code，session 存在與否先查（與串流開始之間
-    # 的過期 race 由 error 事件兜底）。
-    if await asyncio.to_thread(_get_store().load_messages, session_id) is None:
+    # 的過期 race 由 error 事件兜底）。輕量 exists() 只查 last_used，不重覆
+    # 載入/解析 messages payload——權威讀在 respond_in_session_stream 的 lock 內。
+    if not await asyncio.to_thread(_get_store().exists, session_id):
         raise HTTPException(status_code=404, detail="對話階段不存在或已過期，請重新開始")
 
     async def events():

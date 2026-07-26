@@ -66,8 +66,16 @@ class ChatSessionStore:
         return session_id
 
     def load_messages(self, session_id: str) -> list[dict] | None:
-        """Return messages and bump `last_used`, or None if missing / expired."""
-        self.purge_expired()
+        """Return messages and bump `last_used`, or None if missing / expired.
+
+        Does its own per-row TTL check (and deletes this row if expired) but,
+        unlike earlier versions, no longer runs a full-table `purge_expired()`
+        first — that was a table scan + DELETE under the global lock on every
+        single message, and `api.chat.run_lock_purge_loop` already sweeps the
+        whole table every 300s. Other sessions' expiry is only that much
+        (<=300s) less eager now; this session's own expiry check below is
+        unaffected.
+        """
         now = time.time()
         with self._lock:
             row = self._conn.execute(
@@ -87,6 +95,23 @@ class ChatSessionStore:
                 (now, session_id),
             )
         return json.loads(row[1])
+
+    def exists(self, session_id: str) -> bool:
+        """Cheap presence check with the same TTL semantics as `load_messages`,
+        minus the payload read, the `last_used` bump, and `purge_expired()`.
+
+        Used for `api.chat`'s pre-stream 404 check so the message payload
+        isn't loaded and JSON-decoded twice per request — the authoritative
+        read for the actual turn still happens inside the session lock via
+        `load_messages`.
+        """
+        now = time.time()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT last_used FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return row is not None and now - row[0] <= self._ttl
 
     def save_messages(self, session_id: str, messages: list[dict]) -> None:
         payload = json.dumps(messages, ensure_ascii=False)

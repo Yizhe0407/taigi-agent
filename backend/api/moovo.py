@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import NoReturn
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from services.moovo import (
@@ -17,6 +17,8 @@ from services.moovo import (
     load_moovo_stations,
     nearby_moovo_stations,
 )
+
+from .request_limits import MOOVO_RATE_LIMIT
 
 router = APIRouter()
 
@@ -88,7 +90,11 @@ def _raise_moovo_unavailable(error: MoovoError) -> NoReturn:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/api/moovo/stations", response_model=MoovoStationsResponse)
+@router.get(
+    "/api/moovo/stations",
+    response_model=MoovoStationsResponse,
+    dependencies=[Depends(MOOVO_RATE_LIMIT)],
+)
 async def list_moovo_stations() -> object:
     """Return Yunlin MOOVO stations with current TDX availability."""
     try:
@@ -98,7 +104,11 @@ async def list_moovo_stations() -> object:
     return {"stations": [_moovo_station_response(station) for station in stations]}
 
 
-@router.get("/api/moovo/stations/nearby", response_model=NearbyMoovoStationsResponse)
+@router.get(
+    "/api/moovo/stations/nearby",
+    response_model=NearbyMoovoStationsResponse,
+    dependencies=[Depends(MOOVO_RATE_LIMIT)],
+)
 async def list_nearby_moovo_stations(
     lat: float = Query(ge=-90, le=90),
     lng: float = Query(ge=-180, le=180),
