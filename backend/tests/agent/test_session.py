@@ -380,7 +380,7 @@ def test_respond_directly_short_circuit_stores_normalized_assistant_history():
 def test_history_stores_normalized_assistant_content_not_raw_reasoning():
     """Assistant content saved to history must be think-stripped and traditional Chinese.
 
-    Regression test: raw content (e.g. Groq qwen3's <think> blocks, simplified
+    Regression test: raw content (e.g. Qwen3's <think> blocks, simplified
     Chinese) used to be appended to history verbatim, wasting context budget
     and few-shotting the model into repeating its own dirty output.
     """

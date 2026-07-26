@@ -1,8 +1,7 @@
 """Probe script: test LLM endpoint for Chinese chat + tool calling.
 
 Usage:
-    uv run python probe_llm.py            # Groq (GROQ_API_KEY)
-    uv run python probe_llm.py --local    # local LLM_BASE_URL endpoint
+    uv run python probe_llm.py            # local LLM_BASE_URL/LLM_MODEL endpoint
     uv run python probe_llm.py --nvidia   # NVIDIA NIM (NVIDIA_API_KEY)
 
 Reports response content and any tool calls for each test case.
@@ -106,17 +105,9 @@ async def probe_one(client: AsyncOpenAI, model: str, user_msg: str, extra_body: 
 
 
 async def main() -> None:
-    use_local = "--local" in sys.argv
     use_nvidia = "--nvidia" in sys.argv
 
-    if use_local:
-        base_url = os.getenv("LLM_BASE_URL", "")
-        model = os.getenv("LLM_MODEL", "")
-        api_key = os.getenv("LLM_API_KEY", "ollama")
-        # vLLM (Qwen3) needs this to suppress chain-of-thought tokens.
-        extra_body: dict = {"chat_template_kwargs": {"enable_thinking": False}}
-        print(f"=== LOCAL (vLLM): {model} @ {base_url} ===\n")
-    elif use_nvidia:
+    if use_nvidia:
         raw_url = os.getenv("NVIDIA_BASE_URL", "")
         # Strip /chat/completions suffix if present — OpenAI client adds it.
         base_url = raw_url.removesuffix("/chat/completions")
@@ -125,14 +116,15 @@ async def main() -> None:
         extra_body = {}
         print(f"=== NVIDIA NIM: {model} @ {base_url} ===\n")
     else:
-        base_url = "https://api.groq.com/openai/v1"
-        model = os.getenv("GROQ_MODEL", "qwen/qwen3-32b")
-        api_key = os.getenv("GROQ_API_KEY", "")
-        extra_body = {}
-        print(f"=== GROQ: {model} ===\n")
+        base_url = os.getenv("LLM_BASE_URL", "")
+        model = os.getenv("LLM_MODEL", "")
+        api_key = os.getenv("LLM_API_KEY", "ollama")
+        # vLLM (Qwen3) needs this to suppress chain-of-thought tokens.
+        extra_body: dict = {"chat_template_kwargs": {"enable_thinking": False}}
+        print(f"=== LOCAL (vLLM): {model} @ {base_url} ===\n")
 
     if not base_url or not model:
-        print("Missing env vars. Set GROQ_API_KEY, or use --local (LLM_BASE_URL/LLM_MODEL), or --nvidia (NVIDIA_BASE_URL/NVIDIA_MODEL).")
+        print("Missing env vars. Set LLM_BASE_URL/LLM_MODEL, or use --nvidia (NVIDIA_BASE_URL/NVIDIA_MODEL).")
         sys.exit(1)
 
     client = AsyncOpenAI(base_url=base_url, api_key=api_key)

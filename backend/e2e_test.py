@@ -1,7 +1,7 @@
 """End-to-end conversation test against the full agent stack.
 
 Runs a scripted multi-turn conversation through AgentSession (real tools,
-real Groq LLM) and prints each exchange. No assertions — judge by reading.
+real LLM) and prints each exchange. No assertions — judge by reading.
 
 Usage:
     uv run python e2e_test.py

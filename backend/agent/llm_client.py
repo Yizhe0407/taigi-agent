@@ -32,7 +32,7 @@ _CONTEXT_ERROR_MARKERS = (
     "too many tokens",
 )
 
-# Groq-specific strings. If switching to vLLM or another backend, update these
+# Backend-specific strings. If the LLM backend changes, update these
 # markers — mismatches cause silent fall-through instead of mode retry.
 _TOOL_CALL_FAILED_MARKERS = (
     "tool_use_failed",

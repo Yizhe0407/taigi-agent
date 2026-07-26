@@ -85,7 +85,7 @@ uv sync
 
 # 2. 設定環境變數
 cp .env.example .env
-# 必填：LLM_BASE_URL、LLM_MODEL（或 GROQ_API_KEY）
+# 必填：LLM_BASE_URL、LLM_MODEL
 # 管理後台寫入必填：ADMIN_TOKEN（高熵隨機值）
 # Kiosk 預設為「雲林科技大學／回程」，啟動後由 /admin 修改
 

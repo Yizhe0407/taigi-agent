@@ -2,8 +2,7 @@
 
 Classifies user input into one of N intents using regex/keyword rules —
 no LLM call. Handles only canned-response intents (Rules 1-3); all tool
-dispatch is handled by the LLM (Groq qwen3-32b). UNKNOWN falls through
-to the LLM loop.
+dispatch is handled by the LLM. UNKNOWN falls through to the LLM loop.
 """
 
 from __future__ import annotations

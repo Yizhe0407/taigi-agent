@@ -26,8 +26,6 @@ from agent.session import AgentSession, InputEnricher
 from agent.tools import TOOL_HANDLERS, TOOL_SCHEMAS
 from telemetry import configure_telemetry
 
-_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-_GROQ_DEFAULT_MODEL = "qwen/qwen3-32b"
 # Anti-degeneration sampling. On confirmation turns ("對") Qwen3.5-4B loops the
 # same 1-2 sentences separated by blank lines until timeout; stopping at the
 # first blank line ends the turn after the (complete, ≤2-sentence) first block,
@@ -40,9 +38,6 @@ _SAMPLING = {"max_tokens": 200, "stop": ["\n\n"]}
 # Local Qwen3 endpoints (vLLM / llama.cpp) read this to suppress thinking tokens.
 # Confirmed accepted by llama-server's OpenAI endpoint (returns 200, thinking off).
 _LOCAL_EXTRA_BODY = {"chat_template_kwargs": {"enable_thinking": False}, **_SAMPLING}
-# Groq qwen3-32b emits <think>...</think> reasoning by default; hiding it
-# saves the reasoning tokens' latency on every tool-call round.
-_GROQ_EXTRA_BODY = {"reasoning_format": "hidden", **_SAMPLING}
 
 
 def parse_cors_origins() -> list[str]:
@@ -56,8 +51,7 @@ class Settings:
     """Parsed and validated environment-variable configuration."""
 
     # ── LLM ───────────────────────────────────────────────────────────────────
-    # Set GROQ_API_KEY to route through Groq (takes priority if present).
-    # Otherwise set LLM_BASE_URL + LLM_MODEL for a local endpoint (vLLM / llama.cpp).
+    # Set LLM_BASE_URL + LLM_MODEL for a local OpenAI-compatible endpoint (vLLM / llama.cpp).
     llm_base_url: str
     llm_model: str
     llm_api_key: str
@@ -84,20 +78,13 @@ class Settings:
         Raises RuntimeError if any *required* variables are absent.
         Optional variables fall back to documented defaults.
         """
-        groq_api_key = os.getenv("GROQ_API_KEY", "")
-        if groq_api_key:
-            llm_base_url = _GROQ_BASE_URL
-            llm_model = os.getenv("GROQ_MODEL", _GROQ_DEFAULT_MODEL)
-            llm_api_key = groq_api_key
-            llm_extra_body: dict = _GROQ_EXTRA_BODY
-        else:
-            llm_base_url = os.getenv("LLM_BASE_URL", "")
-            llm_model = os.getenv("LLM_MODEL", "")
-            missing = [name for name, val in [("LLM_BASE_URL", llm_base_url), ("LLM_MODEL", llm_model)] if not val]
-            if missing:
-                raise RuntimeError(f"Required env vars not set: GROQ_API_KEY or {', '.join(missing)}")
-            llm_api_key = os.getenv("LLM_API_KEY", "ollama")
-            llm_extra_body = _LOCAL_EXTRA_BODY
+        llm_base_url = os.getenv("LLM_BASE_URL", "")
+        llm_model = os.getenv("LLM_MODEL", "")
+        missing = [name for name, val in [("LLM_BASE_URL", llm_base_url), ("LLM_MODEL", llm_model)] if not val]
+        if missing:
+            raise RuntimeError(f"Required env vars not set: {', '.join(missing)}")
+        llm_api_key = os.getenv("LLM_API_KEY", "ollama")
+        llm_extra_body: dict = _LOCAL_EXTRA_BODY
 
         return cls(
             llm_base_url=llm_base_url,

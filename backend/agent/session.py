@@ -340,7 +340,7 @@ class AgentSession:
                     return
 
                 # Normalize before storing in history: raw content may carry
-                # <think> blocks or simplified Chinese (Groq/qwen3 reasoning
+                # <think> blocks or simplified Chinese (Qwen3 reasoning
                 # output), which would waste context budget and few-shot the
                 # model into imitating its own dirty output next round.
                 entry = assistant_message(message, tool_calls)
