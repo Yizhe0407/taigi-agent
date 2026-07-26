@@ -35,6 +35,21 @@ class StopClassification:
     sort_minutes: int
 
 
+# Arrival-time thresholds (minutes) that split AVAILABLE into ARRIVING_SOON /
+# CAN_WAIT / LONG_WAIT.
+_ARRIVING_SOON_MAX_MIN = 3
+_CAN_WAIT_MAX_MIN = 20
+
+# sort_priority tiers: lower sorts first within a stop's route list. Gaps
+# between tiers leave room for future in-between states without renumbering.
+_SORT_PRIORITY_ARRIVING_SOON = 0
+_SORT_PRIORITY_CAN_WAIT = 10
+_SORT_PRIORITY_LONG_WAIT = 20
+_SORT_PRIORITY_NOT_DEPARTED = 200
+_SORT_PRIORITY_LAST_DEPARTED = 300
+_SORT_PRIORITY_UNKNOWN = 400
+
+
 def _unknown() -> StopClassification:
     return StopClassification(
         section=DepartureSection.UNKNOWN,
@@ -43,7 +58,7 @@ def _unknown() -> StopClassification:
         decision_text="資料異常",
         minutes=None,
         scheduled_time=None,
-        sort_priority=400,
+        sort_priority=_SORT_PRIORITY_UNKNOWN,
         sort_minutes=9999,
     )
 
@@ -70,7 +85,7 @@ def _classify_stop(stop: dict, now: datetime) -> StopClassification:
             decision_text="末班已過",
             minutes=None,
             scheduled_time=None,
-            sort_priority=300,
+            sort_priority=_SORT_PRIORITY_LAST_DEPARTED,
             sort_minutes=9999,
         )
 
@@ -82,7 +97,7 @@ def _classify_stop(stop: dict, now: datetime) -> StopClassification:
             decision_text="今日未營運",
             minutes=None,
             scheduled_time=None,
-            sort_priority=400,
+            sort_priority=_SORT_PRIORITY_UNKNOWN,
             sort_minutes=9999,
         )
 
@@ -111,13 +126,13 @@ def _classify_stop(stop: dict, now: datetime) -> StopClassification:
             decision_text="尚未發車",
             minutes=sched_minutes,
             scheduled_time=scheduled_time,
-            sort_priority=200,
+            sort_priority=_SORT_PRIORITY_NOT_DEPARTED,
             sort_minutes=sort_mins,
         )
 
     if stop_status == 0 and estimate_seconds is not None:
         minutes = estimate_seconds // 60
-        if minutes <= 3:
+        if minutes <= _ARRIVING_SOON_MAX_MIN:
             return StopClassification(
                 section=DepartureSection.AVAILABLE,
                 decision=DepartureDecision.ARRIVING_SOON,
@@ -125,10 +140,10 @@ def _classify_stop(stop: dict, now: datetime) -> StopClassification:
                 decision_text="即將到站",
                 minutes=max(0, minutes),
                 scheduled_time=None,
-                sort_priority=0,
+                sort_priority=_SORT_PRIORITY_ARRIVING_SOON,
                 sort_minutes=max(0, minutes),
             )
-        if minutes <= 20:
+        if minutes <= _CAN_WAIT_MAX_MIN:
             return StopClassification(
                 section=DepartureSection.AVAILABLE,
                 decision=DepartureDecision.CAN_WAIT,
@@ -136,7 +151,7 @@ def _classify_stop(stop: dict, now: datetime) -> StopClassification:
                 decision_text="可以等",
                 minutes=minutes,
                 scheduled_time=None,
-                sort_priority=10,
+                sort_priority=_SORT_PRIORITY_CAN_WAIT,
                 sort_minutes=minutes,
             )
         return StopClassification(
@@ -146,7 +161,7 @@ def _classify_stop(stop: dict, now: datetime) -> StopClassification:
             decision_text="等待較久",
             minutes=minutes,
             scheduled_time=None,
-            sort_priority=20,
+            sort_priority=_SORT_PRIORITY_LONG_WAIT,
             sort_minutes=minutes,
         )
 

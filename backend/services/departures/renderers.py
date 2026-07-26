@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -123,6 +123,56 @@ def _miss_to_str(miss: _RouteMiss) -> str:
     return f"本站沒有路線 {miss.route}。"
 
 
+async def _rescue_or(
+    candidates: list[str],
+    rescue: bool,
+    retry: Callable[[str], Awaitable[str]],
+    miss: Callable[[], str],
+) -> str:
+    """Shared ASR-rescue core, factored out of 4 near-identical call sites.
+
+    On the top phonetic `candidates[0]`, re-queries via `retry` and returns its
+    real result behind `_rescue_prefix` — Qwen3.5-4B will not issue a second
+    tool call on a text instruction, so resolving here (instead of handing the
+    LLM a candidate list) is the only reliable way to keep the confirmation
+    sentence truthful. Falls back to `miss()` when `rescue` is False,
+    `candidates` is empty, or the retry itself came back empty
+    (`_is_real_status`) — `retry` is expected to pass `_rescue=False` to guard
+    the one-hop recursion.
+    """
+    if rescue and candidates:
+        best = candidates[0]
+        inner = await retry(best)
+        if _is_real_status(inner):
+            return f"{_rescue_prefix(best)}\n{inner}"
+    return miss()
+
+
+async def _render_with_rescue(
+    route: str,
+    stop_name: str,
+    *,
+    fuzzy: bool,
+    rescue: bool,
+    retry: Callable[[str], Awaitable[str]],
+    body: Callable[[dict, list[dict]], str],
+) -> str:
+    """Shared prologue for single-route renderers.
+
+    Resolves `route` at `stop_name` via `_resolve_route_estimate`; a mis-heard
+    route (`_RouteMiss`) goes through `_rescue_or`, a provider failure returns
+    its error string as-is, and a successful resolution hands
+    `(route_info, estimate_data)` to `body` for the renderer-specific part.
+    """
+    resolved = await _resolve_route_estimate(route, stop_name, fuzzy=fuzzy)
+    if isinstance(resolved, _RouteMiss):
+        return await _rescue_or(resolved.candidates, rescue, retry, lambda: _miss_to_str(resolved))
+    if isinstance(resolved, str):
+        return resolved
+    route_info, data = resolved
+    return body(route_info, data)
+
+
 async def render_arrivals(
     route: str,
     stop_name: str,
@@ -132,49 +182,45 @@ async def render_arrivals(
 ) -> str:
     """Render `route` arrivals at `stop_name` as a kiosk-style string.
 
-    ASR-rescue: on a mis-heard route (`_RouteMiss`) the renderer *itself*
-    re-queries the top-ranked candidate and returns its real status behind a
-    confirmation prefix. Qwen3.5-4B will not issue a second tool call on a text
-    instruction — it fabricates an ETA instead — so resolving here is the only
-    reliable way to keep the confirmation sentence truthful. `_rescue=False`
-    guards the one-hop recursion.
+    ASR-rescue: on a mis-heard route the renderer *itself* re-queries the
+    top-ranked candidate and returns its real status behind a confirmation
+    prefix (see `_rescue_or`). `_rescue=False` guards the one-hop recursion.
     """
-    resolved = await _resolve_route_estimate(route, stop_name, fuzzy=True)
-    if isinstance(resolved, _RouteMiss):
-        if _rescue and resolved.candidates:
-            best = resolved.candidates[0]
-            inner = await render_arrivals(best, stop_name, go_back, _rescue=False)
-            if _is_real_status(inner):
-                return f"{_rescue_prefix(best)}\n{inner}"
-        return _miss_to_str(resolved)
-    if isinstance(resolved, str):
-        return resolved
-    route_info, data = resolved
 
-    matches = [
-        stop
-        for stop in data
-        if stop_name in stop.get("stop_name", "") and (go_back is None or stop.get("direction") == go_back) and not _is_traffic_controlled(stop)
-    ]
-    matches = _dedup_stop_rows_by_direction(matches)
-    if not matches:
-        return f"路線 {route} 不停 {stop_name}。"
+    def _body(route_info: dict, data: list[dict]) -> str:
+        matches = [
+            stop
+            for stop in data
+            if stop_name in stop.get("stop_name", "") and (go_back is None or stop.get("direction") == go_back) and not _is_traffic_controlled(stop)
+        ]
+        matches = _dedup_stop_rows_by_direction(matches)
+        if not matches:
+            return f"路線 {route} 不停 {stop_name}。"
 
-    now = datetime.now(TAIPEI_TZ)
-    results = []
-    for stop in matches:
-        stop_direction = stop.get("direction", 0)
-        c = _classify_stop(stop, now)
-        status_text = _with_schedule(_mark_incoming(c.status_text), c.scheduled_time)
-        # Single-direction query: direction is already implied by kiosk config;
-        # label only adds noise for TTS and short-response constraints.
-        if go_back is None:
-            label = _direction_label_from_info(route_info, route, stop_direction)
-            results.append(f"{label}：{status_text}")
-        else:
-            results.append(status_text)
+        now = datetime.now(TAIPEI_TZ)
+        results = []
+        for stop in matches:
+            stop_direction = stop.get("direction", 0)
+            c = _classify_stop(stop, now)
+            status_text = _with_schedule(_mark_incoming(c.status_text), c.scheduled_time)
+            # Single-direction query: direction is already implied by kiosk config;
+            # label only adds noise for TTS and short-response constraints.
+            if go_back is None:
+                label = _direction_label_from_info(route_info, route, stop_direction)
+                results.append(f"{label}：{status_text}")
+            else:
+                results.append(status_text)
 
-    return "\n".join(results)
+        return "\n".join(results)
+
+    return await _render_with_rescue(
+        route,
+        stop_name,
+        fuzzy=True,
+        rescue=_rescue,
+        retry=lambda best: render_arrivals(best, stop_name, go_back, _rescue=False),
+        body=_body,
+    )
 
 
 async def render_stop_arrival_statuses(
@@ -217,31 +263,31 @@ async def render_route_stops(route: str, stop_name: str, *, _rescue: bool = True
 
     ASR-rescue mirrors `render_arrivals`: on a mis-heard route the renderer
     re-queries the top-ranked candidate itself and returns its real stop list
-    behind a confirmation prefix. `_rescue=False` guards the one-hop recursion.
+    behind a confirmation prefix (see `_rescue_or`). `_rescue=False` guards the
+    one-hop recursion.
     """
-    resolved = await _resolve_route_estimate(route, stop_name)
-    if isinstance(resolved, _RouteMiss):
-        if _rescue and resolved.candidates:
-            best = resolved.candidates[0]
-            inner = await render_route_stops(best, stop_name, _rescue=False)
-            if _is_real_status(inner):
-                return f"{_rescue_prefix(best)}\n{inner}"
-        return _miss_to_str(resolved)
-    if isinstance(resolved, str):
-        return resolved
-    route_info, data = resolved
 
-    by_direction = _stops_by_direction_with_seq(data)
-    if not by_direction:
-        return f"查無路線 {route} 的站牌。"
+    def _body(route_info: dict, data: list[dict]) -> str:
+        by_direction = _stops_by_direction_with_seq(data)
+        if not by_direction:
+            return f"查無路線 {route} 的站牌。"
 
-    results = []
-    for direction, stops in sorted(by_direction.items()):
-        label = _direction_label_from_info(route_info, route, direction)
-        ordered = [name for _, name in sorted(stops)]
-        results.append(f"{label}：{'、'.join(ordered)}")
+        results = []
+        for direction, stops in sorted(by_direction.items()):
+            label = _direction_label_from_info(route_info, route, direction)
+            ordered = [name for _, name in sorted(stops)]
+            results.append(f"{label}：{'、'.join(ordered)}")
 
-    return "\n".join(results)
+        return "\n".join(results)
+
+    return await _render_with_rescue(
+        route,
+        stop_name,
+        fuzzy=False,
+        rescue=_rescue,
+        retry=lambda best: render_route_stops(best, stop_name, _rescue=False),
+        body=_body,
+    )
 
 
 async def render_stop_on_route(
@@ -259,32 +305,31 @@ async def render_stop_on_route(
 
     ASR-rescue mirrors `render_arrivals`: on a mis-heard route the renderer
     re-queries the top-ranked candidate itself and returns its real 有/沒有
-    answer behind a confirmation prefix. `_rescue=False` guards the one-hop
-    recursion.
+    answer behind a confirmation prefix (see `_rescue_or`). `_rescue=False`
+    guards the one-hop recursion.
     """
-    resolved = await _resolve_route_estimate(route, kiosk_stop)
-    if isinstance(resolved, _RouteMiss):
-        if _rescue and resolved.candidates:
-            best = resolved.candidates[0]
-            inner = await render_stop_on_route(best, stop_name, kiosk_stop, _rescue=False)
-            if _is_real_status(inner):
-                return f"{_rescue_prefix(best)}\n{inner}"
-        return _miss_to_str(resolved)
-    if isinstance(resolved, str):
-        return resolved
-    route_info, data = resolved
 
-    matched: list[str] = []
-    for gb, stops in sorted(_stops_by_direction_with_seq(data).items()):
-        downstream = _downstream_names(stops, kiosk_stop)
-        if downstream is None:
-            continue
-        if any(_name_matches(stop_name, n) for n in downstream):
-            matched.append(_direction_label_from_info(route_info, route, gb))
+    def _body(route_info: dict, data: list[dict]) -> str:
+        matched: list[str] = []
+        for gb, stops in sorted(_stops_by_direction_with_seq(data).items()):
+            downstream = _downstream_names(stops, kiosk_stop)
+            if downstream is None:
+                continue
+            if any(_name_matches(stop_name, n) for n in downstream):
+                matched.append(_direction_label_from_info(route_info, route, gb))
 
-    if matched:
-        return f"有，{route} {'、'.join(matched)}有停{stop_name}。"
-    return f"沒有，{route} 不停{stop_name}。"
+        if matched:
+            return f"有，{route} {'、'.join(matched)}有停{stop_name}。"
+        return f"沒有，{route} 不停{stop_name}。"
+
+    return await _render_with_rescue(
+        route,
+        kiosk_stop,
+        fuzzy=False,
+        rescue=_rescue,
+        retry=lambda best: render_stop_on_route(best, stop_name, kiosk_stop, _rescue=False),
+        body=_body,
+    )
 
 
 def _dest_arrival_text(
@@ -385,6 +430,46 @@ async def _check_route_arrivals(
     return hits, all_downstream, canonical_dest
 
 
+def _pick_canonical_destination(
+    results: list[tuple[list[tuple[str, int, DepartureSection]], set[str], str | None]],
+    destination: str,
+) -> str:
+    """Resolve `destination` to the real stop name it matched, across all routes.
+
+    Used in rider-facing text instead of a possibly abbreviated or mis-heard
+    `destination` string. Different routes can resolve to differently-specific
+    real names sharing the same prefix (a route ending at "北港朝天宮" vs one
+    continuing through bare "北港") — shortest wins, same exact-match-preferred
+    tie-break as `_resolve_forward_match` itself. Secondary sort key (the string
+    itself) makes the tie-break deterministic across restarts: `min()` over a
+    `set` with tied `len()` keys otherwise depends on hash-seed-dependent
+    iteration order. Falls back to `destination` when nothing resolved.
+    """
+    canonical_candidates = {c for _, _, c in results if c}
+    return min(canonical_candidates, key=lambda s: (len(s), s)) if canonical_candidates else destination
+
+
+def _summarize_route_hits(raw: list[tuple[str, int, DepartureSection]], canonical: str) -> str:
+    """Sort route hits by ETA and return only the single most relevant status group.
+
+    Only the highest-priority section (AVAILABLE, then NOT_DEPARTED) is returned
+    so the LLM sees one consistent situation. When every serving route has run
+    its last bus today, collapse the per-route "末班駛離" lines into one closed
+    conclusion the LLM can only copy: the 4B was re-reading the granular list as
+    無直達 (route doesn't exist), conflating "no bus left today" with "no such
+    route". The wording avoids 沒有 so it can't slip back into the 無直達
+    template. [eval v5 hole #1]
+    """
+    raw.sort(key=lambda x: x[1])
+    for section in (DepartureSection.AVAILABLE, DepartureSection.NOT_DEPARTED):
+        group = [d for d, _, s in raw if s == section]
+        if group:
+            return "\n".join(group)
+    if any(s == DepartureSection.LAST_DEPARTED for _, _, s in raw):
+        return f"去{canonical}的公車今天班次都跑完了，末班已經開走囉。"
+    return "\n".join(d for d, _, __ in raw)
+
+
 async def render_arrivals_to_destination(
     destination: str,
     kiosk_stop: str,
@@ -401,8 +486,9 @@ async def render_arrivals_to_destination(
 
     ASR-rescue mirrors `render_arrivals`: on a mis-heard destination the renderer
     re-queries the top phonetic candidate itself and returns its real ETAs behind
-    a confirmation prefix, rather than handing the 4B a candidate list it answers
-    with a fabricated time. `_rescue=False` guards the one-hop recursion.
+    a confirmation prefix (see `_rescue_or`), rather than handing the 4B a
+    candidate list it answers with a fabricated time. `_rescue=False` guards the
+    one-hop recursion.
     """
     provider = get_provider()
     route_info = await _safe_provider_call(provider.load_route_info(kiosk_stop))
@@ -423,44 +509,24 @@ async def render_arrivals_to_destination(
     results = await asyncio.gather(*tasks_guarded)
     raw = [item for hits, _, _ in results for item in hits]
     all_stops = {name for _, stops, _ in results for name in stops}
-    # Real stop name `destination` resolved to (see `_resolve_forward_match`) —
-    # used in rider-facing text below instead of a possibly abbreviated or
-    # mis-heard `destination` string. Different routes can resolve to
-    # differently-specific real names sharing the same prefix (a route ending
-    # at "北港朝天宮" vs one continuing through bare "北港") — shortest wins,
-    # same exact-match-preferred tie-break as `_resolve_forward_match` itself.
-    # Falls back to `destination` when `raw` is empty (nothing resolved).
-    canonical_candidates = {c for _, _, c in results if c}
-    # Secondary sort key (the string itself) makes the tie-break deterministic
-    # across restarts: `min()` over a `set` with tied `len()` keys otherwise
-    # depends on hash-seed-dependent iteration order.
-    canonical = min(canonical_candidates, key=lambda s: (len(s), s)) if canonical_candidates else destination
+    canonical = _pick_canonical_destination(results, destination)
 
     if not raw:
         candidates = [name for name, _ in _fuzzy_candidates(destination, all_stops)]
-        if _rescue and candidates:
-            best = candidates[0]
-            inner = await render_arrivals_to_destination(best, kiosk_stop, go_back, _rescue=False)
-            if _is_real_status(inner):
-                return f"{_rescue_prefix(best)}\n{inner}"
-        if candidates:
-            return f"本站沒有直達「{destination}」的路線。相近站名：{'、'.join(candidates[:5])}。"
-        return f"本站沒有直達「{destination}」的路線。"
 
-    raw.sort(key=lambda x: x[1])
-    # Return only the highest-priority group so LLM sees one consistent situation.
-    for section in (DepartureSection.AVAILABLE, DepartureSection.NOT_DEPARTED):
-        group = [d for d, _, s in raw if s == section]
-        if group:
-            return "\n".join(group)
-    # Every serving route has run its last bus today. Collapse the per-route
-    # "末班駛離" lines into one closed conclusion the LLM can only copy: the 4B
-    # was re-reading the granular list as 無直達 (route doesn't exist),
-    # conflating "no bus left today" with "no such route". The wording avoids
-    # 沒有 so it can't slip back into the 無直達 template. [eval v5 hole #1]
-    if any(s == DepartureSection.LAST_DEPARTED for _, _, s in raw):
-        return f"去{canonical}的公車今天班次都跑完了，末班已經開走囉。"
-    return "\n".join(d for d, _, __ in raw)
+        def _miss() -> str:
+            if candidates:
+                return f"本站沒有直達「{destination}」的路線。相近站名：{'、'.join(candidates[:5])}。"
+            return f"本站沒有直達「{destination}」的路線。"
+
+        return await _rescue_or(
+            candidates,
+            _rescue,
+            lambda best: render_arrivals_to_destination(best, kiosk_stop, go_back, _rescue=False),
+            _miss,
+        )
+
+    return _summarize_route_hits(raw, canonical)
 
 
 async def render_routes_at_stop(stop_name: str) -> str:
