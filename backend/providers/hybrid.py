@@ -59,17 +59,28 @@ class HybridBusProvider:
             return await self._tdx.load_route_info(stop_name)
 
         bad = [name for name, v in info.items() if "?" in v.get("go_dest", "") or "?" in v.get("back_dest", "")]
+        if not bad:
+            return info
+
+        # `info` is the dict cached inside `self._ebus` (find_routes_at_stop
+        # returns it directly, not a copy) — mutating it in place would leak
+        # this supplement into ebus's cache and every other caller sharing
+        # it. Build a patched copy instead.
+        patched = dict(info)
         for route_name in bad:
             try:
                 terminals = await self._tdx.load_route_terminals(route_name)
-                if terminals.get("go_dest"):
-                    info[route_name]["go_dest"] = terminals["go_dest"]
-                if terminals.get("back_dest"):
-                    info[route_name]["back_dest"] = terminals["back_dest"]
             except Exception as exc:
                 _log.warning("TDX terminal supplement failed for %s: %s", route_name, exc)
+                continue
+            route_info = dict(patched[route_name])
+            if terminals.get("go_dest"):
+                route_info["go_dest"] = terminals["go_dest"]
+            if terminals.get("back_dest"):
+                route_info["back_dest"] = terminals["back_dest"]
+            patched[route_name] = route_info
 
-        return info
+        return patched
 
     async def fetch_routes_at_stop(self, stop_name: str) -> list[dict]:
         return await self._tdx.fetch_routes_at_stop(stop_name)

@@ -3,8 +3,11 @@
 Methods return flat dicts in the TDX-normalised shape. See `providers/tdx_bus.py`
 for the full field specification.
 
-  fetch_eta_at_stop rows:    sub_route_name, direction (0/1), stop_status (0-4), estimate_seconds
-  fetch_route_estimate rows: stop_name, stop_sequence, direction (0/1), stop_status, estimate_seconds
+  fetch_eta_at_stop rows:    sub_route_name, direction (0/1), stop_status (0-4), estimate_seconds,
+                             stop_sequence (int|None); ebus-backed providers also add
+                             scheduled_time (str|None, HH:MM) and car_id (str|None)
+  fetch_route_estimate rows: stop_name, stop_sequence, direction (0/1), stop_status, estimate_seconds;
+                             ebus-backed providers also add scheduled_time and car_id (see above)
   fetch_routes_at_stop rows: sub_route_name, direction
   load_route_info values:    {id: str, go_dest: str, back_dest: str}
 

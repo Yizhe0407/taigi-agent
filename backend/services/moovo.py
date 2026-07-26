@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Any
 
 from providers.moovo import (
+    BikeProvider,
     MoovoApiError,
     MoovoConfigError,
     MoovoError,
@@ -67,16 +68,16 @@ class NearbyMoovoStation:
 
 # ── provider plumbing ─────────────────────────────────────────────────────────
 
-_provider: TdxBikeProvider = TdxBikeProvider()
+_provider: BikeProvider = TdxBikeProvider()
 _stations_cache: tuple[float, tuple[MoovoStation, ...]] | None = None
 _stations_lock = asyncio.Lock()
 
 
-def get_provider() -> TdxBikeProvider:
+def get_provider() -> BikeProvider:
     return _provider
 
 
-def set_provider(provider: TdxBikeProvider) -> None:
+def set_provider(provider: BikeProvider) -> None:
     """Swap the active provider; clears the station cache so the next read
     pulls fresh data from the new upstream."""
     global _provider
@@ -85,7 +86,7 @@ def set_provider(provider: TdxBikeProvider) -> None:
 
 
 @contextmanager
-def provider_override(provider: TdxBikeProvider) -> Iterator[TdxBikeProvider]:
+def provider_override(provider: BikeProvider) -> Iterator[BikeProvider]:
     previous = _provider
     set_provider(provider)
     try:

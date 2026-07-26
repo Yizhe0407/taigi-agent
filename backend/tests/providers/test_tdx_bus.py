@@ -495,6 +495,33 @@ def test_fetch_route_estimate_concurrent_miss_calls_upstream_once(monkeypatch):
     assert len(calls) == 1
 
 
+def test_load_route_info_concurrent_miss_calls_upstream_once(monkeypatch):
+    """Two concurrent cache misses for the same stop_name must only hit TDX once
+    (per-key lock mirrors fetch_eta_at_stop / fetch_route_estimate's stampede guard)."""
+    calls = []
+
+    class SlowClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            await asyncio.sleep(0.05)  # force both callers to be in-flight together
+            return _FakeResp(_STOP_OF_ROUTE)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: SlowClient())
+    provider = TdxBusProvider("id", "secret")
+
+    async def run():
+        await asyncio.gather(
+            provider.load_route_info("雲林科技大學"),
+            provider.load_route_info("雲林科技大學"),
+        )
+
+    asyncio.run(run())
+    assert len(calls) == 2  # City + InterCity StopOfRoute, fetched exactly once
+
+
 def test_load_route_info_uses_short_ttl_when_stop_of_route_partially_fails(monkeypatch):
     """When one StopOfRoute endpoint fails, the (partial) result is cached with the
     short _ROUTE_INFO_PARTIAL_TTL instead of the full route-info TTL, so it gets

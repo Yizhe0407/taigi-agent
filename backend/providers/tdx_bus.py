@@ -57,14 +57,14 @@ from collections.abc import Awaitable, Callable
 
 from providers.bus import BusProvider
 from providers.http import get_http_client
+from providers.tdx_auth import TdxTokenClient
+from providers.ttl_cache import TtlCache
 from telemetry import get_telemetry
 
 _log = logging.getLogger(__name__)
 
-_TOKEN_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 _BASE = "https://tdx.transportdata.tw/api/basic/v2/Bus"
 _CITY = "YunlinCounty"
-_TOKEN_BUFFER_SECONDS = 60.0
 
 _DEFAULT_ROUTE_INFO_TTL = 600.0
 _ROUTE_INFO_PARTIAL_TTL = 60.0  # short TTL when a StopOfRoute endpoint failed mid-fetch
@@ -135,50 +135,41 @@ class TdxBusProvider(BusProvider):
         self._eta_ttl = eta_ttl_seconds
         self._clock = clock
         self._sleep = sleep
-        # token cache
-        self._token: str = ""
-        self._token_expires_at: float = 0.0
-        self._token_lock = asyncio.Lock()
+        # `get_http_client` below binds the name as currently seen in this module's
+        # globals, so tests that monkeypatch `tdx_bus.get_http_client` before
+        # constructing the provider also cover the token client's requests.
+        self._token_client = TdxTokenClient(
+            client_id,
+            client_secret,
+            clock=clock,
+            timeout=_REQUEST_TIMEOUT_SECONDS,
+            http_client_factory=get_http_client,
+        )
         # stop_name → (fetched_at, route_info_dict, had_failures)
         # had_failures=True uses _ROUTE_INFO_PARTIAL_TTL so a StopOfRoute endpoint
         # that failed mid-fetch gets re-checked soon instead of caching a partial
         # result for the full TTL.
         self._route_info_by_stop: dict[str, tuple[float, dict[str, dict], bool]] = {}
+        # per-key lock prevents concurrent cache-miss storms on load_route_info
+        self._route_info_locks: dict[str, asyncio.Lock] = {}
         # stop_name → set of boarding StopUIDs (first occurrence of that stop in each route)
         self._kiosk_uids: dict[str, set[str]] = {}
         # sub_route_name → (fetched_at, rows)
         self._route_estimate_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
+        self._route_estimate_ttl_cache: TtlCache[str, list[dict]] = TtlCache(
+            self._route_estimate_cache,
+            clock=clock,
+            cache_name="TDX route estimate",
+            record_hit=lambda hit: get_telemetry().record_cache_lookup(cache="tdx.route_estimate", hit=hit),
+        )
         # stop_name → (fetched_at, rows)
         self._eta_cache: dict[str, tuple[float, list[dict]]] = {}
-        # per-key locks prevent concurrent cache-miss storms (thundering herd)
-        self._eta_locks: dict[str, asyncio.Lock] = {}
-        self._route_estimate_locks: dict[str, asyncio.Lock] = {}
-
-    # ── Auth ──────────────────────────────────────────────────────────────────
-
-    async def _get_token(self) -> str:
-        if self._clock() < self._token_expires_at:
-            return self._token
-        async with self._token_lock:
-            # Re-check after acquiring: first caller refreshes, subsequent callers reuse it.
-            if self._clock() < self._token_expires_at:
-                return self._token
-            http = get_http_client()
-            resp = await http.post(
-                _TOKEN_URL,
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": self._client_id,
-                    "client_secret": self._client_secret,
-                },
-                timeout=_REQUEST_TIMEOUT_SECONDS,
-            )
-            resp.raise_for_status()
-            body = resp.json()
-            self._token = body["access_token"]
-            expires_in = float(body.get("expires_in", 3600))
-            self._token_expires_at = self._clock() + expires_in - _TOKEN_BUFFER_SECONDS
-            return self._token
+        self._eta_ttl_cache: TtlCache[str, list[dict]] = TtlCache(
+            self._eta_cache,
+            clock=clock,
+            cache_name="TDX ETA",
+            record_hit=lambda hit: get_telemetry().record_cache_lookup(cache="tdx.eta", hit=hit),
+        )
 
     @staticmethod
     def _retry_after_seconds(resp: object, default: float) -> float:
@@ -191,26 +182,22 @@ class TdxBusProvider(BusProvider):
             return default
 
     async def _get(self, url: str, params: dict) -> list[dict]:
-        token = await self._get_token()
         http = get_http_client()
-        refreshed_token = False
         attempt = 0
         while True:
-            resp = await http.get(
-                url,
-                params={**params, "$format": "JSON"},
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=_REQUEST_TIMEOUT_SECONDS,
-            )
-            if resp.status_code == 401 and not refreshed_token:
-                # Token was revoked/expired early server-side; force a refresh and
-                # retry once. Independent of the 429 retry budget below — a 401
-                # refresh must not consume a rate-limit retry attempt.
-                _log.warning("TDX 401 on %s; refreshing token and retrying once", url)
-                self._token_expires_at = 0.0
-                token = await self._get_token()
-                refreshed_token = True
-                continue
+
+            async def _do(token: str, url: str = url, params: dict = params) -> object:
+                return await http.get(
+                    url,
+                    params={**params, "$format": "JSON"},
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=_REQUEST_TIMEOUT_SECONDS,
+                )
+
+            # Handles the 401 (token revoked/expired early server-side) → force
+            # refresh → retry-once dance internally; independent of the 429 retry
+            # budget below — a 401 refresh must not consume a rate-limit attempt.
+            resp = await self._token_client.request_with_retry(_do)
             if resp.status_code == 429 and attempt < _MAX_RETRIES:
                 wait = self._retry_after_seconds(resp, float(1 << attempt))
                 _log.warning("TDX 429 on %s; retry in %.0fs (attempt %d/%d)", url, wait, attempt + 1, _MAX_RETRIES)
@@ -267,75 +254,54 @@ class TdxBusProvider(BusProvider):
         min-sequence dedup during the cold-start window when both methods are
         called concurrently for the first time.
         """
-        cached = self._eta_cache.get(stop_name)
-        hit = cached is not None and not self._expired(cached[0], self._eta_ttl)
-        get_telemetry().record_cache_lookup(cache="tdx.eta", hit=hit)
-        if cached is not None and hit:
-            return cached[1]
 
-        lock = self._eta_locks.setdefault(stop_name, asyncio.Lock())
-        async with lock:
-            # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
-            cached = self._eta_cache.get(stop_name)
-            if cached is not None and not self._expired(cached[0], self._eta_ttl):
-                return cached[1]
-
+        async def _fetch() -> list[dict]:
             uids = self._kiosk_uids.get(stop_name)
-            try:
-                fetch = self._fetch_eta_by_uids(uids) if uids else self._fetch_eta_by_name(stop_name)
-                rows = await asyncio.wait_for(fetch, timeout=_ETA_FETCH_TIMEOUT)
-            except Exception:
-                # Serve stale data without bumping fetched_at, so staleness keeps
-                # accumulating toward _MAX_STALE_SECONDS instead of resetting on
-                # every failed retry (which would keep an upstream outage's last
-                # good data alive forever).
-                if cached is not None and not self._expired(cached[0], self._stale_ttl(self._eta_ttl)):
-                    _log.warning("TDX ETA fetch failed; serving stale cache for %s", stop_name)
-                    return cached[1]
-                raise
-            self._eta_cache[stop_name] = (self._clock(), rows)
-            return rows
+            fetch = self._fetch_eta_by_uids(uids) if uids else self._fetch_eta_by_name(stop_name)
+            return await asyncio.wait_for(fetch, timeout=_ETA_FETCH_TIMEOUT)
+
+        # Stale-serve keeps fetched_at unbumped on failure, so staleness keeps
+        # accumulating toward _MAX_STALE_SECONDS instead of resetting on every
+        # failed retry (which would keep an upstream outage's last-good data alive
+        # forever) — see TtlCache.get_or_fetch.
+        return await self._eta_ttl_cache.get_or_fetch(
+            stop_name,
+            _fetch,
+            ttl=self._eta_ttl,
+            stale_ttl=self._stale_ttl(self._eta_ttl),
+        )
 
     async def fetch_route_estimate(self, sub_route_name: str) -> list[dict]:
-        cached = self._route_estimate_cache.get(sub_route_name)
-        hit = cached is not None and not self._expired(cached[0], self._route_estimate_ttl)
-        get_telemetry().record_cache_lookup(cache="tdx.route_estimate", hit=hit)
-        if cached is not None and hit:
-            self._route_estimate_cache.move_to_end(sub_route_name)
-            return cached[1]
-
-        lock = self._route_estimate_locks.setdefault(sub_route_name, asyncio.Lock())
-        async with lock:
-            # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
-            cached = self._route_estimate_cache.get(sub_route_name)
-            if cached is not None and not self._expired(cached[0], self._route_estimate_ttl):
-                self._route_estimate_cache.move_to_end(sub_route_name)
-                return cached[1]
-
+        async def _fetch() -> list[dict]:
             # Only query the endpoint that owns this route — halves request volume.
-            try:
-                if _is_intercity(sub_route_name):
-                    raw = await self._get(
-                        f"{_BASE}/EstimatedTimeOfArrival/InterCity",
-                        {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(sub_route_name)}'"},
-                    )
-                else:
-                    raw = await self._get(
-                        f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
-                        {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(sub_route_name)}'"},
-                    )
-            except Exception:
-                if cached is not None and not self._expired(cached[0], self._stale_ttl(self._route_estimate_ttl)):
-                    _log.warning("TDX route estimate fetch failed; serving stale cache for %s", sub_route_name)
-                    return cached[1]
-                raise
+            if _is_intercity(sub_route_name):
+                raw = await self._get(
+                    f"{_BASE}/EstimatedTimeOfArrival/InterCity",
+                    {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(sub_route_name)}'"},
+                )
+            else:
+                raw = await self._get(
+                    f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
+                    {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(sub_route_name)}'"},
+                )
+            return [self._norm_stop_eta(r) for r in raw]
 
-            rows = [self._norm_stop_eta(r) for r in raw]
-            self._route_estimate_cache[sub_route_name] = (self._clock(), rows)
-            self._route_estimate_cache.move_to_end(sub_route_name)
+        def _touch(key: str) -> None:
+            self._route_estimate_cache.move_to_end(key)
+
+        def _store(key: str, _rows: list[dict]) -> None:
+            self._route_estimate_cache.move_to_end(key)
             while len(self._route_estimate_cache) > _MAX_ROUTE_ESTIMATE_CACHE_ENTRIES:
                 self._route_estimate_cache.popitem(last=False)
-            return rows
+
+        return await self._route_estimate_ttl_cache.get_or_fetch(
+            sub_route_name,
+            _fetch,
+            ttl=self._route_estimate_ttl,
+            stale_ttl=self._stale_ttl(self._route_estimate_ttl),
+            on_hit=_touch,
+            on_store=_store,
+        )
 
     async def load_route_info(self, stop_name: str) -> dict[str, dict]:
         cached = self._route_info_by_stop.get(stop_name)
@@ -345,12 +311,24 @@ class TdxBusProvider(BusProvider):
         if cached is not None and hit:
             return cached[1]
 
-        city, intercity, had_failures = await self._stop_of_route(stop_name)
-        info, boarding_uids = self._build_route_info(city + intercity, stop_name)
-        self._route_info_by_stop[stop_name] = (self._clock(), info, had_failures)
-        if boarding_uids:
-            self._kiosk_uids[stop_name] = boarding_uids
-        return info
+        # Not a TtlCache: the cached value is a 3-tuple (info, had_failures) whose
+        # TTL depends on had_failures from the *previous* fetch, which doesn't fit
+        # TtlCache's fixed-ttl/2-tuple shape without contorting it more than the
+        # manual per-key lock below costs.
+        lock = self._route_info_locks.setdefault(stop_name, asyncio.Lock())
+        async with lock:
+            # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
+            cached = self._route_info_by_stop.get(stop_name)
+            ttl = self._route_info_ttl if cached is None or not cached[2] else _ROUTE_INFO_PARTIAL_TTL
+            if cached is not None and not self._expired(cached[0], ttl):
+                return cached[1]
+
+            city, intercity, had_failures = await self._stop_of_route(stop_name)
+            info, boarding_uids = self._build_route_info(city + intercity, stop_name)
+            self._route_info_by_stop[stop_name] = (self._clock(), info, had_failures)
+            if boarding_uids:
+                self._kiosk_uids[stop_name] = boarding_uids
+            return info
 
     async def load_route_terminals(self, route_name: str) -> dict[str, str]:
         """Return {go_dest, back_dest} from TDX StopOfRoute filtered by route name.

@@ -32,6 +32,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from providers.http import get_http_client
+from providers.ttl_cache import TtlCache
 
 _log = logging.getLogger(__name__)
 
@@ -159,14 +160,13 @@ class EbusBusProvider:
         self._route_map: tuple[float, dict[str, int]] | None = None
         # route_id → (fetched_at, normalised route-estimate rows)
         self._estimate_cache: dict[int, tuple[float, list[dict]]] = {}
+        self._estimate_ttl_cache: TtlCache[int, list[dict]] = TtlCache(self._estimate_cache, clock=self._clock, cache_name="ebus route estimate")
         # stop_name → (fetched_at, {route_name: {id, go_dest, back_dest}}, had_failures)
         # had_failures=True uses _STOP_ROUTE_PARTIAL_TTL so a route that failed
         # mid-scan gets re-checked soon instead of staying "missing" for 24h.
         self._stop_route_cache: dict[str, tuple[float, dict[str, dict], bool]] = {}
         # A single scan builds every stop, so all misses share one lock.
         self._route_index_lock = asyncio.Lock()
-        # per-route-id locks prevent concurrent cache-miss storms on fetch_route_estimate
-        self._route_estimate_locks: dict[int, asyncio.Lock] = {}
         self._route_index_path = Path(route_index_path) if route_index_path is not None else None
         self._load_persisted_route_index()
 
@@ -320,21 +320,11 @@ class EbusBusProvider:
         if route_id is None:
             return None
 
-        cached = self._estimate_cache.get(route_id)
-        if cached is not None and not self._expired(cached[0], self._estimate_ttl):
-            return cached[1]
-
-        lock = self._route_estimate_locks.setdefault(route_id, asyncio.Lock())
-        async with lock:
-            # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
-            cached = self._estimate_cache.get(route_id)
-            if cached is not None and not self._expired(cached[0], self._estimate_ttl):
-                return cached[1]
-
+        async def _fetch() -> list[dict]:
             raw = await self._get(f"{_BASE}/route/{route_id}/estimate")
-            rows = [_norm_route_estimate_row(r) for r in raw]
-            self._estimate_cache[route_id] = (self._clock(), rows)
-            return rows
+            return [_norm_route_estimate_row(r) for r in raw]
+
+        return await self._estimate_ttl_cache.get_or_fetch(route_id, _fetch, ttl=self._estimate_ttl)
 
     async def fetch_eta_rows_for_stop(
         self,

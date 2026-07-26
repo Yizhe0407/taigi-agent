@@ -10,14 +10,15 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from typing import Any
+from collections.abc import Callable
+from typing import Any, Protocol
 
 import httpx
 
 from providers.http import get_http_client
+from providers.tdx_auth import TdxTokenClient
 from telemetry import get_telemetry
 
-_TOKEN_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 _DEFAULT_BIKE_BASE_URL = "https://tdx.transportdata.tw/api/basic/v2/Bike"
 _DEFAULT_CITY = "YunlinCounty"
 _REQUEST_TIMEOUT_SECONDS = 20.0
@@ -35,6 +36,14 @@ class MoovoApiError(MoovoError):
     """Raised when TDX Bike API returns unusable data."""
 
 
+class BikeProvider(Protocol):
+    """Read-only view of a city's public bike-share (MOOVO) stations."""
+
+    async def fetch_station_payloads(self) -> tuple[list[Any], list[Any]]:
+        """Return raw (stations, availability) TDX Bike v2 payloads."""
+        ...
+
+
 def _tdx_credentials() -> tuple[str, str]:
     client_id = os.getenv("TDX_CLIENT_ID")
     client_secret = os.getenv("TDX_CLIENT_SECRET")
@@ -46,8 +55,10 @@ def _tdx_credentials() -> tuple[str, str]:
 class TdxBikeProvider:
     """Talks to TDX Bike v2 for one city.
 
-    The OAuth access token is memoised on the instance — fresh providers
-    re-authenticate, which keeps tests deterministic.
+    Credentials are resolved lazily (on first request, not at construction)
+    so the module-level default instance in `services.moovo` can exist even
+    before env vars are loaded; a missing/invalid config only surfaces as
+    `MoovoConfigError` once a request is actually made.
     """
 
     def __init__(
@@ -56,21 +67,21 @@ class TdxBikeProvider:
         base_url: str = _DEFAULT_BIKE_BASE_URL,
         city: str = _DEFAULT_CITY,
         timeout: float = _REQUEST_TIMEOUT_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._base = base_url
         self._city = city
         self._timeout = timeout
-        self._token_cache: tuple[float, str] | None = None
-        self._token_lock = asyncio.Lock()
+        self._clock = clock
+        self._token_client: TdxTokenClient | None = None
+        self._token_client_lock = asyncio.Lock()
 
     async def fetch_station_payloads(self) -> tuple[list[Any], list[Any]]:
         """Return raw (stations, availability) lists for the configured city."""
-        client = get_http_client()
-        token = await self._get_token(client)
         params = {"$format": "JSON"}
         stations, availability = await asyncio.gather(
-            self._get_json(client, token, f"Station/City/{self._city}", params=params),
-            self._get_json(client, token, f"Availability/City/{self._city}", params=params),
+            self._get_json(f"Station/City/{self._city}", params=params),
+            self._get_json(f"Availability/City/{self._city}", params=params),
         )
 
         if not isinstance(stations, list) or not isinstance(availability, list):
@@ -79,60 +90,36 @@ class TdxBikeProvider:
 
     def reset_token_cache(self) -> None:
         """Forget the cached OAuth token (tests, manual recovery)."""
-        self._token_cache = None
+        if self._token_client is not None:
+            self._token_client.invalidate()
 
     # ── internal ──────────────────────────────────────────────────────────────
 
-    async def _get_token(self, client: httpx.AsyncClient) -> str:
-        now = time.monotonic()
-        hit = self._token_cache is not None and now < self._token_cache[0]
-        get_telemetry().record_cache_lookup(cache="tdx.token", hit=hit)
-        if hit and self._token_cache is not None:
-            return self._token_cache[1]
-
-        async with self._token_lock:
-            # Re-check after acquiring: first caller refreshes, subsequent callers reuse it.
-            now = time.monotonic()
-            if self._token_cache is not None and now < self._token_cache[0]:
-                return self._token_cache[1]
-
-            client_id, client_secret = _tdx_credentials()
-            try:
-                response = await client.post(
-                    _TOKEN_URL,
-                    data={
-                        "grant_type": "client_credentials",
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                    },
+    async def _ensure_token_client(self) -> TdxTokenClient:
+        if self._token_client is not None:
+            return self._token_client
+        async with self._token_client_lock:
+            # Re-check after acquiring: first caller constructs it, subsequent
+            # callers reuse it — otherwise two concurrent cold-start requests
+            # (Station + Availability gather) would each fetch their own token.
+            if self._token_client is None:
+                client_id, client_secret = _tdx_credentials()
+                self._token_client = TdxTokenClient(
+                    client_id,
+                    client_secret,
+                    clock=self._clock,
                     timeout=self._timeout,
+                    http_client_factory=get_http_client,
+                    record_hit=lambda hit: get_telemetry().record_cache_lookup(cache="tdx.token", hit=hit),
                 )
-                response.raise_for_status()
-                payload = response.json()
-            except httpx.HTTPError as error:
-                raise MoovoApiError(f"TDX token request failed: {error}") from error
-            except ValueError as error:
-                raise MoovoApiError("TDX token response is not valid JSON") from error
+            return self._token_client
 
-            token = payload.get("access_token")
-            if not isinstance(token, str) or not token:
-                raise MoovoApiError("TDX token response has no access_token")
+    async def _get_json(self, path: str, *, params: dict[str, str] | None = None) -> Any:
+        token_client = await self._ensure_token_client()
+        client = get_http_client()
 
-            expires_in = payload.get("expires_in")
-            ttl = int(expires_in) if isinstance(expires_in, int | float) else 3600
-            self._token_cache = (now + max(60, ttl - 60), token)
-            return token
-
-    async def _get_json(
-        self,
-        client: httpx.AsyncClient,
-        token: str,
-        path: str,
-        *,
-        params: dict[str, str] | None = None,
-    ) -> Any:
-        try:
-            response = await client.get(
+        async def _do(token: str) -> httpx.Response:
+            return await client.get(
                 f"{self._base}/{path}",
                 headers={
                     "Authorization": f"Bearer {token}",
@@ -141,6 +128,9 @@ class TdxBikeProvider:
                 params=params,
                 timeout=self._timeout,
             )
+
+        try:
+            response = await token_client.request_with_retry(_do)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as error:
