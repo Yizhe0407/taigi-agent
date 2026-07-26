@@ -7,6 +7,20 @@ from services import taigi_tts
 from services.taigi_tts import TTSConfig, TTSSegmentLimitError, split_tailo, synthesize_segments
 
 
+def test_total_timeout_scales_with_round_count():
+    # 64 segments / 4 workers = 16 rounds; each round can legitimately take up to
+    # TTS_TIMEOUT_SECONDS, so the fixed 45s floor alone would cut off a slow-but-
+    # legitimate full batch.
+    rounds = -(-taigi_tts.TTS_MAX_SEGMENTS // taigi_tts.TTS_MAX_CONCURRENCY)
+    expected = rounds * taigi_tts.TTS_TIMEOUT_SECONDS
+    assert expected > taigi_tts.TTS_TOTAL_TIMEOUT_SECONDS
+    assert taigi_tts._total_timeout_seconds(taigi_tts.TTS_MAX_SEGMENTS, taigi_tts.TTS_MAX_CONCURRENCY) == expected
+
+
+def test_total_timeout_keeps_floor_for_small_batches():
+    assert taigi_tts._total_timeout_seconds(2, taigi_tts.TTS_MAX_CONCURRENCY) == taigi_tts.TTS_TOTAL_TIMEOUT_SECONDS
+
+
 def test_split_tailo_rejects_request_fanout():
     with pytest.raises(TTSSegmentLimitError):
         split_tailo("a," * (taigi_tts.TTS_MAX_SEGMENTS + 1))

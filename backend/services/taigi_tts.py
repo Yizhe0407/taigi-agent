@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -12,6 +13,12 @@ import httpx
 from providers.http import get_http_client
 
 TTS_TIMEOUT_SECONDS = 15.0
+# Floor for the total synthesize_segments() budget, not a fixed value: a fixed-size
+# worker pool runs ceil(segments / TTS_MAX_CONCURRENCY) sequential rounds, and each
+# round can legitimately take up to TTS_TIMEOUT_SECONDS. At the segment cap this is
+# ceil(64/4) * 15s = 240s. TTS_TOTAL_TIMEOUT_SECONDS only sets the minimum so a
+# request with just a couple of segments (one round) isn't held to an artificially
+# tiny budget — see `_total_timeout_seconds()`.
 TTS_TOTAL_TIMEOUT_SECONDS = 45.0
 TTS_MAX_SEGMENTS = 64
 TTS_MAX_SEGMENT_CHARS = 500
@@ -83,6 +90,14 @@ def split_tailo(tailo: str) -> list[tuple[str, int]]:
     return result
 
 
+def _total_timeout_seconds(num_segments: int, worker_count: int) -> float:
+    """Total budget for one synthesize_segments() call — see constant comment above."""
+    if worker_count <= 0:
+        return TTS_TOTAL_TIMEOUT_SECONDS
+    rounds = math.ceil(num_segments / worker_count)
+    return max(TTS_TOTAL_TIMEOUT_SECONDS, rounds * TTS_TIMEOUT_SECONDS)
+
+
 async def synthesize_segments(
     config: TTSConfig,
     segments: list[tuple[str, int]],
@@ -118,6 +133,6 @@ async def synthesize_segments(
                 results[index] = error
 
     worker_count = min(TTS_MAX_CONCURRENCY, len(segments))
-    async with asyncio.timeout(TTS_TOTAL_TIMEOUT_SECONDS):
+    async with asyncio.timeout(_total_timeout_seconds(len(segments), worker_count)):
         await asyncio.gather(*(worker() for _ in range(worker_count)))
     return [result if result is not None else RuntimeError("TTS worker produced no result") for result in results]

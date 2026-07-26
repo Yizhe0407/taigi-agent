@@ -127,6 +127,11 @@ async def synthesize(body: TTSRequest) -> Response:
 
     # ── Step 4: concurrent TTS requests ──────────────────────────────────────
     t1 = time.perf_counter()
+    # Built alongside validation below (not filtered afterward) so a response's
+    # position always matches its segment/silence — a post-hoc `isinstance` filter
+    # would silently misalign the two lists if this loop ever tolerates partial
+    # failures instead of raising on the first bad segment.
+    verified_responses: list[httpx.Response] = []
     try:
         with tel.start_span("tts.synthesize", {"tts.segments": len(segments)}):
             responses = await synthesize_segments(config, segments)
@@ -138,6 +143,7 @@ async def synthesize(body: TTSRequest) -> Response:
                         status_code=502,
                         detail=f"TTS 服務回應錯誤（{resp.status_code}）",
                     )
+                verified_responses.append(resp)
     except HTTPException:
         tel.record_pipeline_stage(time.perf_counter() - t1, stage="tts.synthesize", outcome="upstream_error")
         raise
@@ -150,10 +156,9 @@ async def synthesize(body: TTSRequest) -> Response:
     tel.record_pipeline_stage(time.perf_counter() - t1, stage="tts.synthesize", outcome="ok")
 
     # ── Step 5: concatenate WAV with silence ──────────────────────────────────
-    successful_responses = [response for response in responses if isinstance(response, httpx.Response)]
     silences_ms = [ms for _, ms in segments]
     try:
-        audio_bytes = _concat_wav([response.content for response in successful_responses], silences_ms)
+        audio_bytes = _concat_wav([response.content for response in verified_responses], silences_ms)
     except (ValueError, wave.Error) as err:
         raise HTTPException(status_code=502, detail=f"TTS 音訊格式異常：{err}") from err
     tel.record_tts_audio_bytes(len(audio_bytes))

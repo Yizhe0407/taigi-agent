@@ -28,6 +28,7 @@ from services.route_plans import (
     RoutePlanningUnavailable,
     RoutePlanNotFound,
 )
+from services.stop_catalog import StopCatalogError
 
 
 def _time(value: str) -> datetime:
@@ -291,6 +292,17 @@ def test_get_departure_route_detail_maps_not_found(monkeypatch):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "在本站找不到停靠路線 999"
+
+
+def test_get_kiosk_maps_stop_catalog_error(monkeypatch):
+    def broken_kiosk_place():
+        raise StopCatalogError("stop index is missing stops")
+
+    monkeypatch.setattr(api.route_plans, "kiosk_place", broken_kiosk_place)
+
+    response = TestClient(api.app).get("/api/kiosk")
+
+    assert response.status_code == 503
 
 
 def test_create_route_plan_returns_frontend_view_model(monkeypatch):

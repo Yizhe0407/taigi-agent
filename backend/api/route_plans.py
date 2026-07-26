@@ -16,6 +16,7 @@ from services.route_plans import (
     plan_route_to_coordinate,
     route_plan_to_view_model,
 )
+from services.stop_catalog import StopCatalogError
 
 from .request_limits import ROUTE_PLAN_RATE_LIMIT
 
@@ -108,7 +109,13 @@ class KioskResponse(BaseModel):
 def get_kiosk() -> object:
     """Return the kiosk stop name and its actual OTP origin coordinates."""
     cfg = get_kiosk_config()
-    place = kiosk_place()
+    try:
+        place = kiosk_place()
+    except StopCatalogError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"雲林站牌索引讀取失敗：{error}",
+        ) from error
     if place is None:
         raise HTTPException(
             status_code=503,
