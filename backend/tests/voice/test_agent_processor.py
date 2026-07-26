@@ -54,7 +54,7 @@ def test_lookup_error_sends_agent_cancelled():
     async def run():
         with (
             patch("api.chat.respond_in_session_stream", _raising_stream(LookupError("sess-1"))),
-            patch("api.chat._get_store", lambda: _FakeStore()),
+            patch("api.chat.get_store", lambda: _FakeStore()),
         ):
             await proc._run_agent_inference("test", None)
 

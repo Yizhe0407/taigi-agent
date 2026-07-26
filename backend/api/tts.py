@@ -22,13 +22,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from pipeline.text_processor import process_async as text_process_async
 from pipeline.tts_normalizer import normalize_for_tts
 from services.taigi_tts import (
     TTSConfigError,
+    TTSEmptyResultError,
     TTSSegmentLimitError,
     load_tts_config,
-    split_tailo,
+    make_silence_pcm,
+    prepare_tailo,
     synthesize_segments,
 )
 from telemetry import get_telemetry
@@ -40,10 +41,6 @@ router = APIRouter()
 
 class TTSRequest(BaseModel):
     text: str = Field(min_length=1, max_length=5000)
-
-
-def _make_silence(n_frames: int, n_channels: int, sampwidth: int) -> bytes:
-    return b"\x00" * (n_frames * n_channels * sampwidth)
 
 
 def _concat_wav(wav_bytes_list: list[bytes], silences_ms: list[int]) -> bytes:
@@ -69,8 +66,7 @@ def _concat_wav(wav_bytes_list: list[bytes], silences_ms: list[int]) -> bytes:
                 raise ValueError(f"TTS segment {i} has mismatched WAV format: {seg_params} vs {params}")
             pcm_parts.append(wf.readframes(wf.getnframes()))
         if i < len(silences_ms) and silences_ms[i] > 0 and params is not None:
-            n_frames = int(params.framerate * silences_ms[i] / 1000)
-            pcm_parts.append(_make_silence(n_frames, params.nchannels, params.sampwidth))
+            pcm_parts.append(make_silence_pcm(silences_ms[i], params.framerate, params.nchannels, params.sampwidth))
 
     if params is None:
         return b""
@@ -100,30 +96,28 @@ async def synthesize(body: TTSRequest) -> Response:
     except TTSConfigError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
-    # ── Step 1 + 2: Mandarin → 漢羅 → Tailo ──────────────────────────────────
+    # ── Step 1-3: Mandarin → 漢羅 → Tailo → split at punctuation ─────────────
     tel = get_telemetry()
     t0 = time.perf_counter()
+    tts_text = normalize_for_tts(body.text)
     try:
-        tts_text = normalize_for_tts(body.text)
         with tel.start_span("tts.text_process", {"tts.input_chars": len(tts_text)}) as span:
-            result = await text_process_async(tts_text)
             tel.set_content(span, "tts.input_text", tts_text)
-            tel.set_content(span, "tts.hanlo_text", result.hanlo)
-            tel.set_content(span, "tts.tailo_text", result.tailo)
-        outcome = "ok" if result.tailo else "empty_output"
-        tel.record_pipeline_stage(time.perf_counter() - t0, stage="tts.text_process", outcome=outcome)
+            prep = await prepare_tailo(tts_text)
+            tel.set_content(span, "tts.hanlo_text", prep.hanlo)
+            tel.set_content(span, "tts.tailo_text", prep.tailo)
+        tel.record_pipeline_stage(time.perf_counter() - t0, stage="tts.text_process", outcome="ok")
+    except TTSEmptyResultError as err:
+        tel.record_pipeline_stage(time.perf_counter() - t0, stage="tts.text_process", outcome="empty_output")
+        raise HTTPException(status_code=422, detail="無法將輸入文字轉為台語發音") from err
+    except TTSSegmentLimitError as error:
+        tel.record_pipeline_stage(time.perf_counter() - t0, stage="tts.text_process", outcome="error")
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except Exception as err:
         tel.record_pipeline_stage(time.perf_counter() - t0, stage="tts.text_process", outcome="error")
         raise HTTPException(status_code=500, detail=f"文字轉換失敗：{err}") from err
 
-    if not result.tailo:
-        raise HTTPException(status_code=422, detail="無法將輸入文字轉為台語發音")
-
-    # ── Step 3: split Tailo at punctuation ───────────────────────────────────
-    try:
-        segments = split_tailo(result.tailo)
-    except TTSSegmentLimitError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+    segments = prep.segments
 
     # ── Step 4: concurrent TTS requests ──────────────────────────────────────
     t1 = time.perf_counter()
@@ -167,7 +161,7 @@ async def synthesize(body: TTSRequest) -> Response:
         content=audio_bytes,
         media_type="audio/wav",
         headers={
-            "X-Hanlo-Text": urllib.parse.quote(result.hanlo[:400]),
-            "X-Tailo-Text": urllib.parse.quote(result.tailo[:400]),
+            "X-Hanlo-Text": urllib.parse.quote(prep.hanlo[:400]),
+            "X-Tailo-Text": urllib.parse.quote(prep.tailo[:400]),
         },
     )

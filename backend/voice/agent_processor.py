@@ -161,6 +161,35 @@ class TaigiBusAgentProcessor(FrameProcessor):
         else:
             await self.push_frame(frame, direction)
 
+    async def _open_stream(self, text: str, stream_kwargs: dict[str, Any]):
+        """Open `respond_in_session_stream`, recreating the session once if it expired.
+
+        Returns `(stream, first_chunk)` on success, or `None` if the session is
+        still gone after recreation. Bounded to two attempts: `get_store().create()`
+        always succeeds, so a second LookupError means the store itself can't
+        find its own freshly-created session — retrying further wouldn't help.
+
+        The chat session's TTL can expire while this long-lived WebRTC connection
+        stays open; without the retry, every later utterance would hit
+        LookupError and the kiosk would go permanently silent for a still-
+        connected user.
+        """
+        from api.chat import get_store, respond_in_session_stream
+
+        for attempt in range(2):
+            stream = respond_in_session_stream(self.session_id, text, **stream_kwargs)
+            try:
+                # LookupError surfaces on the first pull, before any chunk.
+                first = await anext(stream, None)
+                return stream, first
+            except LookupError:
+                if attempt == 0:
+                    _log.warning("Chat session %s expired; recreating for live voice connection", self.session_id)
+                    self.session_id = await asyncio.to_thread(get_store().create)
+                else:
+                    _log.error("Recreated chat session %s immediately missing", self.session_id)
+        return None
+
     async def _run_agent_inference(self, text: str, direction: FrameDirection, state: _ResponseState | None = None):
         """Run the agent logic in a background task so we don't block process_frame.
 
@@ -177,7 +206,6 @@ class TaigiBusAgentProcessor(FrameProcessor):
         if state is None:
             state = _ResponseState()
         from agent.prompt import VOICE_END_CONVERSATION_GUIDANCE
-        from api.chat import _get_store, respond_in_session_stream
 
         extra_tools = [self._end_conversation_tool()]
         stream_kwargs = {
@@ -189,25 +217,12 @@ class TaigiBusAgentProcessor(FrameProcessor):
             if self._send_event:
                 self._send_event({"type": "transcript", "text": text, "role": "user"})
 
-            stream = respond_in_session_stream(self.session_id, text, **stream_kwargs)
-            try:
-                # LookupError surfaces on the first pull, before any chunk.
-                first = await anext(stream, None)
-            except LookupError:
-                # The chat session's TTL expired while this long-lived WebRTC
-                # connection stayed open. Recreate a fresh session and retry
-                # once — otherwise every later utterance hits LookupError and
-                # the kiosk goes permanently silent for a still-connected user.
-                _log.warning("Chat session %s expired; recreating for live voice connection", self.session_id)
-                self.session_id = await asyncio.to_thread(_get_store().create)
-                stream = respond_in_session_stream(self.session_id, text, **stream_kwargs)
-                try:
-                    first = await anext(stream, None)
-                except LookupError:
-                    _log.error("Recreated chat session %s immediately missing", self.session_id)
-                    if self._send_event:
-                        self._send_event({"type": "agent_cancelled"})
-                    return
+            opened = await self._open_stream(text, stream_kwargs)
+            if opened is None:
+                if self._send_event:
+                    self._send_event({"type": "agent_cancelled"})
+                return
+            stream, first = opened
 
             parts: list[str] = []
             await self.push_frame(LLMFullResponseStartFrame(), direction)

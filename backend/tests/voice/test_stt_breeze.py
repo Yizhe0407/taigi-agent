@@ -30,8 +30,8 @@ def test_run_stt_returns_transcription_frame():
     mock_resp.json.return_value = {"text": "測試"}
 
     with (
-        patch("voice.stt_breeze._asr_config", return_value=("http://localhost", "breeze", None)),
-        patch("voice.stt_breeze._asr_post_audio", new=AsyncMock(return_value=mock_resp)),
+        patch("voice.stt_breeze.get_asr_config", return_value=("http://localhost", "breeze", None)),
+        patch("voice.stt_breeze.post_asr_audio", new=AsyncMock(return_value=mock_resp)),
     ):
         svc = BreezeSTTService()
         frames = asyncio.run(_collect(svc.run_stt(_make_wav())))
@@ -50,8 +50,8 @@ def test_run_stt_non_200_yields_user_facing_apology():
     mock_resp.text = "error"
 
     with (
-        patch("voice.stt_breeze._asr_config", return_value=("http://localhost", "breeze", None)),
-        patch("voice.stt_breeze._asr_post_audio", new=AsyncMock(return_value=mock_resp)),
+        patch("voice.stt_breeze.get_asr_config", return_value=("http://localhost", "breeze", None)),
+        patch("voice.stt_breeze.post_asr_audio", new=AsyncMock(return_value=mock_resp)),
     ):
         svc = BreezeSTTService()
         frames = asyncio.run(_collect(svc.run_stt(_make_wav())))
@@ -62,7 +62,7 @@ def test_run_stt_non_200_yields_user_facing_apology():
 
 
 def test_run_stt_config_missing_yields_user_facing_apology():
-    with patch("voice.stt_breeze._asr_config", side_effect=Exception("missing env")):
+    with patch("voice.stt_breeze.get_asr_config", side_effect=Exception("missing env")):
         svc = BreezeSTTService()
         frames = asyncio.run(_collect(svc.run_stt(_make_wav())))
 
@@ -77,8 +77,8 @@ def test_run_stt_request_exception_yields_user_facing_apology():
     leaving the user with no transcript, no reply, and no clue the mic didn't
     catch it."""
     with (
-        patch("voice.stt_breeze._asr_config", return_value=("http://localhost", "breeze", None)),
-        patch("voice.stt_breeze._asr_post_audio", new=AsyncMock(side_effect=TimeoutError("upstream timed out"))),
+        patch("voice.stt_breeze.get_asr_config", return_value=("http://localhost", "breeze", None)),
+        patch("voice.stt_breeze.post_asr_audio", new=AsyncMock(side_effect=TimeoutError("upstream timed out"))),
     ):
         svc = BreezeSTTService()
         frames = asyncio.run(_collect(svc.run_stt(_make_wav())))
@@ -94,8 +94,8 @@ def test_run_stt_response_format_error_yields_user_facing_apology():
     mock_resp.json.side_effect = ValueError("not JSON")
 
     with (
-        patch("voice.stt_breeze._asr_config", return_value=("http://localhost", "breeze", None)),
-        patch("voice.stt_breeze._asr_post_audio", new=AsyncMock(return_value=mock_resp)),
+        patch("voice.stt_breeze.get_asr_config", return_value=("http://localhost", "breeze", None)),
+        patch("voice.stt_breeze.post_asr_audio", new=AsyncMock(return_value=mock_resp)),
     ):
         svc = BreezeSTTService()
         frames = asyncio.run(_collect(svc.run_stt(_make_wav())))
@@ -114,8 +114,8 @@ def test_run_stt_empty_transcript_yields_nothing():
     mock_resp.json.return_value = {"text": "   "}
 
     with (
-        patch("voice.stt_breeze._asr_config", return_value=("http://localhost", "breeze", None)),
-        patch("voice.stt_breeze._asr_post_audio", new=AsyncMock(return_value=mock_resp)),
+        patch("voice.stt_breeze.get_asr_config", return_value=("http://localhost", "breeze", None)),
+        patch("voice.stt_breeze.post_asr_audio", new=AsyncMock(return_value=mock_resp)),
     ):
         svc = BreezeSTTService()
         frames = asyncio.run(_collect(svc.run_stt(_make_wav())))

@@ -2,52 +2,18 @@
 
 from __future__ import annotations
 
-import os
-
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
-from providers.http import get_http_client
+from providers.asr import ASRConfigError, get_asr_config, post_asr_audio
 from telemetry import get_telemetry
 
 from .request_limits import ASR_RATE_LIMIT
 
 router = APIRouter()
 
-_ASR_TIMEOUT_SECONDS = 30
 _ASR_MAX_BYTES = 25 * 1024 * 1024  # 25 MB — OpenAI Whisper API 上限
-
-
-def _asr_config() -> tuple[str, str, str]:
-    """Return (base_url, model, api_key) from env, raise 503 if not configured.
-
-    Read directly from os.getenv so tests can monkeypatch without needing LLM vars.
-    api_key may be empty for self-hosted endpoints that don't require auth.
-    """
-    base_url = os.getenv("ASR_BASE_URL") or ""
-    model = os.getenv("ASR_MODEL") or ""
-    if not base_url or not model:
-        raise HTTPException(status_code=503, detail="ASR 服務尚未設定（ASR_BASE_URL / ASR_MODEL）")
-    return base_url.rstrip("/"), model, os.getenv("ASR_API_KEY", "")
-
-
-async def _asr_post_audio(
-    url: str,
-    headers: dict[str, str],
-    filename: str,
-    audio_bytes: bytes,
-    content_type: str,
-    model: str,
-) -> httpx.Response:
-    """Send audio bytes to the ASR endpoint. Extracted for testability."""
-    return await get_http_client().post(
-        url,
-        headers=headers,
-        files={"file": (filename, audio_bytes, content_type)},
-        data={"model": model},
-        timeout=_ASR_TIMEOUT_SECONDS,
-    )
 
 
 class TranscriptionResponse(BaseModel):
@@ -63,7 +29,10 @@ async def transcribe_audio(request: Request, file: UploadFile) -> object:
     body is fully buffered. A second byte-count guard catches chunked uploads that
     arrive without a Content-Length header.
     """
-    base_url, model, api_key = _asr_config()
+    try:
+        base_url, model, api_key = get_asr_config()
+    except ASRConfigError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
     content_length = request.headers.get("content-length")
     if content_length and content_length.isdigit() and int(content_length) > _ASR_MAX_BYTES:
@@ -90,7 +59,7 @@ async def transcribe_audio(request: Request, file: UploadFile) -> object:
         headers["Authorization"] = f"Bearer {api_key}"
 
     try:
-        response = await _asr_post_audio(
+        response = await post_asr_audio(
             f"{base_url}/v1/audio/transcriptions",
             headers,
             filename,

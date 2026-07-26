@@ -18,7 +18,7 @@ from pipecat.transports.smallwebrtc.request_handler import (
 )
 
 from agent.diagnostics import log_diagnostic
-from api.chat import _get_store
+from api.chat import get_store
 
 from .request_limits import VOICE_RATE_LIMIT
 
@@ -88,7 +88,7 @@ async def webrtc_offer(body: dict) -> dict:
         """
         from voice.pipeline import run_voice_pipeline
 
-        store = _get_store()
+        store = get_store()
         if client_session_id and await asyncio.to_thread(store.load_messages, client_session_id) is not None:
             session_id = client_session_id
             _log.info("Voice pipeline reusing existing session %s", session_id)

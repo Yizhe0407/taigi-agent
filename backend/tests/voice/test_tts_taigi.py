@@ -49,7 +49,7 @@ def _patch_common(tailo="li2 ho2"):
             return_value=TTSConfig("http://localhost", "m", "v", ""),
         ),
         patch("voice.tts_taigi.normalize_for_tts", side_effect=lambda t: t),
-        patch("voice.tts_taigi.text_process_async", new=AsyncMock(return_value=_FakeTextProcessResult(tailo))),
+        patch("services.taigi_tts.text_process_async", new=AsyncMock(return_value=_FakeTextProcessResult(tailo))),
     )
 
 

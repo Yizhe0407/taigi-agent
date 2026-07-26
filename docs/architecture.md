@@ -33,20 +33,21 @@ backend/
 
 - `api/__init__.py`：FastAPI app、CORS、router include、telemetry setup，以及全域 request body middleware。POST/PUT/PATCH 預設上限 64 KB；`/api/asr` 含 multipart overhead 上限 26 MB，chunked body 也在串流接收時累計並回 413。
 - `api/admin.py`：`/api/admin/kiosk`（GET/PUT）與 `/api/admin/stops`（GET）；寫入採 `ADMIN_TOKEN` fail-closed 驗證，且只接受站名與方向。座標由後端 stop catalog 的主要群集計算，不能由前端覆寫。
-- `api/chat.py`：`/api/chat/*`，SQLite-backed `ChatSessionStore`。`respond_in_session_stream` 為唯一實作路徑（voice 與 SSE 共用）；`POST /api/chat/sessions/{id}/messages/stream` 以 SSE 推 `{delta}`/`{done}`/`{error}` 事件；非串流 endpoint 已移除。
-- `api/departures.py`：`/api/departures/here` 與路線詳情；`GET /api/departures/stream` SSE 推播——ETA warmup loop（25 s）每次刷新 cache 後 `notify_snapshot_refreshed()` 喚醒連線推最新 snapshot，40 s fallback 自刷新兜底。
+- `api/chat.py`：`/api/chat/*`，SQLite-backed `ChatSessionStore`。`respond_in_session_stream` 為唯一實作路徑（voice 與 SSE 共用）；`get_store()` 是 process-wide store 的公開存取點，voice（`api/voice.py`、`voice/agent_processor.py`）與 SSE 都經它取得同一個 store，不跨層 import 底線符號。`POST /api/chat/sessions/{id}/messages/stream` 以 SSE 推 `{delta}`/`{done}`/`{error}` 事件；非串流 endpoint 已移除。
+- `api/departures.py`：`/api/departures/here` 與路線詳情；`GET /api/departures/stream` SSE 推播——ETA warmup loop（25 s）每次刷新 cache 後 `notify_snapshot_refreshed()` 喚醒連線推最新 snapshot，40 s fallback 自刷新兜底。兩個 GET 端點刻意不掛 RateLimit：是 kiosk 自家高頻主路徑，且 `services.departures` 對底層 snapshot 已有 25 s cache。
 - `api/route_plans.py`：`/api/route-plans` 與 `/api/kiosk`（含 direction）。
 - `api/moovo.py`：`/api/moovo/*`。
-- `api/asr.py`：Breeze ASR proxy（提供給文字模式與語音模組共用的辨識邏輯）；音檔以 1 MB chunk 讀取，實際檔案內容上限 25 MB。
-- `api/tts.py`：HanloFlow -> Taibun -> Piper TTS proxy（REST 模式 fallback）。Tailo 最多 64 段、每段最多 500 字元、同時最多 4 個 upstream request；單請求 15 秒、整次合成 45 秒。
+- `api/asr.py`：`/api/asr` proxy，config 讀取與 upstream 呼叫委派給 `providers/asr.py`（文字模式與語音模組共用）；音檔以 1 MB chunk 讀取，實際檔案內容上限 25 MB。
+- `api/tts.py`：`/api/tts`，呼叫 `services/taigi_tts.py` 的共用 pipeline（見下）後轉成 WAV `Response`。Tailo 最多 64 段、每段最多 500 字元、同時最多 4 個 upstream request；單請求 15 秒、整次合成 45 秒。
 - `api/voice.py`：`/api/voice/offer`，處理 WebRTC SDP 交換並在背景啟動語音 pipeline，支援 session_id 綁定。
+- `api/sse.py`：共用 SSE 樣板（`SSE_HEADERS`、`sse_event()`），供 `api/chat.py` 與 `api/departures.py` 共用。
 
 ### Voice Pipeline (WebRTC)
 
 - `voice/pipeline.py`：Pipecat 語音管線組裝（SmallWebRTCTransport、VAD、中斷處理）與連線生命週期管理。`SubtitleSyncProcessor` 掛在 `transport.output()` 之後，攔自訂 `SubtitleFrame`（`tts_taigi.run_tts` 在音訊 frames **之前** yield，帶該段精確音訊時長；不可繼承 TTSTextFrame、不可設 pts）——事件到達 ≈ 段起播，前端在 durationMs 內線性逐字揭示，全文 `agent_reply` 由 `bot_silent` 收尾補全。注意：pipecat 預設段尾 TTSTextFrame 保持存在（`push_text_frames=False` 會觸發 WordCompletionTracker 段尾補發全文，是坑），無人消費即可。
-- `voice/stt_breeze.py`：繼承 Pipecat `SegmentedSTTService`，搭配 VAD 收集完整語句後呼叫 ASR 轉文字。
-- `voice/agent_processor.py`：將原本的 `AgentSession` 封裝為 Pipecat 的 `FrameProcessor`，介接文字與語音的資料流。消費 `respond_in_session_stream` 逐 chunk 推 `TextFrame`——Pipecat TTS 句子聚合器在 LLM 還在生成時就開始逐句合成，首音延遲不再等完整回覆。
-- `voice/tts_taigi.py`：繼承 Pipecat `TTSService`，封裝原有的文字前處理與 Piper TTS，輸出 PCM 音訊流供 WebRTC 播放。
+- `voice/stt_breeze.py`：繼承 Pipecat `SegmentedSTTService`，搭配 VAD 收集完整語句後呼叫 `providers/asr.py` 轉文字（與 `api/asr.py` 共用同一 provider，不 import `api/`）。
+- `voice/agent_processor.py`：將原本的 `AgentSession` 封裝為 Pipecat 的 `FrameProcessor`，介接文字與語音的資料流。消費 `respond_in_session_stream` 逐 chunk 推 `TextFrame`——Pipecat TTS 句子聚合器在 LLM 還在生成時就開始逐句合成，首音延遲不再等完整回覆。`_open_stream()` 把 session 過期重試（最多兩次：先呼叫、LookupError 則 `get_store().create()` 重建再呼叫一次）收斂成一個 helper。
+- `voice/tts_taigi.py`：繼承 Pipecat `TTSService`，呼叫 `services/taigi_tts.py` 的共用 pipeline 取得 pre-decode 結果後自行解成 PCM 音訊流供 WebRTC 播放（`api/tts.py` 解成 WAV `Response`）。
 
 ### Agent
 
@@ -67,6 +68,8 @@ backend/
 - `providers/hybrid.py`：`HybridBusProvider`，線上唯一 `BusProvider` runtime 實例。`load_route_info`、ETA 與 route estimate 以 ebus 為主、TDX 為備援；ETA 與 route estimate 都以 ebus 的 `None`-vs-`[]` sentinel 區分「查詢失敗才 fallback TDX」與「成功但無資料不 fallback」。`fetch_routes_at_stop` 直接使用 TDX，ebus 站名缺字時也由 TDX 補終點名稱。
 - `providers/otp.py`：OpenTripPlanner GraphQL provider。
 - `providers/moovo.py`：TDX bike provider。
+- `providers/asr.py`：ASR upstream provider（config 讀取 + multipart 上傳），供 `api/asr.py` 與 `voice/stt_breeze.py` 共用，兩邊都不再互相 import 私有符號。
+- `services/taigi_tts.py`：TTS config、Tailo 切段、`synthesize_segments` 有界並發派送；`prepare_tailo()` 收斂 normalize 後→text-process→split 的共用序列（回傳解碼前的 hanlo/tailo/segments），`api/tts.py` 與 `voice/tts_taigi.py` 各自接手 `synthesize_segments` 的錯誤轉換與音訊解碼（WAV vs PCM）。`make_silence_pcm()` 是兩邊共用的靜音位元組運算。
 - `services/kiosk_config.py`：Runtime kiosk 設定 singleton（stop_name、direction、lat/lon）；先原子落盤再發布記憶體狀態，並用 mtime 觀察其他 worker 的更新。持久化至 `.agent_state/kiosk_config.json`，預設雲林科技大學／回程。
 - `services/departures/`：離站決策唯一分類來源，支援 provider override。方向過濾分兩層：admin 設定「去程」或「回程」時直接照設定過濾（不做 auto-detect）；設定「去回程都有」（go_back=None）時啟動 `_is_terminal_direction()` 自動過濾「本站是該方向終點（即抵達非出發）」的方向，循環路線（go_dest == back_dest == 本站）不過濾。`_classify_stop` 讀 TDX `stop_status` / `estimate_seconds`，回傳 `StopClassification` dataclass，所有 render 函式共用同一分類規則。方向編碼 0=去程、1=回程（TDX Direction）。`route_id` 全層為 str（SubRouteName）。查無路線/目的地時，renderer 回傳候選清單（路線用 `route_info` 站牌路線表；目的地用 `normalize._fuzzy_candidates`），交給 LLM 挑音近者重查（ASR 聽錯救援，見 `agent/prompt.py`【聽錯救援】）。
 - `services/route_plans.py`：OTP 路線規劃 facade、Kiosk 起點、雲林邊界、view model。

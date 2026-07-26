@@ -9,7 +9,6 @@ from `Settings`; only the mutable message log is persisted (see
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from pathlib import Path
@@ -25,6 +24,7 @@ from api.session_store import ChatSessionStore
 from config import get_settings, make_agent_session
 
 from .request_limits import CHAT_MESSAGE_RATE_LIMIT, CHAT_SESSION_RATE_LIMIT
+from .sse import SSE_HEADERS, sse_event
 
 # (schema, handler) pair injected into a single session at rehydration time —
 # used by the voice pipeline to add per-connection tools (e.g. end_conversation)
@@ -49,7 +49,7 @@ _store: ChatSessionStore | None = None
 _session_locks: dict[str, asyncio.Lock] = {}  # ponytail: module-level dict, pop on delete to avoid unbounded growth
 
 
-def _get_store() -> ChatSessionStore:
+def get_store() -> ChatSessionStore:
     """Return the process-wide chat session store, creating it on first use.
 
     Lazy so import-time side effects (mkdir, sqlite open) only fire when the
@@ -76,7 +76,7 @@ async def purge_expired_locks() -> None:
     session created but never revisited leaves its Lock behind forever.
     Over a long kiosk uptime with steady session churn that grows unbounded.
     """
-    store = _get_store()
+    store = get_store()
     purged_ids = await asyncio.to_thread(store.purge_expired)
     for session_id in purged_ids:
         _session_locks.pop(session_id, None)
@@ -165,7 +165,7 @@ async def respond_in_session_stream(
     hooks (see `_rehydrate_session`). REST callers pass neither, so their
     behaviour is unchanged.
     """
-    store = _get_store()
+    store = get_store()
     lock = _session_locks.get(session_id)
     if lock is None:
         lock = asyncio.Lock()
@@ -207,12 +207,8 @@ def create_chat_session() -> object:
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
-    session_id = _get_store().create()
+    session_id = get_store().create()
     return ChatSessionResponse(sessionId=session_id)
-
-
-def _sse_event(payload: dict) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 @router.post(
@@ -228,29 +224,29 @@ async def send_chat_message_stream(session_id: str, body: ChatMessageRequest) ->
     # SSE 開始後無法再改 status code，session 存在與否先查（與串流開始之間
     # 的過期 race 由 error 事件兜底）。輕量 exists() 只查 last_used，不重覆
     # 載入/解析 messages payload——權威讀在 respond_in_session_stream 的 lock 內。
-    if not await asyncio.to_thread(_get_store().exists, session_id):
+    if not await asyncio.to_thread(get_store().exists, session_id):
         raise HTTPException(status_code=404, detail="對話階段不存在或已過期，請重新開始")
 
     async def events():
         try:
             async for chunk in respond_in_session_stream(session_id, body.message):
-                yield _sse_event({"delta": chunk})
-            yield _sse_event({"done": True})
+                yield sse_event({"delta": chunk})
+            yield sse_event({"done": True})
         except LookupError:
-            yield _sse_event({"error": "對話階段不存在或已過期，請重新開始"})
+            yield sse_event({"error": "對話階段不存在或已過期，請重新開始"})
         except Exception as error:  # noqa: BLE001 — must surface as an SSE event
             _log.exception("Chat stream failed for session %s", session_id)
-            yield _sse_event({"error": f"助理暫時無法回應：{summarize_error(error)}"})
+            yield sse_event({"error": f"助理暫時無法回應：{summarize_error(error)}"})
 
     return StreamingResponse(
         events(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers=SSE_HEADERS,
     )
 
 
 @router.delete("/api/chat/sessions/{session_id}", status_code=204)
 def delete_chat_session(session_id: str) -> None:
     """Explicitly end a chat session and free its row."""
-    _get_store().delete(session_id)
+    get_store().delete(session_id)
     _session_locks.pop(session_id, None)

@@ -1,9 +1,9 @@
 """Breeze ASR / Qwen3 ASR Pipecat Service.
 
-Wraps the existing HTTP proxy logic from `api/asr.py` into a Pipecat
-SegmentedSTTService. The base class maintains a 1-second pre-speech rolling
-buffer, so the Silero VAD confirmation delay (~200-400ms) no longer silently
-drops utterance heads.
+Wraps the shared HTTP proxy logic from `providers/asr.py` (also used by the
+REST `/api/asr` endpoint) into a Pipecat SegmentedSTTService. The base class
+maintains a 1-second pre-speech rolling buffer, so the Silero VAD
+confirmation delay (~200-400ms) no longer silently drops utterance heads.
 
 Only `run_stt()` is implemented here; VAD event handling, audio buffering, and
 WAV packaging are all handled by the parent `SegmentedSTTService`.
@@ -16,7 +16,7 @@ from pipecat.frames.frames import Frame, TranscriptionFrame, TTSSpeakFrame
 from pipecat.services.settings import STTSettings
 from pipecat.services.stt_service import SegmentedSTTService
 
-from api.asr import _asr_config, _asr_post_audio
+from providers.asr import get_asr_config, post_asr_audio
 from telemetry import get_telemetry
 
 _log = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ class BreezeSTTService(SegmentedSTTService):
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame | None, None]:  # pyright: ignore[reportIncompatibleMethodOverride]
         """Transcribe a complete WAV segment (packaged by SegmentedSTTService)."""
         try:
-            base_url, model, api_key = _asr_config()
+            base_url, model, api_key = get_asr_config()
         except Exception as exc:
             _log.error("ASR config error (check ASR_BASE_URL / ASR_MODEL): %s", exc)
             yield TTSSpeakFrame(text=_ASR_FAILURE_APOLOGY)
@@ -61,7 +61,7 @@ class BreezeSTTService(SegmentedSTTService):
             headers["Authorization"] = f"Bearer {api_key}"
 
         try:
-            response = await _asr_post_audio(
+            response = await post_asr_audio(
                 url=f"{base_url}/v1/audio/transcriptions",
                 headers=headers,
                 filename="audio.wav",

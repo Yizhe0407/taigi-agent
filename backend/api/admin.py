@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from services.kiosk_config import KioskConfig, get_kiosk_config, set_kiosk_config
 from services.stop_catalog import StopCatalogError, StopRecord, load_stop_catalog
 
-from .request_limits import ADMIN_WRITE_RATE_LIMIT
+from .request_limits import ADMIN_READ_RATE_LIMIT, ADMIN_WRITE_RATE_LIMIT
 
 router = APIRouter()
 
@@ -85,7 +85,7 @@ def _largest_cluster_centroid(stops: list[StopRecord]) -> tuple[float, float]:
     return sum(lats) / len(lats), sum(lons) / len(lons)
 
 
-@router.get("/api/admin/kiosk", response_model=KioskConfigResponse)
+@router.get("/api/admin/kiosk", response_model=KioskConfigResponse, dependencies=[Depends(ADMIN_READ_RATE_LIMIT)])
 def get_admin_kiosk() -> KioskConfigResponse:
     """Return the current runtime kiosk configuration."""
     return _cfg_to_response(get_kiosk_config())
@@ -115,7 +115,7 @@ def update_admin_kiosk(req: KioskConfigRequest) -> KioskConfigResponse:
     return _cfg_to_response(cfg)
 
 
-@router.get("/api/admin/stops", response_model=list[StopEntry])
+@router.get("/api/admin/stops", response_model=list[StopEntry], dependencies=[Depends(ADMIN_READ_RATE_LIMIT)])
 def list_stops() -> list[StopEntry]:
     """Return one entry per unique stop name for the admin map/search UI.
 

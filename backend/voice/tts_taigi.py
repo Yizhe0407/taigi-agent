@@ -1,6 +1,7 @@
 """Taigi TTS Pipecat Service.
 
-Wraps the existing HTTP proxy logic from `api/tts.py` into a Pipecat TTSService.
+Wraps the shared orchestration in `services/taigi_tts.py` (also used by the
+REST `/api/tts` endpoint, `api/tts.py`) into a Pipecat TTSService.
 Pipeline:
   0. Cache      — 先查 `_decoded_cache`（(model, voice, 正規化後文字) → 已解碼音訊），
                   命中就跳過 1-4 步驟；命中率取決於文字重複度（歡迎詞、固定回覆等）
@@ -28,9 +29,16 @@ from pipecat.frames.frames import DataFrame, Frame, TTSAudioRawFrame
 from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TextAggregationMode, TTSService
 
-from pipeline.text_processor import process_async as text_process_async
 from pipeline.tts_normalizer import normalize_for_tts
-from services.taigi_tts import TTSConfigError, TTSSegmentLimitError, load_tts_config, split_tailo, synthesize_segments
+from services.taigi_tts import (
+    TTSConfigError,
+    TTSEmptyResultError,
+    TTSSegmentLimitError,
+    load_tts_config,
+    make_silence_pcm,
+    prepare_tailo,
+    synthesize_segments,
+)
 from telemetry import get_telemetry
 
 _log = logging.getLogger(__name__)
@@ -58,12 +66,6 @@ def _extract_pcm(wav_bytes: bytes) -> tuple[bytes, int, int, int]:
     """Extract raw PCM bytes, sample rate, channel count, and sample width (bytes/sample) from a WAV file."""
     with wave.open(io.BytesIO(wav_bytes)) as wf:
         return wf.readframes(wf.getnframes()), wf.getframerate(), wf.getnchannels(), wf.getsampwidth()
-
-
-def _make_silence_pcm(duration_ms: int, sample_rate: int, num_channels: int, sampwidth: int) -> bytes:
-    """Generate raw PCM silence."""
-    n_frames = int(sample_rate * duration_ms / 1000)
-    return b"\x00" * (n_frames * num_channels * sampwidth)
 
 
 # Decoded-segment tuple: (pcm_bytes, sample_rate, num_channels, sample_width, silence_ms)
@@ -146,22 +148,19 @@ class TaigiTTSService(TTSService):
             if cached is not None:
                 decoded, total_duration_ms = cached
             else:
-                # Step 1 + 2: Mandarin → 漢羅 → Tailo
+                # Step 1-3: Mandarin → 漢羅 → Tailo → split at punctuation
                 try:
-                    result = await text_process_async(tts_text)
-                    if not result.tailo:
-                        _log.warning("Empty Tailo result for input: %s", text)
-                        return
-                except Exception as exc:
-                    _log.error("TTS text process error: %s", exc)
+                    prep = await prepare_tailo(tts_text)
+                except TTSEmptyResultError:
+                    _log.warning("Empty Tailo result for input: %s", text)
                     return
-
-                # Step 3: Split Tailo at punctuation
-                try:
-                    segments = split_tailo(result.tailo)
                 except TTSSegmentLimitError as exc:
                     _log.error("TTS segment limit exceeded: %s", exc)
                     return
+                except Exception as exc:
+                    _log.error("TTS text process error: %s", exc)
+                    return
+                segments = prep.segments
                 if not segments:
                     return
 
@@ -229,7 +228,7 @@ class TaigiTTSService(TTSService):
                     )
 
                 if silence_ms > 0:
-                    silence = _make_silence_pcm(silence_ms, sample_rate, num_channels, sample_width)
+                    silence = make_silence_pcm(silence_ms, sample_rate, num_channels, sample_width)
                     for i in range(0, len(silence), chunk_size):
                         if first_frame and self._turn_timer:
                             self._turn_timer.mark_first_audio()

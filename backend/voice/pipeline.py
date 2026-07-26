@@ -257,8 +257,8 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
             if isinstance(data, dict) and data.get("type") == "client_ready":
                 _log.debug("client_ready received for session %s", session_id)
                 _client_ready.set()
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.debug("Failed to process app message for session %s: %s", session_id, exc)
 
     @transport.event_handler("on_client_connected")
     async def on_connected(_transport, _connection) -> None:

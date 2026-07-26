@@ -24,7 +24,15 @@ from services.departures import (
 )
 from services.kiosk_config import kiosk_go_back_filter, kiosk_stop_name
 
+from .sse import SSE_HEADERS, sse_event
+
 router = APIRouter()
+
+# Neither GET endpoint below carries a RateLimit dependency — this is
+# intentional, not an oversight. `/api/departures/here` and `/stream` are the
+# kiosk's own high-frequency primary path (SSE plus polling fallback), and
+# `services.departures` already caches the underlying provider snapshot for
+# 25 s, so there's no per-request upstream cost to protect against.
 
 
 # ── Kiosk-scoped service wrappers ─────────────────────────────────────────────
@@ -161,7 +169,7 @@ async def _departure_events():
             payload = _snapshot_to_response(snapshot).model_dump_json(by_alias=True)
         except DepartureSnapshotUnavailable as error:
             payload = json.dumps({"error": str(error)}, ensure_ascii=False)
-        yield f"data: {payload}\n\n"
+        yield sse_event(payload)
         with suppress(TimeoutError):
             await asyncio.wait_for(wakeup.wait(), timeout=_STREAM_FALLBACK_SECONDS)
 
@@ -172,7 +180,7 @@ async def stream_departures_here() -> StreamingResponse:
     return StreamingResponse(
         _departure_events(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers=SSE_HEADERS,
     )
 
 

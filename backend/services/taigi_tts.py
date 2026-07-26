@@ -1,4 +1,11 @@
-"""Shared Taigi TTS configuration, segmentation, and bounded HTTP dispatch."""
+"""Shared Taigi TTS configuration, segmentation, and bounded HTTP dispatch.
+
+Also holds the orchestration glue (`prepare_tailo`) shared by the REST
+`/api/tts` endpoint (`api/tts.py`) and the voice pipeline's `TaigiTTSService`
+(`voice/tts_taigi.py`): both run the same normalize → text-process → split
+sequence before diverging on error handling and audio decoding (WAV Response
+vs PCM stream), so that middle stretch lives here once instead of twice.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +17,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from pipeline.text_processor import process_async as text_process_async
 from providers.http import get_http_client
 
 TTS_TIMEOUT_SECONDS = 15.0
@@ -34,6 +42,10 @@ class TTSConfigError(RuntimeError):
 
 class TTSSegmentLimitError(ValueError):
     """Raised when one request would fan out into too many upstream calls."""
+
+
+class TTSEmptyResultError(RuntimeError):
+    """Raised when text_process_async produced no speakable Tailo output."""
 
 
 @dataclass(frozen=True)
@@ -88,6 +100,47 @@ def split_tailo(tailo: str) -> list[tuple[str, int]]:
     if len(result) > TTS_MAX_SEGMENTS:
         raise TTSSegmentLimitError(f"TTS 文字切分後共 {len(result)} 段，超過上限 {TTS_MAX_SEGMENTS} 段")
     return result
+
+
+def make_silence_pcm(duration_ms: int, sample_rate: int, num_channels: int, sample_width: int) -> bytes:
+    """Generate raw PCM silence for `duration_ms` at the given audio format."""
+    n_frames = int(sample_rate * duration_ms / 1000)
+    return b"\x00" * (n_frames * num_channels * sample_width)
+
+
+@dataclass(frozen=True)
+class TailoPreparation:
+    """Pre-synthesis intermediate result: 漢羅/Tailo text plus punctuation-split segments.
+
+    Returned before any upstream TTS HTTP call or audio decoding happens —
+    callers run `synthesize_segments()` themselves and decode the responses
+    into their own output format (WAV Response vs PCM stream).
+    """
+
+    hanlo: str
+    tailo: str
+    segments: list[tuple[str, int]]
+
+
+async def prepare_tailo(tts_text: str) -> TailoPreparation:
+    """Run text_process_async → split_tailo on already-normalized text.
+
+    Shared by `/api/tts` and the voice pipeline's `TaigiTTSService` — both call
+    `pipeline.tts_normalizer.normalize_for_tts` themselves first (each needs the
+    normalized text independently: the REST endpoint for telemetry span
+    attributes, the voice service for its decoded-audio cache key), so
+    normalization stays a one-line call at each site rather than folding in here.
+
+    Raises `TTSEmptyResultError` if text_process_async produced nothing to
+    speak, or `TTSSegmentLimitError` (from split_tailo) if the result would
+    fan out into too many upstream requests. Callers own the error-to-response
+    translation (HTTPException vs log-and-drop).
+    """
+    result = await text_process_async(tts_text)
+    if not result.tailo:
+        raise TTSEmptyResultError("text_process_async produced empty Tailo output")
+    segments = split_tailo(result.tailo)
+    return TailoPreparation(hanlo=result.hanlo, tailo=result.tailo, segments=segments)
 
 
 def _total_timeout_seconds(num_segments: int, worker_count: int) -> float:
