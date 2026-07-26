@@ -121,6 +121,12 @@ export class OfficialCubismAvatar {
     this.model?.release()
     this.model = null
     this.renderer = null
+    // Force the underlying WebGL context to be freed immediately. Without this,
+    // repeated PIP open/close cycles each allocate a new context, and browsers
+    // silently cap the number of live contexts per page — a long-running kiosk
+    // eventually loses the ability to create a new one.
+    this.gl?.getExtension("WEBGL_lose_context")?.loseContext()
+    this.gl = null
     this.canvas.remove()
   }
 
@@ -179,7 +185,10 @@ export class OfficialCubismAvatar {
   private render() {
     if (!this.gl || !this.model || !this.renderer) return
 
-    this.resize()
+    // Sizing is driven by the host's ResizeObserver (see Live2DAvatar.vue), not
+    // measured here — calling resize() every frame forced a getBoundingClientRect()
+    // layout read at ~60fps for no benefit, since the host size only changes on
+    // actual resize events.
     this.updateParameters()
 
     const cubismModel = this.model.getModel()

@@ -27,7 +27,10 @@ watch(
       padding: { top: 72, right: 56, bottom: 72, left: 56 },
     })
   },
-  { deep: true, immediate: true },
+  // No `deep`: a new route always ships a new coordinates array reference
+  // (see RouteOption), so a shallow check already detects every change while
+  // skipping a full per-element traversal on each watch run.
+  { immediate: true },
 )
 </script>
 

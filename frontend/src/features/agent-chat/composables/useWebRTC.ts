@@ -40,6 +40,14 @@ export function useWebRTC(
   let analyserRafId: number | null = null
   let pcId: string | null = null
   let destroyed = false
+  let pointerdownRetryHandler: (() => void) | null = null
+
+  function stopPointerdownRetry() {
+    if (pointerdownRetryHandler) {
+      document.removeEventListener("pointerdown", pointerdownRetryHandler)
+      pointerdownRetryHandler = null
+    }
+  }
 
   function stopAmplitude() {
     if (analyserRafId !== null) {
@@ -51,6 +59,7 @@ export function useWebRTC(
 
   function cleanup() {
     stopAmplitude()
+    stopPointerdownRetry()
     localStream?.getTracks().forEach(t => t.stop())
     localStream = null
     pc?.close()
@@ -70,6 +79,7 @@ export function useWebRTC(
     // any prior RAF loop first so it doesn't keep running orphaned alongside
     // this one (analyserRafId would otherwise be overwritten, leaking the loop).
     stopAmplitude()
+    stopPointerdownRetry()
     const ctx = audioCtx!
     // Build the graph and start the loop immediately — do NOT gate on resume().
     // connect() runs after async work (session POST, getUserMedia, ICE), so the
@@ -90,7 +100,13 @@ export function useWebRTC(
     if (ctx.state !== "running") {
       // Chrome exempts pages with live mic capture from the autoplay policy, so
       // resume() usually succeeds — but if it doesn't, retry on the next touch.
-      const retry = () => void ctx.resume().catch(() => {})
+      // Track the handler so cleanup()/a later setupRemoteAmplitude() call can
+      // remove it instead of leaving it registered across reconnects.
+      const retry = () => {
+        pointerdownRetryHandler = null
+        void ctx.resume().catch(() => {})
+      }
+      pointerdownRetryHandler = retry
       document.addEventListener("pointerdown", retry, { once: true })
     }
 
