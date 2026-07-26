@@ -121,13 +121,19 @@ class AgentSession:
         return content
 
     def _finish_normalized(self, content: str) -> str:
-        """Trim history and return normalized model output.
+        """Normalize model output, append it as the assistant turn, trim, return it.
 
-        Shared by the two LLM exit paths — a free-text completion and a
-        respond_directly result — which finalize the turn identically.
+        Used by the respond_directly short-circuit path. Must append to
+        history like `_finish_with_assistant` — otherwise history ends on a
+        `role: tool` message with no assistant reply recorded, breaking the
+        "assistant content == what was actually said" invariant and letting
+        raw (un-normalized) text leak past this point if any caller relied on
+        history instead of the return value.
         """
+        normalized = normalize_llm_output(content)
+        self.messages.append({"role": "assistant", "content": normalized})
         self._trim()
-        return normalize_llm_output(content)
+        return normalized
 
     def _compact_and_trim(self, budget: int) -> None:
         self.messages = compact_long_tool_results(

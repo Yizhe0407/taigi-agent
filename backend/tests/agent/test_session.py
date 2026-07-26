@@ -349,6 +349,34 @@ def test_respond_directly_discarded_when_called_with_other_tools():
     assert len(session.client.chat.completions.calls) == 2
 
 
+def test_respond_directly_short_circuit_stores_normalized_assistant_history():
+    """respond_directly-only short-circuit must record the reply in history.
+
+    Regression test: `_finish_normalized` used to trim and return the
+    normalized text without ever appending it to `self.messages`, leaving
+    history ending on a `role: tool` message with no assistant turn — a
+    silent violation of "assistant content == what was actually said" that
+    would corrupt every subsequent LLM call's context.
+    """
+
+    async def respond_directly_handler(message):
+        return message
+
+    session = make_session(
+        [
+            llm_response(assistant_message(tool_calls=[tool_call("respond_directly", '{"message": "<think>猜</think>公車還有五分鐘"}', "c1")])),
+        ],
+        tool_handlers={"respond_directly": respond_directly_handler},
+    )
+
+    reply = asyncio.run(session.respond("到站時間"))
+
+    assert reply == "公車還有五分鐘"
+    assert session.messages[-1] == {"role": "assistant", "content": "公車還有五分鐘"}
+    # Only one LLM call — the short-circuit must not trigger a follow-up round.
+    assert len(session.client.chat.completions.calls) == 1
+
+
 def test_history_stores_normalized_assistant_content_not_raw_reasoning():
     """Assistant content saved to history must be think-stripped and traditional Chinese.
 
