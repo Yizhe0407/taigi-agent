@@ -171,7 +171,7 @@ class TdxBusProvider(BusProvider):
                     "client_id": self._client_id,
                     "client_secret": self._client_secret,
                 },
-                timeout=15.0,
+                timeout=_REQUEST_TIMEOUT_SECONDS,
             )
             resp.raise_for_status()
             body = resp.json()

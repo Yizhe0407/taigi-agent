@@ -194,7 +194,7 @@ async def render_stop_arrival_statuses(
             continue
         sections[group].append(f"{r.route} {r.direction}：{_with_schedule(r.status_text, r.scheduled_time)}")
 
-    if not any(sections.values()):
+    if not any(sections.values()) and snapshot.summary.unknown_count == 0:
         return f"{stop_name} 目前無到站狀態資料"
 
     results = [f"{stop_name} 目前到站狀態："]
@@ -202,6 +202,12 @@ async def render_stop_arrival_statuses(
         if lines:
             results.append(f"{title}：")
             results.extend(lines)
+    # UNKNOWN routes (今日未營運 / 資料異常) are excluded from the section groups
+    # above so they don't clutter a per-route list — but silently dropping them
+    # would let the rider believe every route was checked. Surface the count
+    # instead, consistent with `snapshot.summary.unknown_count`.
+    if snapshot.summary.unknown_count:
+        results.append(f"{snapshot.summary.unknown_count} 條路線今日未營運或無即時資料")
 
     return "\n".join(results)
 

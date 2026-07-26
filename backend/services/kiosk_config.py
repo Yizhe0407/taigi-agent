@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -50,6 +51,13 @@ class KioskConfig:
 
 _current: KioskConfig | None = None
 _current_mtime_ns: int | None = None
+_last_stat_monotonic: float | None = None
+# get_kiosk_config() is on the per-message hot path (build_system_prompt). A bare
+# stat() every call is cheap in isolation but adds up under load, and cross-worker
+# config changes don't need sub-second visibility — throttle re-stats to once per
+# this many seconds; still stats on the very first call (see `_last_stat_monotonic
+# is None` below) so a fresh process picks up disk state immediately.
+_STAT_THROTTLE_SECONDS = 1.0
 
 
 def _load() -> KioskConfig:
@@ -74,13 +82,23 @@ def _load() -> KioskConfig:
 
 
 def get_kiosk_config() -> KioskConfig:
-    """Return current config and observe writes made by another worker."""
-    global _current, _current_mtime_ns
+    """Return current config and observe writes made by another worker.
+
+    Throttled: this is called on every agent message (build_system_prompt), so a
+    bare `Path.stat()` per call would land on the hot path. Skipping the stat for
+    up to `_STAT_THROTTLE_SECONDS` after the last check keeps other-worker updates
+    visible within about a second, cheaply, instead of once per request.
+    """
+    global _current, _current_mtime_ns, _last_stat_monotonic
     with _lock:
+        now = time.monotonic()
+        if _current is not None and _last_stat_monotonic is not None and now - _last_stat_monotonic < _STAT_THROTTLE_SECONDS:
+            return _current
         try:
             mtime_ns = _STATE_PATH.stat().st_mtime_ns
         except FileNotFoundError:
             mtime_ns = None
+        _last_stat_monotonic = now
         if _current is None or mtime_ns != _current_mtime_ns:
             _current = _load()
             _current_mtime_ns = mtime_ns

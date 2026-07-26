@@ -15,6 +15,7 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(kiosk_config, "_STATE_PATH", state_path)
     monkeypatch.setattr(kiosk_config, "_current", None)
     monkeypatch.setattr(kiosk_config, "_current_mtime_ns", None)
+    monkeypatch.setattr(kiosk_config, "_last_stat_monotonic", None)
     return state_path
 
 
@@ -61,5 +62,39 @@ def test_reader_reloads_config_written_by_another_worker(isolated_state):
     }
     isolated_state.write_text(json.dumps(external), encoding="utf-8")
     kiosk_config._current_mtime_ns = -1
+
+    assert kiosk_config.get_kiosk_config() == KioskConfig(**external)
+
+
+def test_stat_is_throttled_between_calls(isolated_state, monkeypatch):
+    """Rapid repeated calls (the per-message hot path) must not re-stat every time."""
+    local = KioskConfig("雲林科技大學", "回程", 23.695, 120.534)
+    kiosk_config.set_kiosk_config(local)
+
+    stat_calls = 0
+    real_stat = kiosk_config.Path.stat
+
+    def counting_stat(self, *args, **kwargs):
+        nonlocal stat_calls
+        stat_calls += 1
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(kiosk_config.Path, "stat", counting_stat)
+
+    for _ in range(5):
+        assert kiosk_config.get_kiosk_config() == local
+
+    assert stat_calls == 1
+
+
+def test_stat_runs_again_after_throttle_window(isolated_state, monkeypatch):
+    local = KioskConfig("雲林科技大學", "回程", 23.695, 120.534)
+    kiosk_config.set_kiosk_config(local)
+    kiosk_config.get_kiosk_config()  # establishes _last_stat_monotonic
+
+    external = {"stop_name": "斗六火車站", "direction": "去程", "lat": 23.711, "lon": 120.542}
+    isolated_state.write_text(json.dumps(external), encoding="utf-8")
+    # Simulate the throttle window having elapsed without a real sleep.
+    kiosk_config._last_stat_monotonic -= kiosk_config._STAT_THROTTLE_SECONDS + 1
 
     assert kiosk_config.get_kiosk_config() == KioskConfig(**external)

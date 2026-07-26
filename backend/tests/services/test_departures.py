@@ -300,6 +300,40 @@ def test_render_stop_arrival_statuses_groups_by_section(use_provider):
     )
 
 
+def test_render_stop_arrival_statuses_surfaces_unknown_count(use_provider):
+    use_provider(
+        FakeBusProvider(
+            route_info={
+                "201": {"id": "201", "go_dest": "雲林科技大學", "back_dest": "高鐵雲林站"},
+                "999": {"id": "999", "go_dest": "某站", "back_dest": "某站"},
+            },
+            eta_at_stop=[
+                {"sub_route_name": "201", "direction": 1, "stop_status": 0, "estimate_seconds": 720},
+                # stop_status 4 = 今日未營運 → classified UNKNOWN, excluded from the
+                # section groups but must still be surfaced as a count.
+                {"sub_route_name": "999", "direction": 1, "stop_status": 4, "estimate_seconds": None},
+            ],
+        )
+    )
+
+    statuses = asyncio.run(departures.render_stop_arrival_statuses("雲林科技大學", go_back=1))
+    assert statuses == ("雲林科技大學 目前到站狀態：\n有車：\n201 往高鐵雲林站：約十二分鐘後\n1 條路線今日未營運或無即時資料")
+
+
+def test_render_stop_arrival_statuses_all_unknown_still_reports_count(use_provider):
+    use_provider(
+        FakeBusProvider(
+            route_info={"999": {"id": "999", "go_dest": "某站", "back_dest": "某站"}},
+            eta_at_stop=[
+                {"sub_route_name": "999", "direction": 1, "stop_status": 4, "estimate_seconds": None},
+            ],
+        )
+    )
+
+    statuses = asyncio.run(departures.render_stop_arrival_statuses("雲林科技大學", go_back=1))
+    assert statuses == "雲林科技大學 目前到站狀態：\n1 條路線今日未營運或無即時資料"
+
+
 def test_render_arrivals_uses_classify(use_provider):
     use_provider(
         FakeBusProvider(
