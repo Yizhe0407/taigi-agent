@@ -24,9 +24,14 @@ from taigi_converter import TaigiConverter  # type: ignore[import-untyped]
 _hanlo_converter: TaigiConverter | None = None
 _taibun_converter: TaibunConverter | None = None
 
-# 單一 worker：converter 未保證 thread-safe，所有轉換在同一條 thread 上序列化，
-# 但不再卡住 event loop（首次呼叫的 model 載入也在這條 thread 上）。
-_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="text-process")
+# 4 workers：兩個 converter 的 convert()/get() 只讀初始化時建好的 lexicon/trie/dict，
+# 不寫 self 狀態（已逐一檢視 taigi_converter.converter / taibun.taibun 原始碼確認），
+# 併發呼叫是安全的。單 worker 會讓多 session 的文字轉換互相排隊、拉高首音延遲；
+# 拉高到多 worker 讓不同 session 平行跑，仍留在 thread pool 內不卡 event loop
+# （首次呼叫的 model 載入也在這裡完成）。數字與 services/taigi_tts.py 的
+# TTS_MAX_CONCURRENCY 對齊，非量測得出的最佳值。
+_MAX_WORKERS = 4
+_executor = ThreadPoolExecutor(max_workers=_MAX_WORKERS, thread_name_prefix="text-process")
 
 
 def _get_hanlo() -> TaigiConverter:

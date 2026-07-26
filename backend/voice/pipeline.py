@@ -84,9 +84,15 @@ class BargeInProcessor(FrameProcessor):
     use a custom agent instead of an LLMService, so we need it explicitly.
 
     Gate: only interrupt when the bot is currently speaking.
-    Rationale: if the bot is silent, agent_processor.py cancels the prior inference
-    task on the next TranscriptionFrame anyway — no interruption needed, and
-    noise/cough would otherwise kill in-flight reasoning with no recovery path.
+    Rationale: while the bot is silent (still reasoning/tool-calling, nothing
+    pushed downstream yet), a VAD blip from noise/cough would kill in-flight
+    work with no recovery path, so this processor stays quiet and leaves that
+    case to agent_processor.py's own TranscriptionFrame handling instead — it
+    cancels the prior inference task on the next transcript and, if that task
+    had already pushed frames downstream (Start/TextFrame reached TTS before
+    the bot's audio actually started), sends its own InterruptionFrame to
+    clear them. That inference-level check (not this bot-speaking gate) is
+    what closes the barge-in-before-audio-starts race — see agent_processor.py.
 
     BotStartedSpeakingFrame / BotStoppedSpeakingFrame are broadcast upstream by the
     output transport's MediaSender and travel through this processor on their way to
@@ -239,6 +245,10 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
     # covers crashes/early-exit paths that skip that event entirely, so the
     # gauge can't leak a permanent +1 per abnormal session end.
     _session_active = False
+    # Strong reference to the fire-and-forget welcome task — asyncio only holds
+    # a weak reference to a task once nothing else does, so without this the
+    # task risks being garbage-collected mid-run. Cleared via done_callback.
+    _welcome_task: asyncio.Task | None = None
 
     @transport.event_handler("on_app_message")
     async def on_app_message(_transport, message, _sender) -> None:
@@ -252,7 +262,7 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
 
     @transport.event_handler("on_client_connected")
     async def on_connected(_transport, _connection) -> None:
-        nonlocal _session_active
+        nonlocal _session_active, _welcome_task
         _session_active = True
         get_telemetry().record_voice_session(outcome="connected")
         get_telemetry().record_voice_active_sessions(1)
@@ -275,8 +285,20 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
             # services (tts_service.py:752); TextFrame relies on sentence aggregator flush.
             await task.queue_frame(TTSSpeakFrame(text=_WELCOME_TEXT))
 
-        # Do not block on_client_connected; transport needs to process on_app_message
-        asyncio.create_task(_send_welcome())
+        def _on_welcome_done(t: asyncio.Task) -> None:
+            nonlocal _welcome_task
+            _welcome_task = None
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc:
+                _log.exception("Welcome greeting task failed for session %s", session_id, exc_info=exc)
+
+        # Do not block on_client_connected; transport needs to process on_app_message.
+        # Keep a strong reference (+ done_callback to drop it) so the task can't be
+        # garbage-collected mid-run.
+        _welcome_task = asyncio.create_task(_send_welcome())
+        _welcome_task.add_done_callback(_on_welcome_done)
 
     @transport.event_handler("on_client_disconnected")
     async def on_disconnected(_transport, _connection) -> None:

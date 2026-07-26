@@ -2,12 +2,15 @@
 
 Wraps the existing HTTP proxy logic from `api/tts.py` into a Pipecat TTSService.
 Pipeline:
+  0. Cache      — 先查 `_decoded_cache`（正規化後文字 → 已解碼音訊），命中就跳過
+                  1-4 步驟；命中率取決於文字重複度（歡迎詞、固定回覆等）
   1. HanloFlow  — Mandarin → 漢羅混合文字
   2. Taibun     — 漢羅 → Tailo 台羅拼音
   3. Split      — Tailo 在 , 和 . 切段
   4. TTS HTTP   — 各段並發送至 /v1/audio/speech，回傳 WAV
   5. PCM yield  — 從 WAV 提取 PCM，先 yield SubtitleFrame（含總時長），再轉成
-                  OutputAudioRawFrame 串流給前端，讓字幕與音訊播放同步
+                  OutputAudioRawFrame 串流給前端，讓字幕與音訊播放同步；成功結果
+                  寫回 `_decoded_cache`
 """
 
 import asyncio
@@ -15,6 +18,7 @@ import io
 import logging
 import time
 import wave
+from collections import OrderedDict
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Any
@@ -50,16 +54,44 @@ class SubtitleFrame(DataFrame):
     duration_ms: int
 
 
-def _extract_pcm(wav_bytes: bytes) -> tuple[bytes, int, int]:
-    """Extract raw PCM bytes, sample rate, and channels from a WAV file."""
+def _extract_pcm(wav_bytes: bytes) -> tuple[bytes, int, int, int]:
+    """Extract raw PCM bytes, sample rate, channel count, and sample width (bytes/sample) from a WAV file."""
     with wave.open(io.BytesIO(wav_bytes)) as wf:
-        return wf.readframes(wf.getnframes()), wf.getframerate(), wf.getnchannels()
+        return wf.readframes(wf.getnframes()), wf.getframerate(), wf.getnchannels(), wf.getsampwidth()
 
 
-def _make_silence_pcm(duration_ms: int, sample_rate: int, num_channels: int, sampwidth: int = 2) -> bytes:
+def _make_silence_pcm(duration_ms: int, sample_rate: int, num_channels: int, sampwidth: int) -> bytes:
     """Generate raw PCM silence."""
     n_frames = int(sample_rate * duration_ms / 1000)
     return b"\x00" * (n_frames * num_channels * sampwidth)
+
+
+# Decoded-segment tuple: (pcm_bytes, sample_rate, num_channels, sample_width, silence_ms)
+_DecodedSegment = tuple[bytes, int, int, int, int]
+
+# Bounded LRU cache of fully-decoded audio for repeated fixed text (welcome
+# greeting, fallback error replies, etc.) so a repeat hit skips both the
+# Hanlo/Taibun conversion and the upstream TTS HTTP round trip entirely —
+# the biggest win for time-to-first-audio on those lines. Keyed on the
+# post-normalize_for_tts text; module-level (not per-TaigiTTSService instance)
+# so the benefit is shared across sessions in this process. Fixed capacity
+# keeps memory bounded regardless of how many distinct replies get spoken.
+_DECODED_CACHE_MAX = 64
+_decoded_cache: OrderedDict[str, tuple[list[_DecodedSegment], int]] = OrderedDict()
+
+
+def _decoded_cache_get(key: str) -> tuple[list[_DecodedSegment], int] | None:
+    entry = _decoded_cache.get(key)
+    if entry is not None:
+        _decoded_cache.move_to_end(key)
+    return entry
+
+
+def _decoded_cache_put(key: str, value: tuple[list[_DecodedSegment], int]) -> None:
+    _decoded_cache[key] = value
+    _decoded_cache.move_to_end(key)
+    if len(_decoded_cache) > _DECODED_CACHE_MAX:
+        _decoded_cache.popitem(last=False)
 
 
 class TaigiTTSService(TTSService):
@@ -102,92 +134,106 @@ class TaigiTTSService(TTSService):
                 _log.error("TTS config error: %s", exc)
                 return
 
-            # Step 1 + 2: Mandarin → 漢羅 → Tailo
-            try:
-                tts_text = normalize_for_tts(text)
-                result = await text_process_async(tts_text)
-                if not result.tailo:
-                    _log.warning("Empty Tailo result for input: %s", text)
-                    return
-            except Exception as exc:
-                _log.error("TTS text process error: %s", exc)
-                return
-
-            # Step 3: Split Tailo at punctuation
-            try:
-                segments = split_tailo(result.tailo)
-            except TTSSegmentLimitError as exc:
-                _log.error("TTS segment limit exceeded: %s", exc)
-                return
-            if not segments:
-                return
-
-            # Fixed-size worker pool prevents punctuation-heavy text from
-            # creating one asyncio task and one upstream request per segment.
-            try:
-                responses = await synthesize_segments(config, segments)
-            except TimeoutError:
-                outcome = "timeout"
-                _log.error("TTS synthesis exceeded the total deadline")
-                return
-
-            # Decode all segments first so we know the total duration before
-            # yielding anything — the subtitle must precede the first audio
-            # frame (see SubtitleFrame docstring / module docstring above).
-            decoded: list[tuple[bytes, int, int, int]] = []  # pcm_bytes, sample_rate, num_channels, silence_ms
-            for (seg_text, silence_ms), resp in zip(segments, responses, strict=True):
-                if isinstance(resp, Exception):
-                    _log.error("TTS HTTP request failed: %s", resp)
-                    continue
-
-                if resp.status_code != 200:
-                    _log.error("TTS upstream error %d: %s", resp.status_code, resp.text)
-                    continue
-
+            tts_text = normalize_for_tts(text)
+            cached = _decoded_cache_get(tts_text)
+            if cached is not None:
+                decoded, total_duration_ms = cached
+            else:
+                # Step 1 + 2: Mandarin → 漢羅 → Tailo
                 try:
-                    pcm_bytes, sample_rate, num_channels = _extract_pcm(resp.content)
+                    result = await text_process_async(tts_text)
+                    if not result.tailo:
+                        _log.warning("Empty Tailo result for input: %s", text)
+                        return
                 except Exception as exc:
-                    _log.error("WAV extraction failed: %s", exc)
-                    continue
+                    _log.error("TTS text process error: %s", exc)
+                    return
 
-                decoded.append((pcm_bytes, sample_rate, num_channels, silence_ms))
+                # Step 3: Split Tailo at punctuation
+                try:
+                    segments = split_tailo(result.tailo)
+                except TTSSegmentLimitError as exc:
+                    _log.error("TTS segment limit exceeded: %s", exc)
+                    return
+                if not segments:
+                    return
 
-            if decoded:
-                total_duration_ms = sum(
-                    (len(pcm_bytes) / (sample_rate * num_channels * 2)) * 1000 + silence_ms for pcm_bytes, sample_rate, num_channels, silence_ms in decoded
+                # Fixed-size worker pool prevents punctuation-heavy text from
+                # creating one asyncio task and one upstream request per segment.
+                try:
+                    responses = await synthesize_segments(config, segments)
+                except TimeoutError:
+                    outcome = "timeout"
+                    _log.error("TTS synthesis exceeded the total deadline")
+                    return
+
+                # Decode all segments first so we know the total duration before
+                # yielding anything — the subtitle must precede the first audio
+                # frame (see SubtitleFrame docstring / module docstring above).
+                decoded = []
+                for (seg_text, silence_ms), resp in zip(segments, responses, strict=True):
+                    if isinstance(resp, Exception):
+                        _log.error("TTS HTTP request failed: %s", resp)
+                        continue
+
+                    if resp.status_code != 200:
+                        _log.error("TTS upstream error %d: %s", resp.status_code, resp.text)
+                        continue
+
+                    try:
+                        pcm_bytes, sample_rate, num_channels, sample_width = _extract_pcm(resp.content)
+                    except Exception as exc:
+                        _log.error("WAV extraction failed: %s", exc)
+                        continue
+
+                    decoded.append((pcm_bytes, sample_rate, num_channels, sample_width, silence_ms))
+
+                if not decoded:
+                    if any(isinstance(r, httpx.TimeoutException) for r in responses):
+                        outcome = "timeout"
+                    return
+
+                total_duration_ms = round(
+                    sum(
+                        (len(pcm_bytes) / (sample_rate * num_channels * sample_width)) * 1000 + silence_ms
+                        for pcm_bytes, sample_rate, num_channels, sample_width, silence_ms in decoded
+                    )
                 )
-                yield SubtitleFrame(text=text, duration_ms=round(total_duration_ms))
+                # Only fixed/repeatable text benefits, but there's no cheap way to
+                # tell "fixed" from "dynamic" apart here — cache every successful
+                # synthesis and let the bounded LRU evict dynamic one-offs on its own.
+                _decoded_cache_put(tts_text, (decoded, total_duration_ms))
 
-                first_frame = True
-                for pcm_bytes, sample_rate, num_channels, silence_ms in decoded:
-                    # 20ms chunks: sample_rate * 0.02 * num_channels * 2 bytes/sample
-                    chunk_size = int(sample_rate * 0.02) * num_channels * 2
+            yield SubtitleFrame(text=text, duration_ms=total_duration_ms)
 
-                    for i in range(0, len(pcm_bytes), chunk_size):
+            first_frame = True
+            for pcm_bytes, sample_rate, num_channels, sample_width, silence_ms in decoded:
+                # 20ms chunks
+                chunk_size = int(sample_rate * 0.02) * num_channels * sample_width
+
+                for i in range(0, len(pcm_bytes), chunk_size):
+                    if first_frame and self._turn_timer:
+                        self._turn_timer.mark_first_audio()
+                        first_frame = False
+                    yield TTSAudioRawFrame(
+                        audio=pcm_bytes[i : i + chunk_size],
+                        sample_rate=sample_rate,
+                        num_channels=num_channels,
+                    )
+
+                if silence_ms > 0:
+                    silence = _make_silence_pcm(silence_ms, sample_rate, num_channels, sample_width)
+                    for i in range(0, len(silence), chunk_size):
                         if first_frame and self._turn_timer:
                             self._turn_timer.mark_first_audio()
                             first_frame = False
                         yield TTSAudioRawFrame(
-                            audio=pcm_bytes[i : i + chunk_size],
+                            audio=silence[i : i + chunk_size],
                             sample_rate=sample_rate,
                             num_channels=num_channels,
                         )
 
-                    if silence_ms > 0:
-                        silence = _make_silence_pcm(silence_ms, sample_rate, num_channels, 2)
-                        for i in range(0, len(silence), chunk_size):
-                            if first_frame and self._turn_timer:
-                                self._turn_timer.mark_first_audio()
-                                first_frame = False
-                            yield TTSAudioRawFrame(
-                                audio=silence[i : i + chunk_size],
-                                sample_rate=sample_rate,
-                                num_channels=num_channels,
-                            )
-
-                outcome = "ok"
-            elif any(isinstance(r, httpx.TimeoutException) for r in responses):
-                outcome = "timeout"
+            outcome = "ok"
         except asyncio.CancelledError:
             outcome = "cancelled"
             raise

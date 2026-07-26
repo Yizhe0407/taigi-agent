@@ -9,7 +9,17 @@ import pytest
 from pipecat.frames.frames import TTSAudioRawFrame
 
 from services.taigi_tts import TTSConfig, TTSConfigError
-from voice.tts_taigi import SubtitleFrame, TaigiTTSService
+from voice.tts_taigi import SubtitleFrame, TaigiTTSService, _decoded_cache
+
+
+@pytest.fixture(autouse=True)
+def _clear_decoded_cache():
+    """The decoded-audio LRU cache (finding 4) is process-wide by design so
+    repeated fixed text benefits across sessions — but that means it must not
+    leak between test cases that reuse "你好" with different mocked outcomes."""
+    _decoded_cache.clear()
+    yield
+    _decoded_cache.clear()
 
 
 def _make_wav_bytes(sample_rate: int = 16000, n_samples: int = 160) -> bytes:
@@ -141,6 +151,31 @@ def test_run_tts_cancelled_mid_request_records_cancelled_outcome():
     _, kwargs = mock_get_telemetry.return_value.record_pipeline_stage.call_args
     assert kwargs["stage"] == "voice.tts"
     assert kwargs["outcome"] == "cancelled"
+
+
+def test_run_tts_second_call_with_same_text_hits_cache_and_skips_reprocessing():
+    """Repeated fixed text (e.g. the welcome greeting) must not re-run
+    Hanlo/Taibun conversion or the upstream TTS HTTP call on the second hit."""
+    mock_resp = MagicMock(status_code=200, content=_make_wav_bytes())
+
+    p1, p2, p3 = _patch_common()
+    with (
+        p1,
+        p2,
+        p3,
+        patch("voice.tts_taigi.synthesize_segments", new=AsyncMock(return_value=[mock_resp])) as mock_synth,
+        patch("voice.tts_taigi.get_telemetry"),
+    ):
+        svc = TaigiTTSService()
+        first_frames = asyncio.run(_collect(svc.run_tts("你好", "ctx-1")))
+        assert mock_synth.call_count == 1
+
+        second_frames = asyncio.run(_collect(svc.run_tts("你好", "ctx-2")))
+        # No second upstream synthesis call — served entirely from cache.
+        assert mock_synth.call_count == 1
+
+    assert [type(f) for f in first_frames] == [type(f) for f in second_frames]
+    assert first_frames[0].duration_ms == second_frames[0].duration_ms
 
 
 def test_run_tts_empty_text_does_not_record_stage():

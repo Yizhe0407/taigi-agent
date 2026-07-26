@@ -180,27 +180,50 @@ class StreamNormalizer:
                 return
 
     def _emit_ready(self, *, final: bool) -> list[str]:
+        """Return zero or more speakable pieces cut from `self._clean`.
+
+        A single delta can contain several complete sentences at once (the
+        underlying LLM stream isn't chunked at sentence boundaries). Cutting
+        only at the *last* sentence end would merge them into one piece and
+        hand TTS more text than the first sentence needs — delaying its
+        audio behind synthesis of the rest. Cutting at every sentence end
+        instead emits one piece per sentence, so the first is ready as soon
+        as it completes.
+        """
+        raw_pieces: list[str]
         if final:
-            cut = len(self._clean)
+            raw_pieces = [self._clean] if self._clean else []
+            self._clean = ""
         else:
             sentence_ends = list(_SENTENCE_END_RE.finditer(self._clean))
-            soft_ends = list(_SOFT_BOUNDARY_RE.finditer(self._clean))
             if sentence_ends:
-                cut = sentence_ends[-1].end()
-            elif len(self._clean) >= _SOFT_EMIT_MIN_CHARS and soft_ends:
-                cut = soft_ends[-1].end()
-            elif len(self._clean) >= _EMIT_MAX_CHARS:
-                cut = len(self._clean)
+                raw_pieces = []
+                start = 0
+                for m in sentence_ends:
+                    raw_pieces.append(self._clean[start : m.end()])
+                    start = m.end()
+                self._clean = self._clean[start:]
             else:
-                return []
+                soft_ends = list(_SOFT_BOUNDARY_RE.finditer(self._clean))
+                if len(self._clean) >= _SOFT_EMIT_MIN_CHARS and soft_ends:
+                    cut = soft_ends[-1].end()
+                elif len(self._clean) >= _EMIT_MAX_CHARS:
+                    cut = len(self._clean)
+                else:
+                    return []
+                raw_pieces = [self._clean[:cut]]
+                self._clean = self._clean[cut:]
 
-        piece, self._clean = self._clean[:cut], self._clean[cut:]
-        piece = _S2TWP.convert(piece)
-        if not self._emitted:
-            piece = piece.lstrip()
-        if final:
-            piece = piece.rstrip()
-        if not piece:
-            return []
-        self._emitted = True
-        return [piece]
+        pieces: list[str] = []
+        last = len(raw_pieces) - 1
+        for i, raw in enumerate(raw_pieces):
+            piece = _S2TWP.convert(raw)
+            if not self._emitted:
+                piece = piece.lstrip()
+            if final and i == last:
+                piece = piece.rstrip()
+            if not piece:
+                continue
+            self._emitted = True
+            pieces.append(piece)
+        return pieces

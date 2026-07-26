@@ -84,3 +84,22 @@ def test_long_clause_without_punctuation_still_emits():
     normalizer = StreamNormalizer()
     pieces = normalizer.feed("字" * 250)
     assert pieces, "buffer 超過上限仍未輸出，TTS 會被卡住"
+
+
+def test_single_delta_with_multiple_sentences_emits_one_chunk_per_sentence():
+    """一個 delta 內含多個完整句子時，必須逐句拆開 emit——否則第一句要等
+    後面幾句一起合成完才送出音訊，首音延遲等於多句的合成時間。"""
+    normalizer = StreamNormalizer()
+    pieces = normalizer.feed("第一句到站了。第二句公車還沒到。第三句還沒完")
+    assert pieces == ["第一句到站了。", "第二句公車還沒到。"]
+    assert normalizer.flush() == ["第三句還沒完"]
+
+
+def test_multi_sentence_delta_concatenation_matches_batch_normalize():
+    text = "第一句到站了。第二句公車還沒到。第三句是簡体字还没转换。"
+    expected = normalize_llm_output(text)
+    normalizer = StreamNormalizer()
+    pieces = normalizer.feed(text)
+    pieces += normalizer.flush()
+    assert len(pieces) >= 3, "三個完整句子應該拆成至少三段"
+    assert "".join(pieces) == expected

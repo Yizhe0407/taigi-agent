@@ -41,6 +41,22 @@ _END_CONVERSATION_SCHEMA = {
 }
 
 
+class _ResponseState:
+    """Tracks whether one `_run_agent_inference` call has already pushed
+    LLMFullResponseStartFrame/TextFrame downstream.
+
+    Passed explicitly into `_run_agent_inference` (not read off `self`) so a
+    task being cancelled and the task replacing it never race over the same
+    flag: each in-flight call owns its own instance, and only that call ever
+    writes to it.
+    """
+
+    __slots__ = ("started",)
+
+    def __init__(self) -> None:
+        self.started = False
+
+
 class TaigiBusAgentProcessor(FrameProcessor):
     """Integrates the existing REST AgentSession into the Pipecat pipeline."""
 
@@ -56,6 +72,7 @@ class TaigiBusAgentProcessor(FrameProcessor):
         self._send_event = send_event
         self._turn_timer = turn_timer
         self._inference_task: asyncio.Task | None = None
+        self._inference_state: _ResponseState | None = None
 
     def _end_conversation_tool(self) -> tuple[dict, Any]:
         """Build the (schema, handler) pair injected into this session's tools.
@@ -94,22 +111,40 @@ class TaigiBusAgentProcessor(FrameProcessor):
             if self._turn_timer:
                 self._turn_timer.mark_transcription()
 
-            # Cancel any existing task just in case
+            # Cancel any existing task just in case. If it already pushed
+            # LLMFullResponseStartFrame/TextFrame downstream (into TTS), a bare
+            # .cancel() only stops further generation — audio already queued for
+            # that stale reply keeps playing and overlaps the new one. Broadcasting
+            # here (rather than relying on BargeInProcessor, which gates on
+            # _bot_speaking and may not have fired yet) guarantees downstream state
+            # gets cleared whenever a partially-streamed response is abandoned.
             if self._inference_task and not self._inference_task.done():
                 self._inference_task.cancel()
+                if self._inference_state and self._inference_state.started:
+                    _log.info("Cancelling in-flight response that already pushed frames; sending InterruptionFrame")
+                    await self.push_frame(InterruptionFrame(), direction)
 
-            self._inference_task = self.create_task(self._run_agent_inference(text, direction))
+            state = _ResponseState()
+            self._inference_state = state
+            self._inference_task = self.create_task(self._run_agent_inference(text, direction, state))
         else:
             await self.push_frame(frame, direction)
 
-    async def _run_agent_inference(self, text: str, direction: FrameDirection):
+    async def _run_agent_inference(self, text: str, direction: FrameDirection, state: _ResponseState | None = None):
         """Run the agent logic in a background task so we don't block process_frame.
 
         Streams reply chunks straight into the pipeline — Pipecat's TTS
         sentence aggregator starts synthesizing the first sentence while the
         LLM is still generating the rest, instead of waiting for the full
         reply.
+
+        `state` defaults to a fresh `_ResponseState` for callers (tests, mainly)
+        that don't need to observe it — `process_frame` always passes its own so
+        it can check `.started` when deciding whether a later cancellation needs
+        an explicit InterruptionFrame.
         """
+        if state is None:
+            state = _ResponseState()
         from agent.prompt import VOICE_END_CONVERSATION_GUIDANCE
         from api.chat import _get_store, respond_in_session_stream
 
@@ -145,6 +180,7 @@ class TaigiBusAgentProcessor(FrameProcessor):
 
             parts: list[str] = []
             await self.push_frame(LLMFullResponseStartFrame(), direction)
+            state.started = True
             if first is not None:
                 parts.append(first)
                 await self.push_frame(TextFrame(text=first), direction)
@@ -162,6 +198,11 @@ class TaigiBusAgentProcessor(FrameProcessor):
             _log.info("Agent inference task was cancelled due to interruption.")
             if self._send_event:
                 self._send_event({"type": "agent_cancelled"})
+            if state.started:
+                # LLMFullResponseStartFrame already went out — close the pair so
+                # downstream aggregators (TTS sentence aggregator, etc.) don't sit
+                # on a start with no matching end.
+                await self.push_frame(LLMFullResponseEndFrame(), direction)
             raise
         except Exception:
             _log.exception("Agent processing error")
