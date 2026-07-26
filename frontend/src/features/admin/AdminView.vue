@@ -2,15 +2,14 @@
 import { Check, MapPin, Search } from "@lucide/vue"
 import { computed, onMounted, onUnmounted, ref } from "vue"
 
+import MapZoomControl from "@/components/map/MapZoomControl.vue"
+import YunlinServiceAreaLayer from "@/components/map/YunlinServiceAreaLayer.vue"
 import { Map } from "@/components/ui/map"
-import MapZoomControl from "@/features/route-planner/map/MapZoomControl.vue"
-import YunlinServiceAreaLayer from "@/features/route-planner/map/YunlinServiceAreaLayer.vue"
+import { VOYAGER_STYLE_URL } from "@/lib/map-styles"
 
 import type { Direction, KioskConfig, StopEntry } from "./api/admin"
 import { fetchAdminKiosk, fetchAdminStops, updateAdminKiosk } from "./api/admin"
 import AdminStopsLayer from "./AdminStopsLayer.vue"
-
-const VOYAGER_STYLE = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json"
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -279,7 +278,7 @@ async function handleApply() {
       <Map
         ref="mapRef"
         class="rounded-[28px] border-2 border-kiosk-line overflow-hidden min-h-0"
-        :style-override="VOYAGER_STYLE"
+        :style-override="VOYAGER_STYLE_URL"
         :viewport="{
           center: [120.5385, 23.697],
           zoom: 11,

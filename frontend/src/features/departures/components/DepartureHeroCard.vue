@@ -2,7 +2,7 @@
 import { Route } from "@lucide/vue"
 import { useRouter } from "vue-router"
 
-import { usePip } from "@/features/agent-chat/composables/usePip"
+import { usePip } from "@/composables/usePip"
 
 import type { DepartureRouteStatus } from "../types"
 import {

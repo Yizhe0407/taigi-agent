@@ -1,5 +1,4 @@
 export type PipCorner = "tl" | "tr" | "bl" | "br"
-export type WebRTCState = "disconnected" | "connecting" | "connected" | "error"
 export type PipSize = "sm" | "md" | "lg"
 
 /** PiP voice conversation phase — single source of truth, see useConversationState. */

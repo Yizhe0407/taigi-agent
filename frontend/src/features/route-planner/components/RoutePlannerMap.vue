@@ -9,14 +9,15 @@ import {
 } from "@lucide/vue"
 import { computed, ref, watch } from "vue"
 
+import MapZoomControl from "@/components/map/MapZoomControl.vue"
+import YunlinServiceAreaLayer from "@/components/map/YunlinServiceAreaLayer.vue"
 import { Map, MapMarker, MapRoute, MarkerContent } from "@/components/ui/map"
+import { MAP_STYLES, type MapStyleId } from "@/lib/map-styles"
 
 import { isInYunlinCounty } from "../geo/yunlin-service-area"
 import MapClickPicker from "../map/MapClickPicker.vue"
-import MapZoomControl from "../map/MapZoomControl.vue"
 import MoovoStationMarkers from "../map/MoovoStationMarkers.vue"
 import RouteViewportFit from "../map/RouteViewportFit.vue"
-import YunlinServiceAreaLayer from "../map/YunlinServiceAreaLayer.vue"
 import type { KioskPlace, LngLat, MoovoStation, RouteOption } from "../types"
 import { legDisplayCoordinates } from "../utils/route-display"
 
@@ -58,29 +59,14 @@ const updateDestination = (coordinates: { lng: number; lat: number }) => {
 // Map style picker
 // ---------------------------------------------------------------------------
 
-const MAP_STYLES = [
-  {
-    id: "voyager",
-    label: "彩色",
-    url: "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json",
-  },
-  {
-    id: "positron",
-    label: "明亮",
-    url: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
-  },
-] as const
-
-type StyleId = (typeof MAP_STYLES)[number]["id"]
-
-const activeStyleId = ref<StyleId>("voyager")
+const activeStyleId = ref<MapStyleId>("voyager")
 const showMoovoStations = ref(true)
 
 const activeStyle = () =>
   MAP_STYLES.find((s) => s.id === activeStyleId.value)?.url ??
   MAP_STYLES[0].url
 
-function selectStyle(id: StyleId) {
+function selectStyle(id: MapStyleId) {
   activeStyleId.value = id
 }
 </script>

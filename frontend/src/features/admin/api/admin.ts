@@ -1,4 +1,5 @@
 import { apiFetch, ApiError } from "@/lib/api"
+import { API_NETWORK_MESSAGES } from "@/lib/api-messages"
 
 export class AdminApiError extends ApiError {
   constructor(message: string, status: number | null = null) {
@@ -25,7 +26,7 @@ export interface StopEntry {
 export async function fetchAdminKiosk(): Promise<KioskConfig> {
   const res = await apiFetch("/api/admin/kiosk", {
     errorClass: AdminApiError,
-    networkMessage: "無法連接後台",
+    networkMessage: API_NETWORK_MESSAGES.admin,
   })
   return (await res.json()) as KioskConfig
 }
@@ -54,7 +55,7 @@ export async function updateAdminKiosk(config: {
       headers: { "Content-Type": "application/json", ...adminTokenHeaders() },
       body: JSON.stringify(config),
       errorClass: AdminApiError,
-      networkMessage: "無法更新站牌設定",
+      networkMessage: API_NETWORK_MESSAGES.adminUpdate,
     })
     return (await res.json()) as KioskConfig
   } catch (error) {
@@ -66,7 +67,7 @@ export async function updateAdminKiosk(config: {
         headers: { "Content-Type": "application/json", ...adminTokenHeaders() },
         body: JSON.stringify(config),
         errorClass: AdminApiError,
-        networkMessage: "無法更新站牌設定",
+        networkMessage: API_NETWORK_MESSAGES.adminUpdate,
       })
       return (await res.json()) as KioskConfig
     }
@@ -77,7 +78,7 @@ export async function updateAdminKiosk(config: {
 export async function fetchAdminStops(): Promise<StopEntry[]> {
   const res = await apiFetch("/api/admin/stops", {
     errorClass: AdminApiError,
-    networkMessage: "無法載入站牌清單",
+    networkMessage: API_NETWORK_MESSAGES.adminStops,
   })
   return (await res.json()) as StopEntry[]
 }

@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { useMap } from "@/components/ui/map"
 import { useMapLayer } from "@/components/ui/map/composables/use-map-layer"
-
 import {
   yunlinBoundaryGeoJson,
   yunlinOutsideMaskGeoJson,
-} from "../geo/yunlin-service-area"
+} from "@/features/route-planner/geo/yunlin-service-area"
 
 const { map, isLoaded } = useMap()
 

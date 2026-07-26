@@ -2,7 +2,7 @@
 import { RouterView } from "vue-router"
 
 import PipAgentOverlay from "@/features/agent-chat/components/PipAgentOverlay.vue"
-import { usePip } from "@/features/agent-chat/composables/usePip"
+import { usePip } from "@/composables/usePip"
 
 const { isOpen, close } = usePip()
 </script>

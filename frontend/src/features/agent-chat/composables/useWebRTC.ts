@@ -1,5 +1,6 @@
 import { onBeforeUnmount, readonly, ref, type Ref } from "vue"
 
+import { apiBaseUrl } from "@/lib/api"
 import { reportClientEvent } from "@/lib/report-client-event"
 
 export type WebRTCState = "disconnected" | "connecting" | "connected" | "error"
@@ -268,7 +269,7 @@ export function useWebRTC(
 
       let resp: Response
       try {
-        resp = await fetch("/api/voice/offer", {
+        resp = await fetch(`${apiBaseUrl}/api/voice/offer`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
