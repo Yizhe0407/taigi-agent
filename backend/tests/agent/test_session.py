@@ -349,6 +349,37 @@ def test_respond_directly_discarded_when_called_with_other_tools():
     assert len(session.client.chat.completions.calls) == 2
 
 
+def test_respond_directly_handler_error_falls_through_to_llm_round():
+    """A respond_directly handler exception must not short-circuit as the final reply.
+
+    Regression test for `ToolCallResult.is_error` (agent/tool_dispatch.py):
+    `_find_direct_response` now reads that structured flag instead of
+    string-matching the "工具 X 執行失敗：" prefix. This pins the observable
+    behavior — sole-call respond_directly failure still falls through to a
+    follow-up LLM round — across that refactor.
+    """
+
+    async def failing_respond_directly(message, intent=None):
+        raise RuntimeError("boom")
+
+    session = make_session(
+        [
+            llm_response(assistant_message(tool_calls=[tool_call("respond_directly", '{"message": "guess"}', "c1")])),
+            llm_response(assistant_message("修正後的回答")),
+        ],
+        tool_handlers={"respond_directly": failing_respond_directly},
+    )
+
+    reply = asyncio.run(session.respond("到站時間"))
+
+    assert reply == "修正後的回答"
+    assert len(session.client.chat.completions.calls) == 2
+    tool_messages = [msg for msg in session.messages if msg["role"] == "tool"]
+    assert tool_messages == [
+        {"role": "tool", "tool_call_id": "c1", "content": "工具 respond_directly 執行失敗：boom"},
+    ]
+
+
 def test_respond_directly_short_circuit_stores_normalized_assistant_history():
     """respond_directly-only short-circuit must record the reply in history.
 

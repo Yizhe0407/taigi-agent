@@ -23,6 +23,8 @@ from agent.diagnostics import log_diagnostic
 from agent.llm_client import ContextWindowExceeded, ToolCallFailed, call_llm, call_llm_stream
 from agent.router import ConvState, Decision, Intent, IntentRouter
 from agent.tool_dispatch import (
+    ToolCall,
+    ToolCallResult,
     ToolHandler,
     assistant_message,
     execute_tool_calls,
@@ -34,7 +36,7 @@ from telemetry import AgentTelemetry
 InputEnricher = Callable[[str], Awaitable[str]]
 
 
-def _find_direct_response(tool_calls: list, tool_results: list[dict]) -> str | None:
+def _find_direct_response(tool_calls: list[ToolCall], tool_results: list[ToolCallResult]) -> str | None:
     """Return the respond_directly message, but only if it's the sole call this round.
 
     respond_directly's content is generated before the model sees any tool
@@ -48,14 +50,14 @@ def _find_direct_response(tool_calls: list, tool_results: list[dict]) -> str | N
     call, result = tool_calls[0], tool_results[0]
     if call.function.name != "respond_directly":
         return None
-    content = result["content"]
-    # Internal error strings from tool_dispatch.execute_tool_calls — a handler
-    # exception ("工具 X 執行失敗：…") or a dispatch failure (bad JSON args /
-    # non-object args / missing handler, all prefixed "錯誤：") — must never
-    # become the user's final reply. Fall through to a normal LLM round instead.
-    if content.startswith(f"工具 {call.function.name} 執行失敗：") or content.startswith("錯誤："):
+    # A handler exception ("工具 X 執行失敗：…") or a dispatch failure (bad
+    # JSON args / non-object args / missing handler) must never become the
+    # user's final reply — `is_error` is tool_dispatch's structured signal for
+    # that, set alongside the same string the model/prompt still sees in
+    # history. Fall through to a normal LLM round instead.
+    if result.is_error:
         return None
-    return content
+    return result.message["content"]
 
 
 _MAX_CONTEXT_RECOVERY_RETRIES = 1
@@ -369,7 +371,7 @@ class AgentSession:
                     self.tool_handlers,
                     self.telemetry,
                 )
-                self.messages.extend(tool_results)
+                self.messages.extend(result.message for result in tool_results)
 
                 # respond_directly short-circuits the loop: no further LLM call needed.
                 direct = _find_direct_response(tool_calls, tool_results)

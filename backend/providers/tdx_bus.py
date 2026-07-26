@@ -55,6 +55,8 @@ import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 
+import httpx
+
 from providers.bus import BusProvider
 from providers.http import get_http_client
 from providers.tdx_auth import TdxTokenClient
@@ -186,7 +188,7 @@ class TdxBusProvider(BusProvider):
         attempt = 0
         while True:
 
-            async def _do(token: str, url: str = url, params: dict = params) -> object:
+            async def _do(token: str, url: str = url, params: dict = params) -> httpx.Response:
                 return await http.get(
                     url,
                     params={**params, "$format": "JSON"},

@@ -64,6 +64,84 @@ def _is_retryable_error(error: Exception) -> bool:
     return isinstance(error, APIStatusError) and error.status_code >= 500
 
 
+def _record_llm_input(telemetry: AgentTelemetry, span: Any, messages: list[dict]) -> None:
+    telemetry.set_content(
+        span,
+        "gen_ai.input.messages",
+        json.dumps(messages, ensure_ascii=False),
+        limit=8_000,
+    )
+
+
+def _record_llm_success(
+    telemetry: AgentTelemetry,
+    span: Any,
+    response: Any,
+    *,
+    model: str,
+    operation: str,
+    started: float,
+) -> None:
+    telemetry.record_llm_duration(
+        time.perf_counter() - started,
+        model=model,
+        operation=operation,
+        outcome="ok",
+    )
+    telemetry.set_content(span, "gen_ai.output.messages", _output_content(response))
+
+
+def _handle_llm_attempt_error(
+    error: Exception,
+    *,
+    telemetry: AgentTelemetry,
+    span: Any,
+    model: str,
+    operation: str,
+    started: float,
+    attempt: int,
+    blocked: bool = False,
+) -> str | None:
+    """Record telemetry for a failed attempt and decide what happens next.
+
+    Raises `ContextWindowExceeded`/`ToolCallFailed` directly — both call sites
+    convert those the same way, so doing it here removes the duplication.
+    A plain non-retryable error is left for the caller to re-raise with `raise`
+    (preserves the original traceback instead of `raise error` here).
+    Returns the error_type string to log against `record_llm_retry` when the
+    attempt should be retried, or `None` when the caller must re-raise.
+
+    `blocked` disables retry regardless of attempt count — used by the
+    streaming variant once a delta has already reached the caller (retrying
+    would replay already-spoken content).
+    """
+    error_type = "context_window" if _looks_like_context_error(error) else type(error).__name__
+    telemetry.record_llm_duration(
+        time.perf_counter() - started,
+        model=model,
+        operation=operation,
+        outcome="error",
+    )
+    telemetry.mark_span_error(span, error_type=error_type, exception=error)
+    if _looks_like_context_error(error):
+        raise ContextWindowExceeded(str(error)) from error
+    if _looks_like_tool_call_failure(error):
+        raise ToolCallFailed(str(error)) from error
+    if blocked or not _is_retryable_error(error) or attempt == _LLM_MAX_ATTEMPTS - 1:
+        return None
+    telemetry.record_llm_retry(operation=operation, error_type=error_type)
+    return error_type
+
+
+async def _sleep_before_retry(retry_error: Exception, attempt: int, *, label: str) -> None:
+    wait = 2**attempt
+    log_diagnostic(
+        "retry",
+        f"{label}呼叫失敗（{summarize_error(retry_error)}），{wait}s 後重試...",
+    )
+    await asyncio.sleep(wait)
+
+
 def _output_content(response: Any) -> str:
     """Serialize the completion message (content + tool calls) for span capture.
 
@@ -133,12 +211,7 @@ async def call_llm_stream(
                 "agent.llm.stream": True,
             },
         ) as span:
-            telemetry.set_content(
-                span,
-                "gen_ai.input.messages",
-                json.dumps(messages, ensure_ascii=False),
-                limit=8_000,
-            )
+            _record_llm_input(telemetry, span, messages)
             content_parts: list[str] = []
             tool_calls_acc: dict[int, dict] = {}
             try:
@@ -171,41 +244,27 @@ async def call_llm_stream(
                             delta_emitted = True
                             yield ("delta", content)
             except Exception as e:
-                error_type = "context_window" if _looks_like_context_error(e) else type(e).__name__
-                telemetry.record_llm_duration(
-                    time.perf_counter() - started,
+                error_type = _handle_llm_attempt_error(
+                    e,
+                    telemetry=telemetry,
+                    span=span,
                     model=model,
                     operation=operation,
-                    outcome="error",
+                    started=started,
+                    attempt=attempt,
+                    blocked=delta_emitted,
                 )
-                telemetry.mark_span_error(span, error_type=error_type, exception=e)
-                if _looks_like_context_error(e):
-                    raise ContextWindowExceeded(str(e)) from e
-                if _looks_like_tool_call_failure(e):
-                    raise ToolCallFailed(str(e)) from e
-                if delta_emitted or not _is_retryable_error(e) or attempt == _LLM_MAX_ATTEMPTS - 1:
+                if error_type is None:
                     raise
-                telemetry.record_llm_retry(operation=operation, error_type=error_type)
                 retry_error = e
             else:
                 response = _assemble_stream_response(content_parts, tool_calls_acc)
-                telemetry.record_llm_duration(
-                    time.perf_counter() - started,
-                    model=model,
-                    operation=operation,
-                    outcome="ok",
-                )
-                telemetry.set_content(span, "gen_ai.output.messages", _output_content(response))
+                _record_llm_success(telemetry, span, response, model=model, operation=operation, started=started)
                 yield ("response", response)
                 return
 
         if retry_error is not None:
-            wait = 2**attempt
-            log_diagnostic(
-                "retry",
-                f"LLM 串流呼叫失敗（{summarize_error(retry_error)}），{wait}s 後重試...",
-            )
-            await asyncio.sleep(wait)
+            await _sleep_before_retry(retry_error, attempt, label="LLM 串流")
 
     raise RuntimeError("LLM stream retry loop ended unexpectedly")
 
@@ -233,12 +292,7 @@ async def call_llm(
                 "agent.llm.attempt": attempt + 1,
             },
         ) as span:
-            telemetry.set_content(
-                span,
-                "gen_ai.input.messages",
-                json.dumps(messages, ensure_ascii=False),
-                limit=8_000,
-            )
+            _record_llm_input(telemetry, span, messages)
             try:
                 response = await client.chat.completions.create(
                     model=model,
@@ -248,45 +302,24 @@ async def call_llm(
                     extra_body=extra_body,
                 )
             except Exception as e:
-                error_type = "context_window" if _looks_like_context_error(e) else type(e).__name__
-                telemetry.record_llm_duration(
-                    time.perf_counter() - started,
+                error_type = _handle_llm_attempt_error(
+                    e,
+                    telemetry=telemetry,
+                    span=span,
                     model=model,
                     operation=operation,
-                    outcome="error",
+                    started=started,
+                    attempt=attempt,
                 )
-                telemetry.mark_span_error(
-                    span,
-                    error_type=error_type,
-                    exception=e,
-                )
-                if _looks_like_context_error(e):
-                    raise ContextWindowExceeded(str(e)) from e
-                if _looks_like_tool_call_failure(e):
-                    raise ToolCallFailed(str(e)) from e
-                if not _is_retryable_error(e) or attempt == _LLM_MAX_ATTEMPTS - 1:
+                if error_type is None:
                     raise
-                telemetry.record_llm_retry(
-                    operation=operation,
-                    error_type=error_type,
-                )
                 retry_error = e
             else:
-                telemetry.record_llm_duration(
-                    time.perf_counter() - started,
-                    model=model,
-                    operation=operation,
-                    outcome="ok",
-                )
-                telemetry.set_content(span, "gen_ai.output.messages", _output_content(response))
+                _record_llm_success(telemetry, span, response, model=model, operation=operation, started=started)
                 return response
 
         if retry_error is not None:
-            wait = 2**attempt
-            log_diagnostic(
-                "retry",
-                f"LLM 呼叫失敗（{summarize_error(retry_error)}），{wait}s 後重試...",
-            )
-            await asyncio.sleep(wait)
+            # label 尾空格是刻意的：模板為 f"{label}呼叫失敗"，串流版 label「LLM 串流」不需空格
+            await _sleep_before_retry(retry_error, attempt, label="LLM ")
 
     raise RuntimeError("LLM retry loop ended unexpectedly")

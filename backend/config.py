@@ -110,6 +110,22 @@ def get_settings() -> Settings:
 
 @functools.lru_cache(maxsize=4)
 def _make_llm_client(base_url: str, api_key: str) -> AsyncOpenAI:
+    """Build (and cache) an `AsyncOpenAI` client per (base_url, api_key) pair.
+
+    `lru_cache` makes this a process-wide singleton per key — cheap for the
+    normal case (one event loop, one process) but two things to know:
+    - The returned client binds internal async resources (httpx connection
+      pool) to the event loop that is running the *first* call for a given
+      key. Calling this again from a *different* event loop (e.g. a second
+      `asyncio.run()`, or pytest-asyncio tests that don't share a loop) reuses
+      the same client bound to the old loop and can raise/hang instead of
+      opening a fresh connection.
+    - Tests that construct multiple sessions across separate event loops must
+      call `_make_llm_client.cache_clear()` between them (or bypass this
+      factory and build `AsyncOpenAI` directly) to avoid cross-loop reuse.
+    Not fixed here: swapping this for injected-client construction is a
+    bigger architectural change than this batch's scope.
+    """
     timeout = httpx.Timeout(
         connect=float(os.getenv("LLM_CONNECT_TIMEOUT_SECONDS", "5")),
         read=float(os.getenv("LLM_READ_TIMEOUT_SECONDS", "60")),

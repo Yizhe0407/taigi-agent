@@ -1,3 +1,5 @@
+from typing import Any
+
 from tools.intent_rules import DIRECT_RESPONSE_POOL, pick_direct_response
 from tools.kiosk_bus import (
     check_stop_on_route,
@@ -14,7 +16,7 @@ async def respond_directly(message: str, intent: str | None = None) -> str:
     return pick_direct_response(intent, message)
 
 
-TOOL_SCHEMAS: list = [
+TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
