@@ -384,6 +384,11 @@ const {
       // the bubble tracks playback pace. Audio is alive: the TTS-dead watchdog
       // no longer applies, and this turn is now flushable on bot_silent.
       clearTtsWatchdog()
+      // Audio is confirmed playing — same signal onBotSpeaking uses to disarm
+      // the 30s thinking fuse. Without this, a reply whose onReply/onBotSpeaking
+      // never fires (or fires >30s after the transcript) gets its playback cut
+      // by the fuse forcing back to listening mid-speech.
+      clearThinkingFuse()
       audioStarted = true
       conversation.onSubtitle()
       markActivity()

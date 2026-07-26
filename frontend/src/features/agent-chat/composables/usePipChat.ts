@@ -1,10 +1,4 @@
-import {
-  nextTick,
-  onBeforeUnmount,
-  ref,
-  type Ref,
-  useTemplateRef,
-} from "vue"
+import { onBeforeUnmount, ref, type Ref } from "vue"
 
 import { UI_FALLBACK_MESSAGES } from "@/lib/api-messages"
 
@@ -44,8 +38,15 @@ export function usePipChat(
   const userInput = ref("")
   const isSending = ref(false)
   const showChat = ref(false)
-  const chatBodyRef = useTemplateRef<HTMLElement>("pip-chat-body")
   const { ttsState, mouthAmplitude, speak: speakTts, cancel: cancelTts } = useTts()
+
+  // Cap history growth for long-running kiosk sessions — drop the oldest
+  // message (keeping order) once the panel has accumulated MAX_MESSAGES.
+  const MAX_MESSAGES = 100
+  function pushMessage(message: PipChatMessage) {
+    messages.value.push(message)
+    if (messages.value.length > MAX_MESSAGES) messages.value.shift()
+  }
 
   const displayedAgentText = ref("")
   let typewriterToken = 0
@@ -122,13 +123,6 @@ export function usePipChat(
     return _ensureSessionInflight
   }
 
-  async function scrollToBottom() {
-    await nextTick()
-    if (chatBodyRef.value) {
-      chatBodyRef.value.scrollTop = chatBodyRef.value.scrollHeight
-    }
-  }
-
   // Abort handle for the in-flight streamed reply — used by teardown so a
   // closed PiP stops pulling SSE (and the backend discards the partial turn).
   let streamAbort: AbortController | null = null
@@ -148,8 +142,7 @@ export function usePipChat(
 
     userInput.value = ""
     const id = nextMessageId()
-    messages.value.push({ id, role: "user", text })
-    await scrollToBottom()
+    pushMessage({ id, role: "user", text })
 
     isSending.value = true
     const replyId = `${id}-reply`
@@ -164,23 +157,29 @@ export function usePipChat(
           onActivity() // a live reply counts as activity — don't idle-close mid-stream
           const bubble = messages.value.find(m => m.id === replyId)
           if (bubble) bubble.text += delta
-          else messages.value.push({ id: replyId, role: "assistant", text: delta })
-          void scrollToBottom()
+          else pushMessage({ id: replyId, role: "assistant", text: delta })
         },
         streamAbort.signal,
       )
       if (!messages.value.some(m => m.id === replyId)) {
-        messages.value.push({ id: replyId, role: "assistant", text: reply })
+        pushMessage({ id: replyId, role: "assistant", text: reply })
       }
       speakWithAnimation(reply)
     } catch (error) {
       // Aborted by teardown — the PiP is closing, don't surface an error bubble.
       if (error instanceof DOMException && error.name === "AbortError") return
+      // A 404 means the backend session TTL'd out from under us — clear the
+      // stale id so the next sendMessage() rebuilds a fresh session instead of
+      // hammering a dead one forever (ensureSession() is a no-op while
+      // sessionId is still set).
+      if (error instanceof ChatApiError && error.status === 404) {
+        sessionId.value = null
+      }
       const message =
         error instanceof ChatApiError
           ? error.message
           : UI_FALLBACK_MESSAGES.agentNoReply
-      messages.value.push({
+      pushMessage({
         id: `${id}-error`,
         role: "assistant",
         text: `（${message}）`,
@@ -189,7 +188,6 @@ export function usePipChat(
     } finally {
       streamAbort = null
       isSending.value = false
-      await scrollToBottom()
     }
   }
 

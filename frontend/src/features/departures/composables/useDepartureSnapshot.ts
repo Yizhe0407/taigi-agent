@@ -59,15 +59,12 @@ export function useDepartureSnapshot() {
   }
   onUnmounted(() => source.close())
 
-  const now = ref(Date.now())
-  const ticker = setInterval(() => { now.value = Date.now() }, 1000)
-  onUnmounted(() => clearInterval(ticker))
-
-  const secondsUntilRefresh = computed(() => {
-    const intervalMs = sseConnected.value ? SSE_PUSH_MS : REFRESH_MS
-    const elapsed = now.value - query.dataUpdatedAt.value
-    return Math.max(0, Math.round((intervalMs - elapsed) / 1000))
-  })
+  // Countdown-to-refresh is only ever displayed by a small badge; the ticker
+  // that drives it lives there (RouteRefreshCountdown.vue), not here, so a
+  // once-a-second tick doesn't force this composable's much larger consumer
+  // tree (the whole dashboard) to re-render every second. This composable
+  // only exposes the two slow-changing inputs the badge needs.
+  const refreshIntervalMs = computed(() => (sseConnected.value ? SSE_PUSH_MS : REFRESH_MS))
 
   const snapshot = computed(() => query.data.value ?? null)
   const isLoading = computed(() => query.isLoading.value)
@@ -112,6 +109,7 @@ export function useDepartureSnapshot() {
     routes,
     nextBest,
     isAllClosed,
-    secondsUntilRefresh,
+    dataUpdatedAt: query.dataUpdatedAt,
+    refreshIntervalMs,
   }
 }

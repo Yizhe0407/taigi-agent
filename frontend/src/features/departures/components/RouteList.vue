@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronRight, RefreshCw } from "@lucide/vue"
+import { ChevronRight } from "@lucide/vue"
 
 import type { RouteColorToken } from "@/lib/route-colors"
 
@@ -9,12 +9,14 @@ import {
   departureMinutesLabel,
   statusChipClasses,
 } from "../utils/departure-status"
+import RouteRefreshCountdown from "./RouteRefreshCountdown.vue"
 
 const props = defineProps<{
   routes: DepartureRouteStatus[]
   isLoading: boolean
   routeColors: Record<string, RouteColorToken>
-  secondsUntilRefresh?: number
+  dataUpdatedAt?: number
+  refreshIntervalMs?: number
 }>()
 
 defineEmits<{ select: [route: DepartureRouteStatus] }>()
@@ -29,10 +31,11 @@ function bgClass(routeCode: string): string {
     <div class="min-w-0 text-2xl font-bold text-kiosk-ink">本站今日班次</div>
     <div class="flex items-center gap-3 shrink-0">
       <div class="text-lg text-kiosk-muted font-medium">{{ routes.length }} 條</div>
-      <div v-if="props.secondsUntilRefresh !== undefined" class="flex items-center gap-1.5 text-lg text-kiosk-muted font-medium">
-        <RefreshCw class="size-[18px] shrink-0" :stroke-width="2.2" />
-        <span class="font-mono tabular-nums">{{ props.secondsUntilRefresh }}s</span>
-      </div>
+      <RouteRefreshCountdown
+        v-if="props.dataUpdatedAt !== undefined && props.refreshIntervalMs !== undefined"
+        :data-updated-at="props.dataUpdatedAt"
+        :interval-ms="props.refreshIntervalMs"
+      />
     </div>
   </div>
   <div class="flex flex-col gap-2 overflow-y-auto flex-1 min-h-0">

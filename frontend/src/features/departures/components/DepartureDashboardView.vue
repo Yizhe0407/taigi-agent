@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { LoaderCircle, WifiOff } from "@lucide/vue"
-import { computed, ref } from "vue"
+import { computed, ref, watch } from "vue"
 
 import { formatTaipeiHourMinute } from "@/lib/time"
 import { useNow } from "@/lib/useNow"
@@ -21,13 +21,27 @@ const {
   routes,
   nextBest,
   isAllClosed,
-  secondsUntilRefresh,
+  dataUpdatedAt,
+  refreshIntervalMs,
 } = useDepartureSnapshot()
 const { now } = useNow()
 const nowText = computed(() => formatTaipeiHourMinute(now.value))
 const { assignments: routeColorAssignments } = useRouteColors(
   computed(() => routes.value.map((route) => route.route)),
 )
+
+// `selectedRoute` is a snapshot-object reference captured at click time. Each
+// snapshot refresh (SSE push or poll) replaces `snapshot.routes` wholesale, so
+// without this the detail panel would keep showing the ETA/status captured
+// the moment the user opened it — frozen for as long as they stay there.
+// Re-point the ref at the matching route from the fresh snapshot every time
+// one arrives; if the route disappeared (e.g. its last bus just departed),
+// leave the stale value in place rather than yanking the panel shut.
+watch(snapshot, (fresh) => {
+  if (!selectedRoute.value || !fresh) return
+  const updated = fresh.routes.find((route) => route.id === selectedRoute.value?.id)
+  if (updated) selectedRoute.value = updated
+})
 
 const lastUpdatedText = computed(() => {
   const t = snapshot.value?.updatedAt
@@ -92,7 +106,8 @@ const lastUpdatedText = computed(() => {
           :routes="routes"
           :is-loading="isLoading"
           :route-colors="routeColorAssignments"
-          :seconds-until-refresh="secondsUntilRefresh"
+          :data-updated-at="dataUpdatedAt"
+          :refresh-interval-ms="refreshIntervalMs"
           @select="selectedRoute = $event"
         />
       </div>
