@@ -43,3 +43,9 @@
 - 根因：llama.cpp 對 Qwen3.5 的 `chat_template_kwargs.enable_thinking` 已失效/棄用（ggml-org/llama.cpp#20182、#20409、discussion #23351）；同一對話狀態實測 5 種參數組合（巢狀/頂層 enable_thinking、reasoning_format:none、/no_think、reasoning_effort:none）greedy 解碼輸出逐位元組相同、全部照樣洩漏——server 端 reasoning parser 吃掉樣板前導空 think 塊後，把模型後續吐的孤兒閉標籤當一般 content 放行，客戶端參數無從干預
 - 規則：LLM 輸出淨化不能假設 think 標籤必成對，孤兒 `</think>`/`<think>` 一律當雜訊剝除（`pipeline/normalize.py` `_ORPHAN_THINK_TAG_RE` + `StreamNormalizer` 孤兒閉標籤分支）；換 GGUF 模型後要用「同狀態多參數對照 probe」驗證參數真的有作用，不能只看 200 OK
 - 證據：scratchpad `probe_d1_variants.py`（5 組合全洩漏）、`rescue_results_v10_qwen9b_fixed.jsonl`（修復後 22 案 0 洩漏）
+
+## 2026-07-26 背景 agent 的 git mv 污染別批 commit
+- 症狀：providers 批 commit 混進 frontend 三個檔案改名；`git reset HEAD -- frontend/` 只退掉內容修改、退不掉 rename 的 index 項
+- 根因：並行 subagent 用 `git mv` 會立即動共用 index，指揮官 commit 另一批時 `git add <路徑>` 之外的 staged 項目照樣進 commit
+- 規則：派工 prompt 明寫「移動檔案用 mv + git add，禁用 git mv」（或所有批次都禁止動 index）；指揮官每次 commit 前跑 `git diff --cached --stat` 確認 staged 清單只含本批路徑，再下 commit
+- 證據：commit 937fcc2 內含三個 frontend rename（純改名零內容，無害但歷史不乾淨）
