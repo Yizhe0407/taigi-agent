@@ -2,8 +2,8 @@
 
 Wraps the existing HTTP proxy logic from `api/tts.py` into a Pipecat TTSService.
 Pipeline:
-  0. Cache      — 先查 `_decoded_cache`（正規化後文字 → 已解碼音訊），命中就跳過
-                  1-4 步驟；命中率取決於文字重複度（歡迎詞、固定回覆等）
+  0. Cache      — 先查 `_decoded_cache`（(model, voice, 正規化後文字) → 已解碼音訊），
+                  命中就跳過 1-4 步驟；命中率取決於文字重複度（歡迎詞、固定回覆等）
   1. HanloFlow  — Mandarin → 漢羅混合文字
   2. Taibun     — 漢羅 → Tailo 台羅拼音
   3. Split      — Tailo 在 , 和 . 切段
@@ -72,10 +72,12 @@ _DecodedSegment = tuple[bytes, int, int, int, int]
 # Bounded LRU cache of fully-decoded audio for repeated fixed text (welcome
 # greeting, fallback error replies, etc.) so a repeat hit skips both the
 # Hanlo/Taibun conversion and the upstream TTS HTTP round trip entirely —
-# the biggest win for time-to-first-audio on those lines. Keyed on the
-# post-normalize_for_tts text; module-level (not per-TaigiTTSService instance)
-# so the benefit is shared across sessions in this process. Fixed capacity
-# keeps memory bounded regardless of how many distinct replies get spoken.
+# the biggest win for time-to-first-audio on those lines. Keyed on
+# (config.model, config.voice, post-normalize_for_tts text) — folding in model/
+# voice keeps a runtime TTS_MODEL/TTS_VOICE change from serving stale audio
+# synthesized under the old config; module-level (not per-TaigiTTSService
+# instance) so the benefit is shared across sessions in this process. Fixed
+# capacity keeps memory bounded regardless of how many distinct replies get spoken.
 _DECODED_CACHE_MAX = 64
 _decoded_cache: OrderedDict[str, tuple[list[_DecodedSegment], int]] = OrderedDict()
 
@@ -135,7 +137,12 @@ class TaigiTTSService(TTSService):
                 return
 
             tts_text = normalize_for_tts(text)
-            cached = _decoded_cache_get(tts_text)
+            # Include (model, voice) in the key — otherwise switching TTS_VOICE/
+            # TTS_MODEL at runtime (or across sessions with different config) would
+            # keep serving audio synthesized under the old voice for text that was
+            # cached before the change.
+            cache_key = f"{config.model}\x1f{config.voice}\x1f{tts_text}"
+            cached = _decoded_cache_get(cache_key)
             if cached is not None:
                 decoded, total_duration_ms = cached
             else:
@@ -202,7 +209,7 @@ class TaigiTTSService(TTSService):
                 # Only fixed/repeatable text benefits, but there's no cheap way to
                 # tell "fixed" from "dynamic" apart here — cache every successful
                 # synthesis and let the bounded LRU evict dynamic one-offs on its own.
-                _decoded_cache_put(tts_text, (decoded, total_duration_ms))
+                _decoded_cache_put(cache_key, (decoded, total_duration_ms))
 
             yield SubtitleFrame(text=text, duration_ms=total_duration_ms)
 

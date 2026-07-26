@@ -62,6 +62,7 @@ from .request_limits import RequestBodyLimitMiddleware  # noqa: E402
 from .route_plans import router as route_plans_router  # noqa: E402
 from .tts import router as tts_router  # noqa: E402
 from .voice import router as voice_router  # noqa: E402
+from .voice import shutdown as voice_shutdown  # noqa: E402
 
 
 @asynccontextmanager
@@ -79,6 +80,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await warmup_task
         with suppress(asyncio.CancelledError):
             await lock_purge_task
+        # Close active WebRTC connections + their run_voice_pipeline() tasks before
+        # the shared httpx client goes away — those tasks still make outbound HTTP
+        # calls (ASR/TTS) during their own cleanup.
+        await voice_shutdown()
         provider = get_provider()
         close = getattr(provider, "aclose", None)
         if close is not None:

@@ -15,6 +15,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -23,6 +24,13 @@ from taigi_converter import TaigiConverter  # type: ignore[import-untyped]
 
 _hanlo_converter: TaigiConverter | None = None
 _taibun_converter: TaibunConverter | None = None
+# Guards the two lazy-init blocks below. process() runs on the ThreadPoolExecutor
+# below (up to 4 workers), so two cold-start calls landing on different worker
+# threads at once could otherwise both see `None` and construct + discard a
+# duplicate converter (wasted disk/CPU work, not a correctness bug — reads
+# after init are lock-free since neither converter mutates its own state, see
+# _MAX_WORKERS comment below).
+_init_lock = threading.Lock()
 
 # 4 workers：兩個 converter 的 convert()/get() 只讀初始化時建好的 lexicon/trie/dict，
 # 不寫 self 狀態（已逐一檢視 taigi_converter.converter / taibun.taibun 原始碼確認），
@@ -37,15 +45,19 @@ _executor = ThreadPoolExecutor(max_workers=_MAX_WORKERS, thread_name_prefix="tex
 def _get_hanlo() -> TaigiConverter:
     global _hanlo_converter
     if _hanlo_converter is None:
-        _hanlo_converter = TaigiConverter()
+        with _init_lock:
+            if _hanlo_converter is None:  # double-checked: re-verify after acquiring the lock
+                _hanlo_converter = TaigiConverter()
     return _hanlo_converter
 
 
 def _get_taibun() -> TaibunConverter:
     global _taibun_converter
     if _taibun_converter is None:
-        # system="Tailo" = 台羅拼音；format="number" = 數字調號（Piper TTS 慣用格式）
-        _taibun_converter = TaibunConverter(system="Tailo", format="number")
+        with _init_lock:
+            if _taibun_converter is None:  # double-checked: re-verify after acquiring the lock
+                # system="Tailo" = 台羅拼音；format="number" = 數字調號（Piper TTS 慣用格式）
+                _taibun_converter = TaibunConverter(system="Tailo", format="number")
     return _taibun_converter
 
 

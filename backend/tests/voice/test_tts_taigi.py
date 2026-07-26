@@ -178,6 +178,32 @@ def test_run_tts_second_call_with_same_text_hits_cache_and_skips_reprocessing():
     assert first_frames[0].duration_ms == second_frames[0].duration_ms
 
 
+def test_run_tts_same_text_different_voice_does_not_reuse_cached_audio():
+    """Regression test for finding 2: the decoded-audio cache key must include
+    (model, voice), not just the normalized text — otherwise switching
+    TTS_VOICE/TTS_MODEL would keep serving audio synthesized under the old
+    config for text that happens to repeat."""
+    mock_resp = MagicMock(status_code=200, content=_make_wav_bytes())
+
+    p2, p3 = _patch_common()[1:]
+    with (
+        p2,
+        p3,
+        patch("voice.tts_taigi.synthesize_segments", new=AsyncMock(return_value=[mock_resp])) as mock_synth,
+        patch("voice.tts_taigi.get_telemetry"),
+    ):
+        svc = TaigiTTSService()
+
+        with patch("voice.tts_taigi.load_tts_config", return_value=TTSConfig("http://localhost", "m", "voice-a", "")):
+            asyncio.run(_collect(svc.run_tts("你好", "ctx-1")))
+        assert mock_synth.call_count == 1
+
+        # Same text, different configured voice — must NOT be served from cache.
+        with patch("voice.tts_taigi.load_tts_config", return_value=TTSConfig("http://localhost", "m", "voice-b", "")):
+            asyncio.run(_collect(svc.run_tts("你好", "ctx-2")))
+        assert mock_synth.call_count == 2
+
+
 def test_run_tts_empty_text_does_not_record_stage():
     """Whitespace-only input is a pure no-op — nothing was attempted, so no stage sample."""
     with patch("voice.tts_taigi.get_telemetry") as mock_get_telemetry:

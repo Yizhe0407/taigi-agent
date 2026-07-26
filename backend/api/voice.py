@@ -28,6 +28,31 @@ _log = logging.getLogger(__name__)
 # Process-wide handler — manages all active SmallWebRTC connections.
 _handler = SmallWebRTCRequestHandler()
 
+# Per-connection run_voice_pipeline() background tasks, tracked so graceful
+# shutdown (see shutdown() below) can wait for / cancel them instead of
+# leaving them orphaned when the process exits.
+_pipeline_tasks: set[asyncio.Task] = set()
+
+
+async def shutdown() -> None:
+    """Close all active WebRTC connections and stop their pipeline tasks.
+
+    Called from api/__init__.py's lifespan shutdown. `_handler.close()`
+    disconnects every tracked peer connection, which fires each connection's
+    on_client_disconnected handler (voice/pipeline.py) and cancels its
+    PipelineWorker — that's normally enough for run_voice_pipeline() to return
+    on its own. The explicit cancel+gather below is a safety net for any
+    pipeline task that doesn't unwind from that alone (e.g. it crashed before
+    the transport finished connecting), so no per-connection task is ever left
+    running past process shutdown.
+    """
+    await _handler.close()
+    tasks = [t for t in _pipeline_tasks if not t.done()]
+    for t in tasks:
+        t.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
 
 @router.post("/api/voice/offer", dependencies=[Depends(VOICE_RATE_LIMIT)])
 async def webrtc_offer(body: dict) -> dict:
@@ -79,7 +104,9 @@ async def webrtc_offer(body: dict) -> dict:
             log_diagnostic("voice.pipeline", f"session={session_id} _start_pipeline task crashed: {exc}")
 
         t = asyncio.create_task(run_voice_pipeline(connection, session_id))
+        _pipeline_tasks.add(t)
         t.add_done_callback(_on_pipeline_done)
+        t.add_done_callback(_pipeline_tasks.discard)
 
     try:
         answer = await _handler.handle_web_request(request, _start_pipeline)

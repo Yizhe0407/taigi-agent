@@ -9,6 +9,7 @@ a `TextFrame` (for TTS) with the agent's reply.
 import asyncio
 import logging
 from collections.abc import Callable
+from contextlib import suppress
 from typing import Any
 
 from pipecat.frames.frames import (
@@ -91,6 +92,33 @@ class TaigiBusAgentProcessor(FrameProcessor):
 
         return (_END_CONVERSATION_SCHEMA, end_conversation)
 
+    async def _cancel_inference_task(self) -> None:
+        """Cancel `self._inference_task` and wait for its cleanup to finish.
+
+        Ordering guarantee: `asyncio.Task.cancel()` only schedules a
+        CancelledError to be raised the next time that task is resumed — it
+        does not run the task's except/cleanup code synchronously. If a caller
+        cancels and then immediately starts a new task (fire-and-forget), the
+        old task's CancelledError handler (which may push a stale
+        LLMFullResponseEndFrame, see `_run_agent_inference`) races the new
+        task's own LLMFullResponseStartFrame with no ordering guarantee between
+        them — a stale End can land downstream *after* the new Start, breaking
+        the TTS sentence aggregator's Start/End pairing.
+
+        Awaiting the task here (swallowing the CancelledError it re-raises)
+        forces its cleanup to run to completion before this coroutine
+        continues, so any frames it pushes are always fully flushed before the
+        caller creates a replacement task. The old task is parked on an I/O
+        await (LLM stream / push_frame), so cancellation propagates and this
+        await resolves quickly — it does not block process_frame for long.
+        """
+        task = self._inference_task
+        if task is None or task.done():
+            return
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         """Process incoming frames, trigger agent on transcription."""
         await super().process_frame(frame, direction)
@@ -98,7 +126,7 @@ class TaigiBusAgentProcessor(FrameProcessor):
         if isinstance(frame, InterruptionFrame):
             if self._inference_task and not self._inference_task.done():
                 _log.info("Agent generation interrupted by user")
-                self._inference_task.cancel()
+                await self._cancel_inference_task()
                 self._inference_task = None
             await self.push_frame(frame, direction)
 
@@ -111,7 +139,9 @@ class TaigiBusAgentProcessor(FrameProcessor):
             if self._turn_timer:
                 self._turn_timer.mark_transcription()
 
-            # Cancel any existing task just in case. If it already pushed
+            # Cancel any existing task just in case, and wait for its cleanup to
+            # finish (see _cancel_inference_task docstring for the ordering
+            # guarantee this provides). If it already pushed
             # LLMFullResponseStartFrame/TextFrame downstream (into TTS), a bare
             # .cancel() only stops further generation — audio already queued for
             # that stale reply keeps playing and overlaps the new one. Broadcasting
@@ -119,8 +149,9 @@ class TaigiBusAgentProcessor(FrameProcessor):
             # _bot_speaking and may not have fired yet) guarantees downstream state
             # gets cleared whenever a partially-streamed response is abandoned.
             if self._inference_task and not self._inference_task.done():
-                self._inference_task.cancel()
-                if self._inference_state and self._inference_state.started:
+                state_was_started = bool(self._inference_state and self._inference_state.started)
+                await self._cancel_inference_task()
+                if state_was_started:
                     _log.info("Cancelling in-flight response that already pushed frames; sending InterruptionFrame")
                     await self.push_frame(InterruptionFrame(), direction)
 

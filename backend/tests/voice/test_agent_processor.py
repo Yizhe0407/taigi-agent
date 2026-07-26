@@ -188,6 +188,79 @@ def test_cancelling_response_that_already_started_sends_interruption_frame():
     assert any(isinstance(f, InterruptionFrame) for f in pushed)
 
 
+def test_cancel_awaits_old_task_so_stale_end_never_lands_after_new_start():
+    """Regression test for the frame-order race: `asyncio.Task.cancel()` only
+    *schedules* a CancelledError to be raised the next time that task is
+    resumed — it does not run the task's cleanup synchronously. If
+    process_frame cancelled the old task and immediately created its
+    replacement (fire-and-forget), the old task's CancelledError handler
+    (which pushes a stale LLMFullResponseEndFrame, see _run_agent_inference)
+    would still be pending when the new task starts, free to interleave and
+    land downstream *after* the new task's own LLMFullResponseStartFrame —
+    breaking the TTS sentence aggregator's Start/End pairing.
+
+    _cancel_inference_task() now awaits the cancelled task (swallowing the
+    CancelledError it re-raises) before process_frame creates the new one.
+    The assertion below checks the actual invariant that fix provides —
+    old_task.done() must already be True, and its End frame already flushed —
+    by the time process_frame() returns control to the caller. This is a
+    deterministic check of task completion state, not a race won by scheduling
+    luck: a fire-and-forget `.cancel()` (no await) cannot make it true, since
+    nothing yields control back to the old task before process_frame returns."""
+    pushed = []
+
+    class _RecordingProcessor(_FakeProcessor):
+        async def push_frame(self, frame, direction):
+            pushed.append(frame)
+
+    proc = _RecordingProcessor("sess-1", None)
+    hold = asyncio.Event()
+
+    def fake_stream(sid, msg, **kwargs):
+        async def gen():
+            yield "第一句。"
+            await hold.wait()
+
+        return gen()
+
+    async def run():
+        with patch("api.chat.respond_in_session_stream", fake_stream):
+            # First utterance: task1 starts, pushes Start+Text, then parks on hold.wait().
+            await proc.process_frame(TranscriptionFrame("你好", "user", "t1"), None)
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert proc._inference_state.started, "setup: first response must have started"
+            task1 = proc._inference_task
+            assert task1 is not None and not task1.done()
+
+            # Second utterance arrives before task1 finished. process_frame must
+            # not return until task1's cancellation cleanup has fully run.
+            await proc.process_frame(TranscriptionFrame("閣再講一擺", "user", "t2"), None)
+
+            assert task1.done(), (
+                "old inference task must be fully cancelled (its cleanup run to completion) before process_frame() returns control to the caller"
+            )
+            assert any(isinstance(f, LLMFullResponseEndFrame) for f in pushed), (
+                "old task's stale End frame must already be flushed by the time "
+                "process_frame() returns — otherwise it could still land after "
+                "the new task's Start frame"
+            )
+            starts_so_far = [f for f in pushed if isinstance(f, LLMFullResponseStartFrame)]
+            assert len(starts_so_far) == 1, "the new task must not have pushed its Start frame yet at this point"
+
+            hold.set()
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+    asyncio.run(run())
+
+    starts = [i for i, f in enumerate(pushed) if isinstance(f, LLMFullResponseStartFrame)]
+    ends = [i for i, f in enumerate(pushed) if isinstance(f, LLMFullResponseEndFrame)]
+    assert len(starts) == 2, f"expected two Start frames, got: {pushed}"
+    assert len(ends) == 2, f"expected two End frames, got: {pushed}"
+    assert ends[0] < starts[1], f"stale End landed after new Start: {pushed}"
+
+
 def test_cancelled_inference_that_already_started_pushes_end_frame():
     """A cancelled task that already pushed LLMFullResponseStartFrame must also
     push a matching LLMFullResponseEndFrame — mirrors the exception-path
