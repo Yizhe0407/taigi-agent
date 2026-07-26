@@ -4,6 +4,7 @@ import logging
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 from providers.bus import BusProvider
 
@@ -20,7 +21,13 @@ def _make_default_provider() -> BusProvider:
         client_id=os.environ.get("TDX_CLIENT_ID", ""),
         client_secret=os.environ.get("TDX_CLIENT_SECRET", ""),
     )
-    ebus = EbusBusProvider()
+    route_index_path = Path(
+        os.getenv(
+            "EBUS_ROUTE_INDEX_PATH",
+            str(Path(__file__).resolve().parents[2] / ".agent_state/ebus-route-index.json"),
+        )
+    )
+    ebus = EbusBusProvider(route_index_path=route_index_path)
     return HybridBusProvider(ebus=ebus, tdx=tdx)
 
 
@@ -44,9 +51,10 @@ def set_provider(provider: BusProvider) -> None:
 @contextmanager
 def provider_override(provider: BusProvider) -> Iterator[BusProvider]:
     """Scope a temporary BusProvider; restore the previous one on exit."""
+    global _provider
     previous = _provider
     set_provider(provider)
     try:
         yield provider
     finally:
-        set_provider(previous)
+        _provider = previous

@@ -13,6 +13,7 @@ const isReady = ref(false)
 
 let avatar: OfficialCubismAvatar | null = null
 let resizeObserver: ResizeObserver | null = null
+let loadAbort: AbortController | null = null
 
 watch(
   () => props.mouthAmplitude,
@@ -20,19 +21,33 @@ watch(
 )
 
 onMounted(async () => {
-  if (!host.value) return
+  const target = host.value
+  if (!target) return
 
+  const current = new OfficialCubismAvatar(target, props.modelSrc)
+  const controller = new AbortController()
+  avatar = current
+  loadAbort = controller
   try {
-    avatar = new OfficialCubismAvatar(host.value, props.modelSrc)
-    await avatar.load()
+    await current.load(controller.signal)
+    if (controller.signal.aborted || avatar !== current || !host.value) {
+      current.dispose()
+      return
+    }
 
-    resizeObserver = new ResizeObserver(() => avatar?.resize())
+    resizeObserver = new ResizeObserver(() => current.resize())
     resizeObserver.observe(host.value)
     isReady.value = true
   }
   catch (error) {
-    console.error("Live2D avatar failed to load", error)
-    destroyLive2D()
+    if (!(error instanceof DOMException && error.name === "AbortError")) {
+      console.error("Live2D avatar failed to load", error)
+    }
+    current.dispose()
+    if (avatar === current) avatar = null
+  }
+  finally {
+    if (loadAbort === controller) loadAbort = null
   }
 })
 
@@ -41,6 +56,8 @@ onBeforeUnmount(() => {
 })
 
 function destroyLive2D() {
+  loadAbort?.abort()
+  loadAbort = null
   resizeObserver?.disconnect()
   resizeObserver = null
   avatar?.dispose()

@@ -300,6 +300,21 @@ def test_fetch_route_estimate_refetches_after_ttl(monkeypatch):
     assert len(calls) > fetch1
 
 
+def test_fetch_route_estimate_cache_is_lru_bounded(monkeypatch):
+    _patch_http(monkeypatch, _TOKEN, [])
+    provider = TdxBusProvider("id", "secret")
+
+    async def fill_cache() -> None:
+        for route_number in range(257):
+            await provider.fetch_route_estimate(str(1000 + route_number))
+
+    asyncio.run(fill_cache())
+
+    assert len(provider._route_estimate_cache) == 256
+    assert "1000" not in provider._route_estimate_cache
+    assert "1256" in provider._route_estimate_cache
+
+
 def test_token_is_cached(monkeypatch):
     post_calls = []
 

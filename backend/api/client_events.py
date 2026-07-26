@@ -9,10 +9,12 @@ storage — see docs/observability.md.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, Field
 
 from agent.diagnostics import log_diagnostic
+
+from .request_limits import CLIENT_EVENT_RATE_LIMIT
 
 router = APIRouter()
 
@@ -22,8 +24,8 @@ _DETAIL_LIMIT = 2000
 
 class ClientEventRequest(BaseModel):
     type: str = Field(min_length=1, max_length=100)
-    message: str = Field(min_length=1)
-    detail: str | None = None
+    message: str = Field(min_length=1, max_length=_MESSAGE_LIMIT)
+    detail: str | None = Field(default=None, max_length=_DETAIL_LIMIT)
     ts: float | None = None
 
 
@@ -31,7 +33,7 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else f"{text[:limit]}…[truncated]"
 
 
-@router.post("/api/client-events", status_code=204)
+@router.post("/api/client-events", status_code=204, dependencies=[Depends(CLIENT_EVENT_RATE_LIMIT)])
 async def report_client_event(event: ClientEventRequest) -> Response:
     """Log a frontend-reported error/diagnostic event. Trust boundary: values are
     truncated and only ever used as log/span-event *values*, never as a format

@@ -120,8 +120,6 @@ async function handleApply() {
     const cfg = await updateAdminKiosk({
       stop_name: selectedStop.value.name,
       direction: selectedDirection.value,
-      lat: selectedStop.value.lat,
-      lng: selectedStop.value.lng,
     })
     current.value = cfg
     applySuccess.value = true

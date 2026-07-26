@@ -1,6 +1,6 @@
 import pytest
 
-from config import Settings, parse_cors_origins
+from config import Settings, _make_llm_client, parse_cors_origins
 
 
 def test_parse_cors_origins_does_not_require_llm_env(monkeypatch):
@@ -45,3 +45,17 @@ def test_settings_groq_api_key_satisfies_requirement(monkeypatch):
     # punishes the verbatim tool-text copying the renderers depend on.
     assert "frequency_penalty" not in s.llm_extra_body
     assert "repeat_penalty" not in s.llm_extra_body
+
+
+def test_llm_client_has_one_retry_owner_and_bounded_timeouts(monkeypatch):
+    monkeypatch.setenv("LLM_READ_TIMEOUT_SECONDS", "42")
+    _make_llm_client.cache_clear()
+
+    client = _make_llm_client("http://llm.local/v1", "test")
+
+    assert client.max_retries == 0
+    assert client.timeout.connect == 5
+    assert client.timeout.read == 42
+    assert client.timeout.write == 15
+    assert client.timeout.pool == 5
+    _make_llm_client.cache_clear()

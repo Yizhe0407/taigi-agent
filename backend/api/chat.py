@@ -14,7 +14,7 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,8 @@ from agent.session import AgentSession
 from agent.tool_dispatch import ToolHandler
 from api.session_store import ChatSessionStore
 from config import get_settings, make_agent_session
+
+from .request_limits import CHAT_MESSAGE_RATE_LIMIT, CHAT_SESSION_RATE_LIMIT
 
 # (schema, handler) pair injected into a single session at rehydration time —
 # used by the voice pipeline to add per-connection tools (e.g. end_conversation)
@@ -189,7 +191,11 @@ async def respond_in_session_stream(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/api/chat/sessions", response_model=ChatSessionResponse)
+@router.post(
+    "/api/chat/sessions",
+    response_model=ChatSessionResponse,
+    dependencies=[Depends(CHAT_SESSION_RATE_LIMIT)],
+)
 def create_chat_session() -> object:
     """Create a new agent chat session and return its session_id."""
     try:
@@ -206,7 +212,10 @@ def _sse_event(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-@router.post("/api/chat/sessions/{session_id}/messages/stream")
+@router.post(
+    "/api/chat/sessions/{session_id}/messages/stream",
+    dependencies=[Depends(CHAT_MESSAGE_RATE_LIMIT)],
+)
 async def send_chat_message_stream(session_id: str, body: ChatMessageRequest) -> StreamingResponse:
     """SSE 逐 chunk 推回覆。
 

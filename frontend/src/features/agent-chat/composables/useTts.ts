@@ -60,7 +60,7 @@ export function useTts() {
       if (audioCtx.state === "suspended") {
         await audioCtx.resume()
       }
-      const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(15_000)])
+      const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(50_000)])
       const blob = await synthesizeSpeech(text, signal)
       if (abort.signal.aborted || destroyed) return null
 

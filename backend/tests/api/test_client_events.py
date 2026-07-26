@@ -32,7 +32,7 @@ def test_client_event_accepted_and_logged(client: TestClient, monkeypatch):
     assert "ts=123.0" in captured["message"]
 
 
-def test_client_event_truncates_oversized_fields(client: TestClient, monkeypatch):
+def test_client_event_rejects_oversized_fields_before_logging(client: TestClient, monkeypatch):
     captured: dict = {}
     monkeypatch.setattr(
         api.client_events,
@@ -49,11 +49,8 @@ def test_client_event_truncates_oversized_fields(client: TestClient, monkeypatch
         },
     )
 
-    assert response.status_code == 204
-    message = captured["message"]
-    assert "x" * 501 not in message
-    assert "…[truncated]" in message
-    assert "y" * 2001 not in message
+    assert response.status_code == 422
+    assert captured == {}
 
 
 def test_client_event_rejects_missing_required_field(client: TestClient):

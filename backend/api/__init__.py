@@ -58,6 +58,7 @@ from .client_events import router as client_events_router  # noqa: E402
 from .departures import notify_snapshot_refreshed  # noqa: E402
 from .departures import router as departures_router  # noqa: E402
 from .moovo import router as moovo_router  # noqa: E402
+from .request_limits import RequestBodyLimitMiddleware  # noqa: E402
 from .route_plans import router as route_plans_router  # noqa: E402
 from .tts import router as tts_router  # noqa: E402
 from .voice import router as voice_router  # noqa: E402
@@ -65,19 +66,8 @@ from .voice import router as voice_router  # noqa: E402
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    stop_name = kiosk_stop_name()
-    provider = get_provider()
-    # Pre-fetch ebus route map + discover routes at this stop so warmup loop is cold-cache-free.
-    if hasattr(provider, "warmup"):
-        try:
-            await provider.warmup(stop_name)
-        except Exception as exc:
-            _log.warning("provider warmup failed: %s", exc)
-    elif hasattr(provider, "warmup_route_map"):
-        try:
-            await provider.warmup_route_map()
-        except Exception as exc:
-            _log.warning("ebus route map warmup failed: %s", exc)
+    # The warmup loop performs cold upstream discovery in the background.
+    # Readiness must not depend on a third-party scan completing.
     warmup_task = asyncio.create_task(_eta_warmup_loop())
     lock_purge_task = asyncio.create_task(run_lock_purge_loop())
     try:
@@ -90,12 +80,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         with suppress(asyncio.CancelledError):
             await lock_purge_task
         provider = get_provider()
-        if hasattr(provider, "aclose"):
-            await provider.aclose()
+        close = getattr(provider, "aclose", None)
+        if close is not None:
+            await close()
         await aclose_http_client()
 
 
 app = FastAPI(title="Taigi Bus Agent API", lifespan=_lifespan)
+app.add_middleware(RequestBodyLimitMiddleware)
 
 cors_origins = parse_cors_origins()
 if cors_origins:

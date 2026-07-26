@@ -24,10 +24,9 @@ from pipecat.frames.frames import DataFrame, Frame, TTSAudioRawFrame
 from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TextAggregationMode, TTSService
 
-from api.tts import _TTS_TIMEOUT_SECONDS, _split_tailo, _tts_config
 from pipeline.text_processor import process_async as text_process_async
 from pipeline.tts_normalizer import normalize_for_tts
-from providers.http import get_http_client
+from services.taigi_tts import TTSConfigError, TTSSegmentLimitError, load_tts_config, split_tailo, synthesize_segments
 from telemetry import get_telemetry
 
 _log = logging.getLogger(__name__)
@@ -79,7 +78,11 @@ class TaigiTTSService(TTSService):
         )
         self._turn_timer = turn_timer
 
-    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
+    async def run_tts(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self,
+        text: str,
+        context_id: str,
+    ) -> AsyncGenerator[Frame | None, None]:
         """Synthesize text and yield AudioRawFrame.
 
         Whole call is timed via record_pipeline_stage(stage="voice.tts"); outcome
@@ -94,8 +97,8 @@ class TaigiTTSService(TTSService):
         outcome = "error"
         try:
             try:
-                base_url, model, voice, api_key = _tts_config()
-            except Exception as exc:
+                config = load_tts_config()
+            except TTSConfigError as exc:
                 _log.error("TTS config error: %s", exc)
                 return
 
@@ -111,43 +114,29 @@ class TaigiTTSService(TTSService):
                 return
 
             # Step 3: Split Tailo at punctuation
-            segments = _split_tailo(result.tailo)
+            try:
+                segments = split_tailo(result.tailo)
+            except TTSSegmentLimitError as exc:
+                _log.error("TTS segment limit exceeded: %s", exc)
+                return
             if not segments:
                 return
 
-            # Step 4: Concurrent TTS requests
-            req_headers: dict[str, str] = {"Content-Type": "application/json"}
-            if api_key:
-                req_headers["Authorization"] = f"Bearer {api_key}"
-
-            base_payload = {"model": model, "voice": voice}
-            client = get_http_client()
-
-            # Step 4+5: Launch all TTS requests concurrently, then yield PCM in segment order.
-            # asyncio.gather preserves order and propagates CancelledError naturally.
+            # Fixed-size worker pool prevents punctuation-heavy text from
+            # creating one asyncio task and one upstream request per segment.
             try:
-                responses = await asyncio.gather(
-                    *[
-                        client.post(
-                            f"{base_url}/v1/audio/speech",
-                            headers=req_headers,
-                            json={**base_payload, "input": seg},
-                            timeout=_TTS_TIMEOUT_SECONDS,
-                        )
-                        for seg, _ in segments
-                    ],
-                    return_exceptions=True,
-                )
-            except asyncio.CancelledError:
-                _log.info("TTS interrupted before any request completed")
-                raise
+                responses = await synthesize_segments(config, segments)
+            except TimeoutError:
+                outcome = "timeout"
+                _log.error("TTS synthesis exceeded the total deadline")
+                return
 
             # Decode all segments first so we know the total duration before
             # yielding anything — the subtitle must precede the first audio
             # frame (see SubtitleFrame docstring / module docstring above).
             decoded: list[tuple[bytes, int, int, int]] = []  # pcm_bytes, sample_rate, num_channels, silence_ms
             for (seg_text, silence_ms), resp in zip(segments, responses, strict=True):
-                if isinstance(resp, BaseException):
+                if isinstance(resp, Exception):
                     _log.error("TTS HTTP request failed: %s", resp)
                     continue
 

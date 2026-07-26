@@ -1,2 +1,5 @@
 allowBuilds:
   vue-demi: true
+
+overrides:
+  postcss: ">=8.5.18"

@@ -364,6 +364,55 @@ def test_find_routes_at_stop_returns_matching_routes(monkeypatch):
     assert "201" not in result
 
 
+def test_find_routes_at_stop_requires_exact_stop_name(monkeypatch):
+    """A real stop prefix must not match a different, longer stop name."""
+    _patch_http(
+        monkeypatch,
+        {
+            "/route": [{"Id": "30069", "NameZh": "Y03"}],
+            "30069/estimate": [
+                {"StopName": "北港武德宮", "GoBack": 1, "Value": 5, "SeqNo": 1},
+                {"StopName": "北港春生活博物館", "GoBack": 1, "Value": 8, "SeqNo": 2},
+            ],
+        },
+    )
+    provider = EbusBusProvider()
+
+    assert asyncio.run(provider.find_routes_at_stop("北港")) == {}
+
+
+def test_route_scan_builds_index_for_every_stop(monkeypatch):
+    call_count = 0
+
+    def estimate():
+        nonlocal call_count
+        call_count += 1
+        return _ESTIMATE_7120
+
+    _patch_http(
+        monkeypatch,
+        {"/route": [{"Id": "99001", "NameZh": "7120"}], "99001/estimate": estimate},
+    )
+    provider = EbusBusProvider()
+
+    assert "7120" in asyncio.run(provider.find_routes_at_stop("斗六火車站"))
+    assert "7120" in asyncio.run(provider.find_routes_at_stop("虎尾"))
+    assert call_count == 1
+
+
+def test_route_index_survives_provider_restart(monkeypatch, tmp_path):
+    index_path = tmp_path / "ebus-index.json"
+    _patch_http(
+        monkeypatch,
+        {"/route": [{"Id": "99001", "NameZh": "7120"}], "99001/estimate": _ESTIMATE_7120},
+    )
+    first = EbusBusProvider(route_index_path=index_path)
+    assert "7120" in asyncio.run(first.find_routes_at_stop("斗六火車站"))
+
+    second = EbusBusProvider(route_index_path=index_path)
+    assert "7120" in asyncio.run(second.find_routes_at_stop("虎尾"))
+
+
 def test_find_routes_at_stop_derives_terminals(monkeypatch):
     """go_dest/back_dest are derived from max-sequence stops."""
     _patch_http(

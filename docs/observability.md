@@ -191,9 +191,14 @@ context trim、tool round limit 這類運維訊息直接出現在 trace 時間�
 OTLP endpoint 由環境變數控制；**不設定則所有 telemetry 靜默丟棄**，不影響效能。
 
 ```env
-# 任一個有值即啟用 OTLP exporter（trace/metric/log 共用同一組變數）
+# 共用 endpoint：同時啟用 traces / metrics / logs
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318   # SigNoz OTLP/HTTP 預設 port
 OTEL_SERVICE_NAME=taigi-bus-agent                   # 顯示在 SigNoz 的服務名稱
+
+# 也可只啟用指定訊號
+# OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces
+# OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://localhost:4318/v1/metrics
+# OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://localhost:4318/v1/logs
 ```
 
 本機起 SigNoz：`cd backend/telemetry && docker compose up -d`，UI 開

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pipecat.transports.smallwebrtc.request_handler import (
     IceCandidate,
     SmallWebRTCPatchRequest,
@@ -20,6 +20,8 @@ from pipecat.transports.smallwebrtc.request_handler import (
 from agent.diagnostics import log_diagnostic
 from api.chat import _get_store
 
+from .request_limits import VOICE_RATE_LIMIT
+
 router = APIRouter()
 _log = logging.getLogger(__name__)
 
@@ -27,7 +29,7 @@ _log = logging.getLogger(__name__)
 _handler = SmallWebRTCRequestHandler()
 
 
-@router.post("/api/voice/offer")
+@router.post("/api/voice/offer", dependencies=[Depends(VOICE_RATE_LIMIT)])
 async def webrtc_offer(body: dict) -> dict:
     """Exchange SDP offer/answer and start (or resume) the voice pipeline.
 
@@ -93,7 +95,7 @@ async def webrtc_offer(body: dict) -> dict:
     return answer
 
 
-@router.patch("/api/voice/offer")
+@router.patch("/api/voice/offer", dependencies=[Depends(VOICE_RATE_LIMIT)])
 async def webrtc_patch(body: dict) -> None:
     """Accept trickle ICE candidates from the client (optional, for faster connectivity)."""
     try:

@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/vue-query"
-import { computed, ref } from "vue"
+import { computed, onBeforeUnmount, ref } from "vue"
 
 import { UI_FALLBACK_MESSAGES } from "@/lib/api-messages"
 import { formatTaipeiHourMinute, parseTaipeiDateTimeInput } from "@/lib/time"
@@ -161,6 +161,8 @@ export function useRoutePlanner() {
   function selectRoute(routeId: string) {
     selectedRouteId.value = routeId
   }
+
+  onBeforeUnmount(cancelRouteRequest)
 
   return {
     kiosk,

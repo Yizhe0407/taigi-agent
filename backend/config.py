@@ -18,6 +18,7 @@ import functools
 import os
 from dataclasses import dataclass
 
+import httpx
 from openai import AsyncOpenAI
 
 from agent.prompt import build_system_prompt
@@ -122,7 +123,15 @@ def get_settings() -> Settings:
 
 @functools.lru_cache(maxsize=4)
 def _make_llm_client(base_url: str, api_key: str) -> AsyncOpenAI:
-    return AsyncOpenAI(base_url=base_url, api_key=api_key)
+    timeout = httpx.Timeout(
+        connect=float(os.getenv("LLM_CONNECT_TIMEOUT_SECONDS", "5")),
+        read=float(os.getenv("LLM_READ_TIMEOUT_SECONDS", "60")),
+        write=float(os.getenv("LLM_WRITE_TIMEOUT_SECONDS", "15")),
+        pool=float(os.getenv("LLM_POOL_TIMEOUT_SECONDS", "5")),
+    )
+    # Retry ownership stays in agent.llm_client so one observable attempt maps
+    # to exactly one HTTP attempt. SDK retries would otherwise multiply it.
+    return AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=0)
 
 
 def make_agent_session(

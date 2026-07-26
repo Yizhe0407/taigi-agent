@@ -26,12 +26,13 @@ IntentRouter（Python regex，deterministic）
 
 ## 場域
 
-專題範圍是雲林縣內的站牌 Kiosk。每台 Kiosk 用 `KIOSK_STOP` 指定部署站牌，
-系統只回答該站牌可查到的到站與路線資訊。
+專題範圍是雲林縣內的站牌 Kiosk。部署站牌由 `/admin` 後台管理並原子持久化到
+`backend/.agent_state/kiosk_config.json`；寫入必須提供 `ADMIN_TOKEN`。系統只回答
+目前 Kiosk 站牌可查到的到站與路線資訊。
 
 資料來源使用雲林公車動態系統後端資料介面。這能覆蓋專題需要的站牌查詢，
 但該介面不是本專題可控制的公開契約；若介面變更，調整點集中在
-`backend/providers/yunlin_ebus.py`。
+`backend/providers/ebus.py`。
 
 ## 使用者分眾
 
@@ -85,8 +86,8 @@ uv sync
 # 2. 設定環境變數
 cp .env.example .env
 # 必填：LLM_BASE_URL、LLM_MODEL（或 GROQ_API_KEY）
-# Kiosk 設定：KIOSK_STOP（這台機器在哪個站牌，預設「雲林科技大學」）
-# 選填：KIOSK_DIRECTION=去程 或 回程（不填 = 顯示兩個方向）
+# 管理後台寫入必填：ADMIN_TOKEN（高熵隨機值）
+# Kiosk 預設為「雲林科技大學／回程」，啟動後由 /admin 修改
 
 # 3. 啟動後端
 uv run uvicorn api:app --reload --port 8000
@@ -131,6 +132,9 @@ pnpm dev
 ```bash
 cd backend
 uv run pytest
+uv run ruff check .
+uv run pyright
+uv run pip-audit --local --ignore-vuln PYSEC-2026-597
 ```
 
 前端型別檢查與 production build：
@@ -139,6 +143,7 @@ uv run pytest
 cd frontend
 pnpm typecheck
 pnpm build
+pnpm audit --prod --audit-level high
 ```
 
 首頁顯示固定 Kiosk 站牌的可搭、未發車與末班狀態；點路線可查看後端

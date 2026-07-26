@@ -115,11 +115,11 @@ class IntentRouter:
                 next_state=replace(state, last_intent=Intent.ROUTE_ONLY),
             )
 
-        # Rule 2: remote destination / transfer → map redirect.
+        # Rule 2: remote destination / transfer → explain the actual service boundary.
         if _is_remote_destination(text):
             return Decision(
                 intent=Intent.REMOTE_DESTINATION,
-                canned_response="這個要用地圖規劃比較準喔。",
+                canned_response="目前只能規劃雲林縣內行程，跨縣市請改用其他地圖服務查詢。",
                 next_state=replace(state, last_intent=Intent.REMOTE_DESTINATION),
             )
 

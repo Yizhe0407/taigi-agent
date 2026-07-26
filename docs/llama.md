@@ -50,6 +50,19 @@ llama serve -hf unsloth/Qwen3.5-4B-GGUF:Q8_0 \
   --chat-template-kwargs '{"enable_thinking": false}'
 ```
 
+```bash
+llama serve -hf unsloth/Qwen3.5-9B-GGUF:IQ4_NL \
+  --no-mmproj \
+  --jinja \
+  --host 0.0.0.0 --port 8000 \
+  -ngl 99 \
+  -fa on \
+  -c 8192 \
+  --parallel 1 \
+  --temp 0 \
+  --reasoning off
+```
+
 ## 參數說明
 
 | 參數 | 說明 |

@@ -302,7 +302,7 @@ def test_router_canned_response_skips_llm_call():
 def test_router_canned_response_for_remote_destination():
     session = make_session([])
     reply = asyncio.run(session.respond("我要去台中怎麼搭"))
-    assert reply == "這個要用地圖規劃比較準喔。"
+    assert reply == "目前只能規劃雲林縣內行程，跨縣市請改用其他地圖服務查詢。"
     assert session.client.chat.completions.calls == []
 
 
@@ -400,7 +400,7 @@ def test_respond_stream_canned_path_yields_single_chunk():
     async def collect():
         return [chunk async for chunk in session.respond_stream("我要去台中怎麼搭")]
 
-    assert asyncio.run(collect()) == ["這個要用地圖規劃比較準喔。"]
+    assert asyncio.run(collect()) == ["目前只能規劃雲林縣內行程，跨縣市請改用其他地圖服務查詢。"]
 
 
 def test_router_fallthrough_still_calls_llm():

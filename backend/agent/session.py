@@ -227,6 +227,8 @@ class AgentSession:
                     result = value
             # 唯一記錄點：loop 的每個出口（含錯誤）都以 _LlmTurnResult 收斂，
             # 新增出口路徑時型別上必須給 outcome，不可能漏記。
+            if result is None:
+                raise RuntimeError("LLM loop ended without a result event")
             self.telemetry.record_turn(
                 path="llm",
                 intent=intent.value,
@@ -310,6 +312,8 @@ class AgentSession:
                     log_diagnostic("warn", "tool_call_failed，改用 auto 模式重試")
                     continue
 
+                if response is None:
+                    raise RuntimeError("LLM stream ended without a completion response")
                 message = response.choices[0].message
                 tool_calls = function_tool_calls(message)
 

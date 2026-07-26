@@ -51,6 +51,16 @@ _CAPTURE_CONTENT_ENV = "TELEMETRY_CAPTURE_CONTENT"
 _CONTENT_MAX_CHARS = 4_000
 
 
+def _enabled_otlp_signals() -> tuple[bool, bool, bool]:
+    """Return whether traces, metrics, and logs should export over OTLP."""
+    common = bool(os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+    return (
+        common or bool(os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")),
+        common or bool(os.getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")),
+        common or bool(os.getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")),
+    )
+
+
 def _truncate_content(text: str, limit: int) -> str:
     return text if len(text) <= limit else f"{text[:limit]}…[truncated {len(text)} chars]"
 
@@ -74,50 +84,47 @@ def configure_telemetry(service_name: str = "taigi-bus-agent") -> "AgentTelemetr
     if _telemetry is not None:
         return _telemetry
 
-    if any(
-        os.getenv(v)
-        for v in (
-            "OTEL_EXPORTER_OTLP_ENDPOINT",
-            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-            "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
-        )
-    ):
+    traces_enabled, metrics_enabled, logs_enabled = _enabled_otlp_signals()
+    if traces_enabled or metrics_enabled or logs_enabled:
         resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", service_name)})
 
-        tracer_provider = TracerProvider(resource=resource)
-        tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
-        trace.set_tracer_provider(tracer_provider)
+        if traces_enabled:
+            tracer_provider = TracerProvider(resource=resource)
+            tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+            trace.set_tracer_provider(tracer_provider)
 
-        # Wildcard covers auto-instrumented metrics (FastAPI/HTTPX) too.
-        duration_view = View(
-            instrument_name="*duration*",
-            aggregation=ExplicitBucketHistogramAggregation(boundaries=_DURATION_BOUNDARIES),
-        )
-        # Default OTel buckets top out at 10 000 — useless for MB-scale audio.
-        bytes_view = View(
-            instrument_name="*bytes*",
-            aggregation=ExplicitBucketHistogramAggregation(boundaries=_BYTES_BOUNDARIES),
-        )
-        metric_reader = PeriodicExportingMetricReader(OTLPMetricExporter())
-        metrics.set_meter_provider(
-            MeterProvider(
-                resource=resource,
-                metric_readers=[metric_reader],
-                views=[duration_view, bytes_view],
+        if metrics_enabled:
+            # Wildcard covers auto-instrumented metrics (FastAPI/HTTPX) too.
+            duration_view = View(
+                instrument_name="*duration*",
+                aggregation=ExplicitBucketHistogramAggregation(boundaries=_DURATION_BOUNDARIES),
             )
-        )
+            # Default OTel buckets top out at 10 000 — useless for MB-scale audio.
+            bytes_view = View(
+                instrument_name="*bytes*",
+                aggregation=ExplicitBucketHistogramAggregation(boundaries=_BYTES_BOUNDARIES),
+            )
+            metric_reader = PeriodicExportingMetricReader(OTLPMetricExporter())
+            metrics.set_meter_provider(
+                MeterProvider(
+                    resource=resource,
+                    metric_readers=[metric_reader],
+                    views=[duration_view, bytes_view],
+                )
+            )
 
-        # Forwards stdlib `logging` records (the _log = logging.getLogger(__name__)
-        # calls throughout providers/services/voice) to OTLP. Attached at the root
-        # logger with level=NOTSET so it only sees what already passed each
-        # logger's own effective level (WARNING by default — no basicConfig sets
-        # one). ponytail: uvicorn's own "uvicorn.access"/"uvicorn.error" loggers
-        # have propagate=False, so they never reach this handler — only this
-        # app's own module loggers are exported. Add an explicit forwarder later
-        # if access logs in SigNoz turn out to matter.
-        logger_provider = LoggerProvider(resource=resource)
-        logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter()))
-        logging.getLogger().addHandler(LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider))
+        if logs_enabled:
+            # Forwards stdlib `logging` records (the _log = logging.getLogger(__name__)
+            # calls throughout providers/services/voice) to OTLP. Attached at the root
+            # logger with level=NOTSET so it only sees what already passed each
+            # logger's own effective level (WARNING by default — no basicConfig sets
+            # one). ponytail: uvicorn's own "uvicorn.access"/"uvicorn.error" loggers
+            # have propagate=False, so they never reach this handler — only this
+            # app's own module loggers are exported. Add an explicit forwarder later
+            # if access logs in SigNoz turn out to matter.
+            logger_provider = LoggerProvider(resource=resource)
+            logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter()))
+            logging.getLogger().addHandler(LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider))
 
     _telemetry = AgentTelemetry()
     return _telemetry

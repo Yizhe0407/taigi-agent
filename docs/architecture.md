@@ -5,12 +5,12 @@
 ## 核心邊界
 
 - `AgentSession` 是 harness orchestration，不放公車領域邏輯。
-- `IntentRouter` 用 Python regex 決定意圖與工具派送；LLM 只負責 UNKNOWN 的 phrasing。`ConvState` 追蹤對話狀態，不靠 LLM 從 messages 推斷。
+- `IntentRouter` 用 Python regex 處理固定回覆；其餘請求交由 LLM 判斷並派送工具。`ConvState` 追蹤對話狀態，不靠 LLM 從 messages 推斷。
 - 公車資料來源集中在 provider，分類與決策集中在 service，Agent 看到的是 tool facade 回傳的字串。
 - 路線規劃不是聊天文字 tool；前端確認目的地座標後呼叫 `POST /api/route-plans`。
 - Context 以輪為單位硬上限（`MAX_EXCHANGES=5`）加 token budget trim；過長 tool result 直接截斷成預覽（不另外保存完整內容），避免單則訊息吃光 budget。
 - 回覆是串流的：`AgentSession.respond_stream()` 逐句 yield（`respond()` = 串接所有 chunk，單一路徑）。首輪 forced tool call 不串流；auto 輪的 content delta 經 `pipeline/normalize.StreamNormalizer`（增量 think 剝除 + 逐句 s2twp）輸出。不變式：完整回覆 == 所有 chunk 串接；串流輪的歷史 assistant content == 實際播出文字。
-- Telemetry 只記 model、tool name、outcome、error type、latency 等 metadata，預設不記內容。
+- Telemetry 記錄 spans / metrics / logs，文字內容預設收集並截斷；可用 `TELEMETRY_CAPTURE_CONTENT=false` 關閉內容層級觀測。
 
 ## 後端
 
@@ -31,20 +31,20 @@ backend/
 
 ### API
 
-- `api/__init__.py`：FastAPI app、CORS、router include、telemetry setup。
-- `api/admin.py`：`/api/admin/kiosk`（GET/PUT）與 `/api/admin/stops`（GET）；供後台 UI 讀寫 runtime 站牌設定與站牌目錄。
+- `api/__init__.py`：FastAPI app、CORS、router include、telemetry setup，以及全域 request body middleware。POST/PUT/PATCH 預設上限 64 KB；`/api/asr` 含 multipart overhead 上限 26 MB，chunked body 也在串流接收時累計並回 413。
+- `api/admin.py`：`/api/admin/kiosk`（GET/PUT）與 `/api/admin/stops`（GET）；寫入採 `ADMIN_TOKEN` fail-closed 驗證，且只接受站名與方向。座標由後端 stop catalog 的主要群集計算，不能由前端覆寫。
 - `api/chat.py`：`/api/chat/*`，SQLite-backed `ChatSessionStore`。`respond_in_session_stream` 為唯一實作路徑（voice 與 SSE 共用）；`POST /api/chat/sessions/{id}/messages/stream` 以 SSE 推 `{delta}`/`{done}`/`{error}` 事件；非串流 endpoint 已移除。
 - `api/departures.py`：`/api/departures/here` 與路線詳情；`GET /api/departures/stream` SSE 推播——ETA warmup loop（25 s）每次刷新 cache 後 `notify_snapshot_refreshed()` 喚醒連線推最新 snapshot，40 s fallback 自刷新兜底。
 - `api/route_plans.py`：`/api/route-plans` 與 `/api/kiosk`（含 direction）。
 - `api/moovo.py`：`/api/moovo/*`。
-- `api/asr.py`：Breeze ASR proxy（提供給文字模式與語音模組共用的辨識邏輯）。
-- `api/tts.py`：HanloFlow -> Taibun -> Piper TTS proxy（REST 模式 fallback）。
+- `api/asr.py`：Breeze ASR proxy（提供給文字模式與語音模組共用的辨識邏輯）；音檔以 1 MB chunk 讀取，實際檔案內容上限 25 MB。
+- `api/tts.py`：HanloFlow -> Taibun -> Piper TTS proxy（REST 模式 fallback）。Tailo 最多 64 段、每段最多 500 字元、同時最多 4 個 upstream request；單請求 15 秒、整次合成 45 秒。
 - `api/voice.py`：`/api/voice/offer`，處理 WebRTC SDP 交換並在背景啟動語音 pipeline，支援 session_id 綁定。
 
 ### Voice Pipeline (WebRTC)
 
 - `voice/pipeline.py`：Pipecat 語音管線組裝（SmallWebRTCTransport、VAD、中斷處理）與連線生命週期管理。`SubtitleSyncProcessor` 掛在 `transport.output()` 之後，攔自訂 `SubtitleFrame`（`tts_taigi.run_tts` 在音訊 frames **之前** yield，帶該段精確音訊時長；不可繼承 TTSTextFrame、不可設 pts）——事件到達 ≈ 段起播，前端在 durationMs 內線性逐字揭示，全文 `agent_reply` 由 `bot_silent` 收尾補全。注意：pipecat 預設段尾 TTSTextFrame 保持存在（`push_text_frames=False` 會觸發 WordCompletionTracker 段尾補發全文，是坑），無人消費即可。
-- `voice/stt_breeze.py`：繼承 Pipecat `STTService`，搭配 VAD 收集完整語句後呼叫 ASR 轉文字。
+- `voice/stt_breeze.py`：繼承 Pipecat `SegmentedSTTService`，搭配 VAD 收集完整語句後呼叫 ASR 轉文字。
 - `voice/agent_processor.py`：將原本的 `AgentSession` 封裝為 Pipecat 的 `FrameProcessor`，介接文字與語音的資料流。消費 `respond_in_session_stream` 逐 chunk 推 `TextFrame`——Pipecat TTS 句子聚合器在 LLM 還在生成時就開始逐句合成，首音延遲不再等完整回覆。
 - `voice/tts_taigi.py`：繼承 Pipecat `TTSService`，封裝原有的文字前處理與 Piper TTS，輸出 PCM 音訊流供 WebRTC 播放。
 
@@ -62,12 +62,12 @@ backend/
 
 - `providers/bus.py`：`BusProvider` Protocol（TDX-native flat dict schema；`sub_route_name`/`direction`/`stop_status`/`estimate_seconds` 等欄位）。
 - `providers/http.py`：process-wide 共用 `httpx.AsyncClient`（連線池重用）；TTS/ASR/OTP/TDX/ebus 都透過它發請求，各呼叫點自帶 per-request timeout，app shutdown 時由 lifespan 關閉。
-- `providers/ebus.py`：ebus.yunlin.gov.tw `BusProvider` 實作。提供 ComeTime（scheduled_time）與即時 estimate_seconds。無觀測到的 rate limit，所有路線並行抓取。route estimate 結果快取 30 s。
-- `providers/tdx_bus.py`：TDX `BusProvider` 實作。同時查 `City/YunlinCounty`（市區公車）與 `InterCity`（公路客運）兩個 endpoint 並合併。OAuth2 token 自動快取。route_id 以 SubRouteName string 為主鍵。
-- `providers/hybrid.py`：`HybridBusProvider`，線上唯一 `BusProvider` runtime 實例。路線目錄（`load_route_info`、`fetch_routes_at_stop`）由 TDX 提供；ETA（`fetch_eta_at_stop`、`fetch_route_estimate`）由 ebus 主力，ebus 空值時才 fallback 至 TDX intercity。
+- `providers/ebus.py`：ebus.yunlin.gov.tw `BusProvider` 實作。首次 miss 以 20 個並行 request 掃描路線，一次建立所有精確站名的 route index；完整索引原子寫入 `.agent_state/ebus-route-index.json` 並保留 24 小時，重新啟動不必重掃。route estimate 結果快取 30 s。
+- `providers/tdx_bus.py`：TDX `BusProvider` 實作。同時查 `City/YunlinCounty`（市區公車）與 `InterCity`（公路客運）兩個 endpoint 並合併。OAuth2 token 自動快取，route estimate 採 256-entry LRU。route_id 以 SubRouteName string 為主鍵。
+- `providers/hybrid.py`：`HybridBusProvider`，線上唯一 `BusProvider` runtime 實例。`load_route_info`、ETA 與 route estimate 以 ebus 為主、TDX 為備援；`fetch_routes_at_stop` 直接使用 TDX，ebus 站名缺字時也由 TDX 補終點名稱。
 - `providers/otp.py`：OpenTripPlanner GraphQL provider。
 - `providers/moovo.py`：TDX bike provider。
-- `services/kiosk_config.py`：Runtime kiosk 設定 singleton（stop_name、direction、lat/lon）；持久化至 `.agent_state/kiosk_config.json`，預設雲林科技大學／回程。所有需要站牌資訊的模組從此讀取，不用 env var。
+- `services/kiosk_config.py`：Runtime kiosk 設定 singleton（stop_name、direction、lat/lon）；先原子落盤再發布記憶體狀態，並用 mtime 觀察其他 worker 的更新。持久化至 `.agent_state/kiosk_config.json`，預設雲林科技大學／回程。
 - `services/departures/`：離站決策唯一分類來源，支援 provider override。方向過濾分兩層：admin 設定「去程」或「回程」時直接照設定過濾（不做 auto-detect）；設定「去回程都有」（go_back=None）時啟動 `_is_terminal_direction()` 自動過濾「本站是該方向終點（即抵達非出發）」的方向，循環路線（go_dest == back_dest == 本站）不過濾。`_classify_stop` 讀 TDX `stop_status` / `estimate_seconds`，回傳 `StopClassification` dataclass，所有 render 函式共用同一分類規則。方向編碼 0=去程、1=回程（TDX Direction）。`route_id` 全層為 str（SubRouteName）。查無路線/目的地時，renderer 回傳候選清單（路線用 `route_info` 站牌路線表；目的地用 `normalize._fuzzy_candidates`），交給 LLM 挑音近者重查（ASR 聽錯救援，見 `agent/prompt.py`【聽錯救援】）。
 - `services/route_plans.py`：OTP 路線規劃 facade、Kiosk 起點、雲林邊界、view model。
 - `services/moovo.py`：公共自行車站 dataclass、解析、cache、距離查詢。
@@ -90,7 +90,7 @@ frontend/
 - `App.vue`：Kiosk shell，控制首頁與路線規劃 view。
 - `features/departures/`：離站決策首頁、路線詳情、route colors、顯示狀態。資料以 `EventSource`（`/api/departures/stream`）為主，斷線時自動降級為輪詢。
 - `features/route-planner/`：MapCN destination picker、路線規劃 request、指定時間 wheel；地圖顯示當前站牌名稱與方向。
-- `features/admin/`：後台站牌切換 UI（`/admin`）；地圖搜尋選站、方向設定、即時套用；無密碼保護，設定立即生效。
+- `features/admin/`：後台站牌切換 UI（`/admin`）；token 僅保存於目前瀏覽器 `sessionStorage`。地圖搜尋選站與方向後，由後端驗證站名並套用 canonical 座標。
 - `features/agent-chat/`：PIP 對話 session 管理。整合 WebRTC 語音串流、打字動畫、與共用對話上下文 (Shared Session)，並保留 REST fallback 機制。
 - `components/ui/`：shadcn-vue 與 MapCN Vue copy-paste UI components。
 
@@ -98,4 +98,5 @@ frontend/
 
 - TDX API 與 ebus API 都是外部契約；TDX 欄位或 endpoint 改版修 `providers/tdx_bus.py`，ebus 改版修 `providers/ebus.py`，路由邏輯改版修 `providers/hybrid.py`。
 - Chat session 持久化在 `.agent_state/sessions.db`，目前仍綁單機檔案；scale out 需改外部 KV / Redis。
+- API rate limit 是單 worker、最多 2048 client bucket 的 in-process token bucket；多 worker 或多機部署必須在 gateway 另設全域限流。
 - Backend runtime 採 async 單一路徑；HTTP-facing providers、services、AgentSession tool dispatch 與 LLM client 都是 async。GTFS 更新腳本可用同步 requests，不屬於線上 API 路徑。

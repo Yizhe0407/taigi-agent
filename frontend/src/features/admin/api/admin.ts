@@ -33,22 +33,20 @@ export async function fetchAdminKiosk(): Promise<KioskConfig> {
 const ADMIN_TOKEN_KEY = "admin_token"
 
 function adminTokenHeaders(): Record<string, string> {
-  const token = localStorage.getItem(ADMIN_TOKEN_KEY)
+  const token = sessionStorage.getItem(ADMIN_TOKEN_KEY)
   return token ? { "X-Admin-Token": token } : {}
 }
 
 /** Prompt once for the admin token and remember it; null if the user cancels. */
 function promptForAdminToken(): string | null {
   const token = window.prompt("請輸入管理員權杖")
-  if (token) localStorage.setItem(ADMIN_TOKEN_KEY, token)
+  if (token) sessionStorage.setItem(ADMIN_TOKEN_KEY, token)
   return token
 }
 
 export async function updateAdminKiosk(config: {
   stop_name: string
   direction: Direction
-  lat: number
-  lng: number
 }): Promise<KioskConfig> {
   try {
     const res = await apiFetch("/api/admin/kiosk", {

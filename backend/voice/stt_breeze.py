@@ -33,7 +33,7 @@ class BreezeSTTService(SegmentedSTTService):
             **kwargs,
         )
 
-    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame | None, None]:
+    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame | None, None]:  # pyright: ignore[reportIncompatibleMethodOverride]
         """Transcribe a complete WAV segment (packaged by SegmentedSTTService)."""
         try:
             base_url, model, api_key = _asr_config()

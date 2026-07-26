@@ -52,6 +52,7 @@ import asyncio
 import logging
 import re
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 
 from providers.bus import BusProvider
@@ -67,6 +68,7 @@ _TOKEN_BUFFER_SECONDS = 60.0
 
 _DEFAULT_ROUTE_INFO_TTL = 600.0
 _DEFAULT_ROUTE_ESTIMATE_TTL = 30.0  # TDX updates ~30 s; 10 s caused 429 rate-limit hits
+_MAX_ROUTE_ESTIMATE_CACHE_ENTRIES = 256
 _DEFAULT_ETA_TTL = 60.0  # must exceed wait_for(12s) + warmup_sleep(25s) = 37s to break 429 cascade
 _MAX_RETRIES = 1  # retries on HTTP 429; Retry-After is 20-40 s so 3 retries = 60-120 s blocking
 _MAX_UIDS_PER_FILTER = 15  # keeps encoded $filter well under typical gateway URL-length limits
@@ -97,12 +99,15 @@ def _zh(field: object) -> str:
     return ""
 
 
-def _safe_list(result: list[dict] | BaseException) -> list[dict]:
-    """Return an empty list when an asyncio.gather result is an exception."""
+def _safe_list(result: object) -> list[dict]:
+    """Validate a gathered endpoint result and degrade malformed data to empty."""
     if isinstance(result, BaseException):
         _log.warning("TDX endpoint error (degraded gracefully): %s", result)
         return []
-    return result
+    if not isinstance(result, list):
+        _log.warning("TDX endpoint returned a non-list payload")
+        return []
+    return [item for item in result if isinstance(item, dict)]
 
 
 class TdxBusProvider(BusProvider):
@@ -135,7 +140,7 @@ class TdxBusProvider(BusProvider):
         # stop_name → set of boarding StopUIDs (first occurrence of that stop in each route)
         self._kiosk_uids: dict[str, set[str]] = {}
         # sub_route_name → (fetched_at, rows)
-        self._route_estimate_cache: dict[str, tuple[float, list[dict]]] = {}
+        self._route_estimate_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
         # stop_name → (fetched_at, rows)
         self._eta_cache: dict[str, tuple[float, list[dict]]] = {}
         # per-key locks prevent concurrent cache-miss storms (thundering herd)
@@ -205,7 +210,10 @@ class TdxBusProvider(BusProvider):
                 attempt += 1
                 continue
             resp.raise_for_status()
-            return resp.json()
+            payload = resp.json()
+            if not isinstance(payload, list):
+                raise ValueError("TDX endpoint returned a non-list payload")
+            return [item for item in payload if isinstance(item, dict)]
 
     # ── Normalizers ───────────────────────────────────────────────────────────
 
@@ -254,7 +262,7 @@ class TdxBusProvider(BusProvider):
         cached = self._eta_cache.get(stop_name)
         hit = cached is not None and not self._expired(cached[0], self._eta_ttl)
         get_telemetry().record_cache_lookup(cache="tdx.eta", hit=hit)
-        if hit:
+        if cached is not None and hit:
             return cached[1]
 
         lock = self._eta_locks.setdefault(stop_name, asyncio.Lock())
@@ -273,7 +281,7 @@ class TdxBusProvider(BusProvider):
                 # accumulating toward _MAX_STALE_SECONDS instead of resetting on
                 # every failed retry (which would keep an upstream outage's last
                 # good data alive forever).
-                if cached is not None and not self._expired(cached[0], self._eta_ttl + _MAX_STALE_SECONDS):
+                if cached is not None and not self._expired(cached[0], self._stale_ttl(self._eta_ttl)):
                     _log.warning("TDX ETA fetch failed; serving stale cache for %s", stop_name)
                     return cached[1]
                 raise
@@ -284,7 +292,8 @@ class TdxBusProvider(BusProvider):
         cached = self._route_estimate_cache.get(sub_route_name)
         hit = cached is not None and not self._expired(cached[0], self._route_estimate_ttl)
         get_telemetry().record_cache_lookup(cache="tdx.route_estimate", hit=hit)
-        if hit:
+        if cached is not None and hit:
+            self._route_estimate_cache.move_to_end(sub_route_name)
             return cached[1]
 
         # Only query the endpoint that owns this route — halves request volume.
@@ -300,20 +309,23 @@ class TdxBusProvider(BusProvider):
                     {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(sub_route_name)}'"},
                 )
         except Exception:
-            if cached is not None and not self._expired(cached[0], self._route_estimate_ttl + _MAX_STALE_SECONDS):
+            if cached is not None and not self._expired(cached[0], self._stale_ttl(self._route_estimate_ttl)):
                 _log.warning("TDX route estimate fetch failed; serving stale cache for %s", sub_route_name)
                 return cached[1]
             raise
 
         rows = [self._norm_stop_eta(r) for r in raw]
         self._route_estimate_cache[sub_route_name] = (self._clock(), rows)
+        self._route_estimate_cache.move_to_end(sub_route_name)
+        while len(self._route_estimate_cache) > _MAX_ROUTE_ESTIMATE_CACHE_ENTRIES:
+            self._route_estimate_cache.popitem(last=False)
         return rows
 
     async def load_route_info(self, stop_name: str) -> dict[str, dict]:
         cached = self._route_info_by_stop.get(stop_name)
         hit = cached is not None and not self._expired(cached[0], self._route_info_ttl)
         get_telemetry().record_cache_lookup(cache="tdx.route_info", hit=hit)
-        if hit:
+        if cached is not None and hit:
             return cached[1]
 
         city, intercity = await self._stop_of_route(stop_name)
@@ -485,3 +497,7 @@ class TdxBusProvider(BusProvider):
         if ttl is None or ttl <= 0:
             return False
         return (self._clock() - fetched_at) >= ttl
+
+    @staticmethod
+    def _stale_ttl(ttl: float | None) -> float | None:
+        return None if ttl is None else ttl + _MAX_STALE_SECONDS

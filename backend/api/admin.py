@@ -12,19 +12,18 @@ from pydantic import BaseModel, Field
 from services.kiosk_config import KioskConfig, get_kiosk_config, set_kiosk_config
 from services.stop_catalog import StopCatalogError, StopRecord, load_stop_catalog
 
+from .request_limits import ADMIN_WRITE_RATE_LIMIT
+
 router = APIRouter()
 
 
 def _require_admin_token(x_admin_token: str | None = Header(default=None)) -> None:
-    """Reject kiosk-config writes when ADMIN_TOKEN is set and the header doesn't match.
-
-    ADMIN_TOKEN unset keeps prior (unauthenticated) behavior — opt-in so
-    existing LAN-only deployments aren't broken until an operator sets it.
-    """
-    expected = os.getenv("ADMIN_TOKEN", "")
-    # compare_digest keeps the check constant-time so a wrong token can't be
-    # recovered byte-by-byte via response-timing differences.
-    if expected and not secrets.compare_digest(x_admin_token or "", expected):
+    """Require an explicitly configured token for every state-changing request."""
+    expected = os.getenv("ADMIN_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="管理功能尚未設定 ADMIN_TOKEN")
+    supplied = (x_admin_token or "").encode("utf-8")
+    if not secrets.compare_digest(supplied, expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail="缺少或錯誤的管理員權杖")
 
 
@@ -36,10 +35,8 @@ class KioskConfigResponse(BaseModel):
 
 
 class KioskConfigRequest(BaseModel):
-    stop_name: str = Field(min_length=1)
+    stop_name: str = Field(min_length=1, max_length=100)
     direction: Literal["去程", "回程"] | None
-    lat: float = Field(ge=-90, le=90)
-    lng: float = Field(ge=-180, le=180)
 
 
 class StopEntry(BaseModel):
@@ -97,15 +94,22 @@ def get_admin_kiosk() -> KioskConfigResponse:
 @router.put(
     "/api/admin/kiosk",
     response_model=KioskConfigResponse,
-    dependencies=[Depends(_require_admin_token)],
+    dependencies=[Depends(_require_admin_token), Depends(ADMIN_WRITE_RATE_LIMIT)],
 )
 def update_admin_kiosk(req: KioskConfigRequest) -> KioskConfigResponse:
     """Update the kiosk stop, direction, and coordinates. Takes effect immediately."""
+    try:
+        matches = [stop for stop in load_stop_catalog().stops if stop.name == req.stop_name]
+    except StopCatalogError as exc:
+        raise HTTPException(status_code=503, detail="站牌目錄讀取失敗") from exc
+    if not matches:
+        raise HTTPException(status_code=422, detail="站牌名稱不在雲林站牌目錄中")
+    lat, lng = _largest_cluster_centroid(matches)
     cfg = KioskConfig(
         stop_name=req.stop_name,
         direction=req.direction,
-        lat=req.lat,
-        lon=req.lng,
+        lat=lat,
+        lon=lng,
     )
     set_kiosk_config(cfg)
     return _cfg_to_response(cfg)

@@ -49,6 +49,7 @@ class KioskConfig:
 
 
 _current: KioskConfig | None = None
+_current_mtime_ns: int | None = None
 
 
 def _load() -> KioskConfig:
@@ -73,33 +74,35 @@ def _load() -> KioskConfig:
 
 
 def get_kiosk_config() -> KioskConfig:
-    """Return the current runtime kiosk config (lazy-loaded once per process)."""
-    global _current
+    """Return current config and observe writes made by another worker."""
+    global _current, _current_mtime_ns
     with _lock:
-        if _current is None:
+        try:
+            mtime_ns = _STATE_PATH.stat().st_mtime_ns
+        except FileNotFoundError:
+            mtime_ns = None
+        if _current is None or mtime_ns != _current_mtime_ns:
             _current = _load()
+            _current_mtime_ns = mtime_ns
         return _current
 
 
 def set_kiosk_config(cfg: KioskConfig) -> None:
-    """Update the runtime config and persist to disk."""
-    global _current
+    """Atomically persist config before publishing it to in-process readers."""
+    global _current, _current_mtime_ns
     with _lock:
-        _current = cfg
-    # Disk write outside the lock — readers can't see a partial state because
-    # _current is an immutable dataclass reference swapped atomically above.
-    _STATE_DIR.mkdir(parents=True, exist_ok=True)
-    # Atomic write: a crash mid-write would otherwise leave truncated JSON that
-    # _load() silently falls back on, booting the kiosk to the wrong default stop.
-    # Write to a uniquely-named temp file, then os.replace() (atomic rename on
-    # the same fs) — a shared tmp name would let concurrent writers corrupt
-    # each other's in-progress content before either replace() lands.
-    tmp_path = _STATE_PATH.with_name(f"{_STATE_PATH.name}.{uuid.uuid4().hex}.tmp")
-    tmp_path.write_text(
-        json.dumps(asdict(cfg), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    os.replace(tmp_path, _STATE_PATH)
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp_path = _STATE_PATH.with_name(f"{_STATE_PATH.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp_path.write_text(
+                json.dumps(asdict(cfg), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(tmp_path, _STATE_PATH)
+            _current = cfg
+            _current_mtime_ns = _STATE_PATH.stat().st_mtime_ns
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
 
 def kiosk_stop_name() -> str:

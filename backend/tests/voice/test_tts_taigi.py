@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pipecat.frames.frames import TTSAudioRawFrame
 
+from services.taigi_tts import TTSConfig, TTSConfigError
 from voice.tts_taigi import SubtitleFrame, TaigiTTSService
 
 
@@ -33,7 +34,10 @@ async def _collect(gen):
 
 def _patch_common(tailo="li2 ho2"):
     return (
-        patch("voice.tts_taigi._tts_config", return_value=("http://localhost", "m", "v", None)),
+        patch(
+            "voice.tts_taigi.load_tts_config",
+            return_value=TTSConfig("http://localhost", "m", "v", ""),
+        ),
         patch("voice.tts_taigi.normalize_for_tts", side_effect=lambda t: t),
         patch("voice.tts_taigi.text_process_async", new=AsyncMock(return_value=_FakeTextProcessResult(tailo))),
     )
@@ -41,15 +45,13 @@ def _patch_common(tailo="li2 ho2"):
 
 def test_run_tts_ok_records_ok_outcome_and_marks_turn_timer():
     mock_resp = MagicMock(status_code=200, content=_make_wav_bytes())
-    mock_client = MagicMock()
-    mock_client.post = AsyncMock(return_value=mock_resp)
 
     p1, p2, p3 = _patch_common()
     with (
         p1,
         p2,
         p3,
-        patch("voice.tts_taigi.get_http_client", return_value=mock_client),
+        patch("voice.tts_taigi.synthesize_segments", new=AsyncMock(return_value=[mock_resp])),
         patch("voice.tts_taigi.get_telemetry") as mock_get_telemetry,
     ):
         turn_timer = MagicMock()
@@ -73,7 +75,7 @@ def test_run_tts_ok_records_ok_outcome_and_marks_turn_timer():
 
 def test_run_tts_config_error_records_error_outcome():
     with (
-        patch("voice.tts_taigi._tts_config", side_effect=Exception("no TTS_BASE_URL")),
+        patch("voice.tts_taigi.load_tts_config", side_effect=TTSConfigError("no TTS_BASE_URL")),
         patch("voice.tts_taigi.get_telemetry") as mock_get_telemetry,
     ):
         turn_timer = MagicMock()
@@ -89,15 +91,13 @@ def test_run_tts_config_error_records_error_outcome():
 
 def test_run_tts_all_segments_upstream_error_records_error_outcome():
     mock_resp = MagicMock(status_code=500, text="boom")
-    mock_client = MagicMock()
-    mock_client.post = AsyncMock(return_value=mock_resp)
 
     p1, p2, p3 = _patch_common()
     with (
         p1,
         p2,
         p3,
-        patch("voice.tts_taigi.get_http_client", return_value=mock_client),
+        patch("voice.tts_taigi.synthesize_segments", new=AsyncMock(return_value=[mock_resp])),
         patch("voice.tts_taigi.get_telemetry") as mock_get_telemetry,
     ):
         svc = TaigiTTSService()
@@ -119,15 +119,12 @@ def test_run_tts_cancelled_mid_request_records_cancelled_outcome():
         await asyncio.sleep(10)
         raise AssertionError("should have been cancelled before this returns")
 
-    mock_client = MagicMock()
-    mock_client.post = AsyncMock(side_effect=_slow_post)
-
     p1, p2, p3 = _patch_common()
     with (
         p1,
         p2,
         p3,
-        patch("voice.tts_taigi.get_http_client", return_value=mock_client),
+        patch("voice.tts_taigi.synthesize_segments", new=AsyncMock(side_effect=_slow_post)),
         patch("voice.tts_taigi.get_telemetry") as mock_get_telemetry,
     ):
         svc = TaigiTTSService()

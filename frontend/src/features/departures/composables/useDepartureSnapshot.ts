@@ -3,6 +3,7 @@ import { computed, onUnmounted, ref } from "vue"
 
 import { apiBaseUrl } from "@/lib/api"
 import { UI_FALLBACK_MESSAGES } from "@/lib/api-messages"
+import { reportClientEvent } from "@/lib/report-client-event"
 
 import { DeparturesApiError, fetchDeparturesHere } from "../api/departures"
 import type { StopDepartureSnapshot } from "../types"
@@ -33,7 +34,22 @@ export function useDepartureSnapshot() {
   source.onopen = () => { sseConnected.value = true }
   source.onerror = () => { sseConnected.value = false }
   source.onmessage = (event) => {
-    const payload = JSON.parse(event.data) as StopDepartureSnapshot | { error: string }
+    let payload: StopDepartureSnapshot | { error: string }
+    try {
+      payload = JSON.parse(event.data) as StopDepartureSnapshot | { error: string }
+    } catch (error) {
+      ssePushError.value = UI_FALLBACK_MESSAGES.departuresUnavailable
+      reportClientEvent(
+        "departures_sse_invalid_json",
+        error instanceof Error ? error.message : String(error),
+      )
+      return
+    }
+    if (!payload || typeof payload !== "object") {
+      ssePushError.value = UI_FALLBACK_MESSAGES.departuresUnavailable
+      reportClientEvent("departures_sse_invalid_payload", "SSE payload is not an object")
+      return
+    }
     if ("error" in payload) {
       ssePushError.value = payload.error
       return

@@ -14,11 +14,13 @@ import time
 from types import SimpleNamespace
 from typing import Any
 
+from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
+
 from agent.diagnostics import log_diagnostic
 from agent.error import summarize_error
 from telemetry import AgentTelemetry
 
-_LLM_MAX_RETRIES = 3
+_LLM_MAX_ATTEMPTS = 3
 
 _CONTEXT_ERROR_MARKERS = (
     "context length",
@@ -54,6 +56,12 @@ def _looks_like_context_error(error: Exception) -> bool:
 def _looks_like_tool_call_failure(error: Exception) -> bool:
     text = str(error).lower()
     return any(marker in text for marker in _TOOL_CALL_FAILED_MARKERS)
+
+
+def _is_retryable_error(error: Exception) -> bool:
+    if isinstance(error, APIConnectionError | APITimeoutError | RateLimitError):
+        return True
+    return isinstance(error, APIStatusError) and error.status_code >= 500
 
 
 def _output_content(response: Any) -> str:
@@ -112,7 +120,7 @@ async def call_llm_stream(
     看到 tool_call delta 就停止對外 yield content（那是前導推理，不該進 TTS），
     但仍完整累積供歷史使用。
     """
-    for attempt in range(_LLM_MAX_RETRIES):
+    for attempt in range(_LLM_MAX_ATTEMPTS):
         retry_error: Exception | None = None
         started = time.perf_counter()
         delta_emitted = False
@@ -175,7 +183,7 @@ async def call_llm_stream(
                     raise ContextWindowExceeded(str(e)) from e
                 if _looks_like_tool_call_failure(e):
                     raise ToolCallFailed(str(e)) from e
-                if delta_emitted or attempt == _LLM_MAX_RETRIES - 1:
+                if delta_emitted or not _is_retryable_error(e) or attempt == _LLM_MAX_ATTEMPTS - 1:
                     raise
                 telemetry.record_llm_retry(operation=operation, error_type=error_type)
                 retry_error = e
@@ -214,7 +222,7 @@ async def call_llm(
     tool_choice: str = "required",
 ):
     """呼叫 LLM，暫時性錯誤退避重試，context overflow 交回 session 修復。"""
-    for attempt in range(_LLM_MAX_RETRIES):
+    for attempt in range(_LLM_MAX_ATTEMPTS):
         retry_error: Exception | None = None
         started = time.perf_counter()
         with telemetry.start_span(
@@ -256,7 +264,7 @@ async def call_llm(
                     raise ContextWindowExceeded(str(e)) from e
                 if _looks_like_tool_call_failure(e):
                     raise ToolCallFailed(str(e)) from e
-                if attempt == _LLM_MAX_RETRIES - 1:
+                if not _is_retryable_error(e) or attempt == _LLM_MAX_ATTEMPTS - 1:
                     raise
                 telemetry.record_llm_retry(
                     operation=operation,

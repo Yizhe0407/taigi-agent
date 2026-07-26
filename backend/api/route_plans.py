@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from services.kiosk_config import get_kiosk_config
@@ -16,6 +16,8 @@ from services.route_plans import (
     plan_route_to_coordinate,
     route_plan_to_view_model,
 )
+
+from .request_limits import ROUTE_PLAN_RATE_LIMIT
 
 router = APIRouter()
 
@@ -120,7 +122,11 @@ def get_kiosk() -> object:
     )
 
 
-@router.post("/api/route-plans", response_model=RoutePlanResponse)
+@router.post(
+    "/api/route-plans",
+    response_model=RoutePlanResponse,
+    dependencies=[Depends(ROUTE_PLAN_RATE_LIMIT)],
+)
 async def create_route_plan(request: RoutePlanRequest) -> object:
     """Plan from the configured Kiosk origin to a frontend-selected destination."""
     try:

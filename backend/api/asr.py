@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from providers.http import get_http_client
 from telemetry import get_telemetry
+
+from .request_limits import ASR_RATE_LIMIT
 
 router = APIRouter()
 
@@ -52,7 +54,7 @@ class TranscriptionResponse(BaseModel):
     text: str
 
 
-@router.post("/api/asr", response_model=TranscriptionResponse)
+@router.post("/api/asr", response_model=TranscriptionResponse, dependencies=[Depends(ASR_RATE_LIMIT)])
 async def transcribe_audio(request: Request, file: UploadFile) -> object:
     """Proxy multipart audio to the Qwen3-ASR endpoint and return transcription text.
 
@@ -67,10 +69,14 @@ async def transcribe_audio(request: Request, file: UploadFile) -> object:
     if content_length and content_length.isdigit() and int(content_length) > _ASR_MAX_BYTES:
         raise HTTPException(status_code=413, detail="音訊檔案過大（上限 25 MB）")
 
-    audio_bytes = await file.read()
-    if len(audio_bytes) > _ASR_MAX_BYTES:
-        # Second guard: chunked upload without Content-Length header.
-        raise HTTPException(status_code=413, detail="音訊檔案過大（上限 25 MB）")
+    chunks: list[bytes] = []
+    received = 0
+    while chunk := await file.read(1024 * 1024):
+        received += len(chunk)
+        if received > _ASR_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="音訊檔案過大（上限 25 MB）")
+        chunks.append(chunk)
+    audio_bytes = b"".join(chunks)
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="音訊檔案是空的")
 

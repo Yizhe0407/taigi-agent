@@ -57,8 +57,9 @@ export class OfficialCubismAvatar {
     this.host.appendChild(this.canvas)
   }
 
-  async load() {
+  async load(signal: AbortSignal) {
     await ensureCubismFramework()
+    signal.throwIfAborted()
     this.resize()
 
     this.gl = createWebGlContext(this.canvas)
@@ -66,11 +67,13 @@ export class OfficialCubismAvatar {
 
     const modelUrl = new URL(this.modelSrc, window.location.href)
     const modelRootUrl = new URL(".", modelUrl)
-    const settingBuffer = await fetchArrayBuffer(modelUrl)
+    const settingBuffer = await fetchArrayBuffer(modelUrl, signal)
+    signal.throwIfAborted()
     const setting = new CubismModelSettingJson(settingBuffer, settingBuffer.byteLength)
 
     const mocUrl = new URL(setting.getModelFileName(), modelRootUrl)
-    const mocBuffer = await fetchArrayBuffer(mocUrl)
+    const mocBuffer = await fetchArrayBuffer(mocUrl, signal)
+    signal.throwIfAborted()
 
     this.model = new CubismUserModel()
     this.model.loadModel(mocBuffer, false)
@@ -81,7 +84,8 @@ export class OfficialCubismAvatar {
     this.renderer.startUp(this.gl)
     this.renderer.setIsPremultipliedAlpha(true)
 
-    await this.loadTextures(setting, modelRootUrl)
+    await this.loadTextures(setting, modelRootUrl, signal)
+    signal.throwIfAborted()
     this.start()
   }
 
@@ -105,6 +109,7 @@ export class OfficialCubismAvatar {
   }
 
   dispose() {
+    if (this.disposed) return
     this.disposed = true
     cancelAnimationFrame(this.frameId)
 
@@ -143,7 +148,7 @@ export class OfficialCubismAvatar {
     modelMatrix.translate(-centerX * scale, -centerY * scale + targetCenterY)
   }
 
-  private async loadTextures(setting: any, modelRootUrl: URL) {
+  private async loadTextures(setting: any, modelRootUrl: URL, signal: AbortSignal) {
     const textureDirectory = setting.getTextureDirectory()
 
     for (let index = 0; index < setting.getTextureCount(); index += 1) {
@@ -151,7 +156,8 @@ export class OfficialCubismAvatar {
       const texturePath = textureFileName.includes("/") || !textureDirectory
         ? textureFileName
         : `${textureDirectory}/${textureFileName}`
-      const image = await loadImage(new URL(texturePath, modelRootUrl))
+      const image = await loadImage(new URL(texturePath, modelRootUrl), signal)
+      signal.throwIfAborted()
       const texture = createTexture(this.gl!, image)
 
       this.textures.push(texture)
@@ -351,19 +357,40 @@ function createWebGlContext(canvas: HTMLCanvasElement) {
   return canvas.getContext("webgl2", options) ?? canvas.getContext("webgl", options)
 }
 
-async function fetchArrayBuffer(url: URL) {
-  const response = await fetch(url)
+async function fetchArrayBuffer(url: URL, signal: AbortSignal) {
+  const response = await fetch(url, { signal })
   if (!response.ok) throw new Error(`Unable to load ${url.pathname}`)
   return response.arrayBuffer()
 }
 
-async function loadImage(url: URL) {
+async function loadImage(url: URL, signal: AbortSignal) {
   const image = new Image()
   image.decoding = "async"
 
   await new Promise<void>((resolve, reject) => {
-    image.onload = () => resolve()
-    image.onerror = () => reject(new Error(`Unable to load ${url.pathname}`))
+    const cleanup = () => {
+      image.onload = null
+      image.onerror = null
+      signal.removeEventListener("abort", abort)
+    }
+    const abort = () => {
+      cleanup()
+      image.src = ""
+      reject(new DOMException("Live2D image load aborted", "AbortError"))
+    }
+    image.onload = () => {
+      cleanup()
+      resolve()
+    }
+    image.onerror = () => {
+      cleanup()
+      reject(new Error(`Unable to load ${url.pathname}`))
+    }
+    signal.addEventListener("abort", abort, { once: true })
+    if (signal.aborted) {
+      abort()
+      return
+    }
     image.src = url.href
   })
 

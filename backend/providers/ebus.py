@@ -22,10 +22,14 @@ ETA value:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import re
 import time
+import uuid
 from collections.abc import Callable
+from pathlib import Path
 
 from providers.http import get_http_client
 
@@ -36,6 +40,7 @@ _ROUTE_MAP_TTL = 86400.0  # route list changes at most daily
 _ESTIMATE_TTL = 30.0  # real-time; same cadence as TDX
 _STOP_ROUTE_TTL = 86400.0  # which routes serve a stop changes at most daily
 _STOP_ROUTE_PARTIAL_TTL = 60.0  # short TTL when the scan had per-route failures
+_ROUTE_INDEX_SCHEMA_VERSION = 1
 
 # Strips trailing alpha/Chinese-character suffixes used in sub-route variants:
 # "7120A" → "7120", "101甲" → "101". Used as fallback when exact name not found.
@@ -144,6 +149,7 @@ class EbusBusProvider:
         estimate_ttl: float = _ESTIMATE_TTL,
         stop_route_ttl: float = _STOP_ROUTE_TTL,
         clock: Callable[[], float] = time.monotonic,
+        route_index_path: Path | str | None = None,
     ) -> None:
         self._route_map_ttl = route_map_ttl
         self._estimate_ttl = estimate_ttl
@@ -157,8 +163,10 @@ class EbusBusProvider:
         # had_failures=True uses _STOP_ROUTE_PARTIAL_TTL so a route that failed
         # mid-scan gets re-checked soon instead of staying "missing" for 24h.
         self._stop_route_cache: dict[str, tuple[float, dict[str, dict], bool]] = {}
-        # per-stop locks prevent concurrent cache-miss storms (thundering herd)
-        self._stop_route_locks: dict[str, asyncio.Lock] = {}
+        # A single scan builds every stop, so all misses share one lock.
+        self._route_index_lock = asyncio.Lock()
+        self._route_index_path = Path(route_index_path) if route_index_path is not None else None
+        self._load_persisted_route_index()
 
     def _expired(self, fetched_at: float, ttl: float) -> bool:
         return (self._clock() - fetched_at) >= ttl
@@ -196,6 +204,50 @@ class EbusBusProvider:
         """Pre-fetch /api/route at startup so the first fetch_route_estimate is warm."""
         await self._load_route_map()
 
+    def _load_persisted_route_index(self) -> None:
+        path = self._route_index_path
+        if path is None:
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            saved_at = float(payload["saved_at"])
+            stops = payload["stops"]
+            if payload.get("schema_version") != _ROUTE_INDEX_SCHEMA_VERSION or not isinstance(stops, dict):
+                raise ValueError("unsupported route index schema")
+            if time.time() - saved_at >= self._stop_route_ttl:
+                return
+            fetched_at = self._clock()
+            for stop_name, info in stops.items():
+                if isinstance(stop_name, str) and isinstance(info, dict):
+                    self._stop_route_cache[stop_name] = (fetched_at, info, False)
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+            _log.warning("Ignoring invalid persisted ebus route index %s: %s", path, error)
+
+    def _write_persisted_route_index(self, stops: dict[str, dict[str, dict]]) -> None:
+        path = self._route_index_path
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(
+                json.dumps(
+                    {
+                        "schema_version": _ROUTE_INDEX_SCHEMA_VERSION,
+                        "saved_at": time.time(),
+                        "stops": stops,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
     async def find_routes_at_stop(self, stop_name: str) -> dict[str, dict]:
         """Discover all routes serving stop_name by scanning all route estimates. Cached 24h
         (or 60s if the scan had per-route failures — see `_STOP_ROUTE_PARTIAL_TTL`).
@@ -207,9 +259,8 @@ class EbusBusProvider:
         if cached is not None and not self._expired(cached[0], self._stop_route_ttl if not cached[2] else _STOP_ROUTE_PARTIAL_TTL):
             return cached[1]
 
-        lock = self._stop_route_locks.setdefault(stop_name, asyncio.Lock())
-        async with lock:
-            # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
+        async with self._route_index_lock:
+            # Re-check after acquiring: the first caller builds every stop.
             cached = self._stop_route_cache.get(stop_name)
             if cached is not None and not self._expired(cached[0], self._stop_route_ttl if not cached[2] else _STOP_ROUTE_PARTIAL_TTL):
                 return cached[1]
@@ -218,31 +269,43 @@ class EbusBusProvider:
             names = list(route_map.keys())
             sem = asyncio.Semaphore(20)
 
-            async def _check(name: str) -> dict | None:
+            async def _check(name: str) -> tuple[dict, set[str]] | None:
                 async with sem:
                     rows = await self.fetch_route_estimate(name)
                     if not rows:
                         return None
-                    if not any(stop_name in r.get("stop_name", "") for r in rows):
-                        return None
                     terminals = _terminals_from_estimate(rows)
-                    return {"id": name, **terminals}
+                    stop_names = {str(row.get("stop_name") or "").strip() for row in rows}
+                    stop_names.discard("")
+                    return {"id": name, **terminals}, stop_names
 
             results = await asyncio.gather(*[_check(n) for n in names], return_exceptions=True)
-            info: dict[str, dict] = {}
+            route_index: dict[str, dict[str, dict]] = {}
             had_failures = False
             for name, result in zip(names, results):
                 if isinstance(result, BaseException):
                     _log.warning("ebus route scan failed for %s: %s", name, result)
                     had_failures = True
                 elif result is not None:
-                    info[name] = result
+                    route_info, stop_names = result
+                    for exact_stop_name in stop_names:
+                        route_index.setdefault(exact_stop_name, {})[name] = route_info
+
+            info = route_index.get(stop_name.strip(), {})
 
             if not info and cached is not None:
                 _log.warning("ebus route scan returned empty; serving stale for %s", stop_name)
                 return cached[1]
 
-            self._stop_route_cache[stop_name] = (self._clock(), info, had_failures)
+            fetched_at = self._clock()
+            for exact_stop_name, exact_info in route_index.items():
+                self._stop_route_cache[exact_stop_name] = (fetched_at, exact_info, had_failures)
+            self._stop_route_cache.setdefault(stop_name, (fetched_at, {}, had_failures))
+            if not had_failures and route_index:
+                try:
+                    await asyncio.to_thread(self._write_persisted_route_index, route_index)
+                except OSError as error:
+                    _log.warning("Unable to persist ebus route index: %s", error)
             return info
 
     async def fetch_route_estimate(self, sub_route_name: str) -> list[dict] | None:
@@ -280,7 +343,7 @@ class EbusBusProvider:
             route_rows = await self.fetch_route_estimate(name)
             if route_rows is None:
                 return []
-            matching = [r for r in route_rows if stop_name in r.get("stop_name", "")]
+            matching = [r for r in route_rows if str(r.get("stop_name") or "").strip() == stop_name.strip()]
             return _dedup_eta_by_min_seq([_route_est_to_eta(r, name) for r in matching])
 
         tasks = [_one(name) for name in route_names]

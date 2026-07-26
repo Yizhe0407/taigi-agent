@@ -12,72 +12,34 @@ X-Hanlo-Text / X-Tailo-Text header 帶 URL-encoded 轉換結果，供前端 debu
 
 from __future__ import annotations
 
-import asyncio
 import io
-import re
 import time
 import urllib.parse
 import wave
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from config import get_settings
 from pipeline.text_processor import process_async as text_process_async
 from pipeline.tts_normalizer import normalize_for_tts
-from providers.http import get_http_client
+from services.taigi_tts import (
+    TTSConfigError,
+    TTSSegmentLimitError,
+    load_tts_config,
+    split_tailo,
+    synthesize_segments,
+)
 from telemetry import get_telemetry
 
-router = APIRouter()
+from .request_limits import TTS_RATE_LIMIT
 
-_TTS_TIMEOUT_SECONDS = 30
-_COMMA_SILENCE_MS = 150
-_PERIOD_SILENCE_MS = 350
+router = APIRouter()
 
 
 class TTSRequest(BaseModel):
     text: str = Field(min_length=1, max_length=5000)
-
-
-def _tts_config() -> tuple[str, str, str, str]:
-    """Return (base_url, model, voice, api_key). Raise 503 if TTS_BASE_URL not set."""
-    settings = get_settings()
-    if not settings.tts_base_url:
-        raise HTTPException(
-            status_code=503,
-            detail="TTS 服務尚未設定（TTS_BASE_URL）",
-        )
-    return (
-        settings.tts_base_url.rstrip("/"),
-        settings.tts_model,
-        settings.tts_voice,
-        settings.tts_api_key,
-    )
-
-
-def _split_tailo(tailo: str) -> list[tuple[str, int]]:
-    """Split Tailo romanization into (segment, silence_ms_after) pairs.
-
-    Splits at ',' and '.'; trailing segment gets 0ms silence.
-    """
-    parts = re.split(r"([.,])", tailo.strip())
-    result: list[tuple[str, int]] = []
-    i = 0
-    while i < len(parts):
-        seg = parts[i].strip()
-        sep = parts[i + 1] if i + 1 < len(parts) else None
-        if seg:
-            if sep == ".":
-                silence_ms = _PERIOD_SILENCE_MS
-            elif sep == ",":
-                silence_ms = _COMMA_SILENCE_MS
-            else:
-                silence_ms = 0
-            result.append((seg, silence_ms))
-        i += 2
-    return result or [(tailo.strip(), 0)]
 
 
 def _make_silence(n_frames: int, n_channels: int, sampwidth: int) -> bytes:
@@ -119,7 +81,7 @@ def _concat_wav(wav_bytes_list: list[bytes], silences_ms: list[int]) -> bytes:
     return buf.getvalue()
 
 
-@router.post("/api/tts")
+@router.post("/api/tts", dependencies=[Depends(TTS_RATE_LIMIT)])
 async def synthesize(body: TTSRequest) -> Response:
     """Synthesize Taiwanese Hokkien speech from Mandarin text.
 
@@ -133,7 +95,10 @@ async def synthesize(body: TTSRequest) -> Response:
       X-Hanlo-Text — URL-encoded 漢羅 intermediate (for frontend debug)
       X-Tailo-Text — URL-encoded Tailo romanization (for frontend debug)
     """
-    base_url, model, voice, api_key = _tts_config()
+    try:
+        config = load_tts_config()
+    except TTSConfigError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
     # ── Step 1 + 2: Mandarin → 漢羅 → Tailo ──────────────────────────────────
     tel = get_telemetry()
@@ -155,37 +120,18 @@ async def synthesize(body: TTSRequest) -> Response:
         raise HTTPException(status_code=422, detail="無法將輸入文字轉為台語發音")
 
     # ── Step 3: split Tailo at punctuation ───────────────────────────────────
-    segments = _split_tailo(result.tailo)
+    try:
+        segments = split_tailo(result.tailo)
+    except TTSSegmentLimitError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
     # ── Step 4: concurrent TTS requests ──────────────────────────────────────
-    req_headers: dict[str, str] = {"Content-Type": "application/json"}
-    if api_key:
-        req_headers["Authorization"] = f"Bearer {api_key}"
-
-    base_payload: dict = {"model": model, "voice": voice}
-
     t1 = time.perf_counter()
     try:
         with tel.start_span("tts.synthesize", {"tts.segments": len(segments)}):
-            client = get_http_client()
-            responses = await asyncio.gather(
-                *[
-                    client.post(
-                        f"{base_url}/v1/audio/speech",
-                        headers=req_headers,
-                        json={**base_payload, "input": seg},
-                        timeout=_TTS_TIMEOUT_SECONDS,
-                    )
-                    for seg, _ in segments
-                ],
-                return_exceptions=True,
-            )
-            # return_exceptions=True keeps one failed segment from leaving its
-            # sibling requests dangling (unclosed responses / unhandled tasks).
-            # Re-raise so the existing httpx.TimeoutException / RequestError
-            # handlers below still apply uniformly.
+            responses = await synthesize_segments(config, segments)
             for resp in responses:
-                if isinstance(resp, BaseException):
+                if isinstance(resp, Exception):
                     raise resp
                 if resp.status_code != 200:
                     raise HTTPException(
@@ -195,7 +141,7 @@ async def synthesize(body: TTSRequest) -> Response:
     except HTTPException:
         tel.record_pipeline_stage(time.perf_counter() - t1, stage="tts.synthesize", outcome="upstream_error")
         raise
-    except httpx.TimeoutException as err:
+    except (httpx.TimeoutException, TimeoutError) as err:
         tel.record_pipeline_stage(time.perf_counter() - t1, stage="tts.synthesize", outcome="timeout")
         raise HTTPException(status_code=504, detail="TTS 服務逾時") from err
     except httpx.RequestError as err:
@@ -204,9 +150,10 @@ async def synthesize(body: TTSRequest) -> Response:
     tel.record_pipeline_stage(time.perf_counter() - t1, stage="tts.synthesize", outcome="ok")
 
     # ── Step 5: concatenate WAV with silence ──────────────────────────────────
+    successful_responses = [response for response in responses if isinstance(response, httpx.Response)]
     silences_ms = [ms for _, ms in segments]
     try:
-        audio_bytes = _concat_wav([r.content for r in responses], silences_ms)
+        audio_bytes = _concat_wav([response.content for response in successful_responses], silences_ms)
     except (ValueError, wave.Error) as err:
         raise HTTPException(status_code=502, detail=f"TTS 音訊格式異常：{err}") from err
     tel.record_tts_audio_bytes(len(audio_bytes))
