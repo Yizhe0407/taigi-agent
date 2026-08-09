@@ -84,3 +84,41 @@ jobs:
 
       - name: Dependency audit
         run: pnpm audit --prod --audit-level high
+
+  deployment:
+    name: Deployment files
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          while IFS= read -r -d '' file; do
+            bash -n "$file"
+          done < <(find deploy -type f -name '*.sh' -print0)
+
+      - name: Test deployment helpers
+        run: bash deploy/tests/test_lib.sh
+
+      - name: Render service templates
+        shell: bash
+        run: |
+          export APP_USER=taigi
+          export APP_GROUP=taigi
+          export DEPLOY_ROOT=/opt/taigi-agent
+          export ENV_FILE=/etc/taigi-agent/taigi-agent.env
+          export BACKEND_PORT=8080
+          export WEB_PORT=3000
+          source deploy/lib.sh
+          unit_file="$(mktemp)"
+          nginx_file="$(mktemp)"
+          trap 'rm -f "$unit_file" "$nginx_file"' EXIT
+          render_template deploy/systemd/taigi-agent.service.in "$unit_file"
+          render_template deploy/nginx/taigi-agent.conf.in "$nginx_file"
+          ! grep -q '@@' "$unit_file" "$nginx_file"
+          grep -q -- '--workers 1' "$unit_file"
+          grep -q 'listen 127.0.0.1:3000' "$nginx_file"
+          grep -q 'proxy_buffering off' "$nginx_file"

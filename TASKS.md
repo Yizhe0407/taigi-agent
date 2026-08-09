@@ -52,6 +52,7 @@
 - 後台管理：`/admin` 站牌切換 UI；runtime `KioskConfig` singleton；`/api/admin/kiosk` GET/PUT、`/api/admin/stops`；不需重啟即可切換站牌與方向。
 - **公車資料來源雙 provider 架構**：`providers/hybrid.py` 為唯一線上 `BusProvider` runtime；路線目錄（`load_route_info`、`fetch_routes_at_stop`）由 TDX 提供，ETA（`fetch_eta_at_stop`、`fetch_route_estimate`）由 ebus.yunlin.gov.tw 主力，ebus 空值時 fallback 至 TDX intercity。TDX Direction 0/1，`route_id` 全層為 SubRouteName string，`_classify_stop` 讀 `stop_status`/`estimate_seconds`。
 - 語音基礎：ASR proxy、前端錄音、TTS proxy、台語文字處理、分段播放；ASR 錯誤訊息不外洩原始 Python exception。
+- 正式部署：systemd 單 worker backend、loopback Nginx、immutable release、health check、自動失敗回切與指定版本 rollback；操作文件見 `docs/production-deployment.md`。
 - 串流回覆：`AgentSession.respond_stream` 逐句輸出 → 語音逐句 TTS（首音不等完整回覆）、chat SSE 逐字上屏、departures SSE 隨 ETA warmup tick 推播（取代輪詢相位差）。
 - 方向過濾 auto-detect：`_is_terminal_direction()` 自動過濾終點到站方向；admin 設定「去回程都有」時啟動，設定單方向時直接照設定過濾；循環路線不過濾。
 - **ASR 聽錯救援強化**（2026-07-14 收官，60 案分類測試集：完全成功 41.7%→約 90%、成功含部分 96.7%、幻覺否認/退化迴圈/誤救全歸零）：站名 fuzzy 加 pypinyin 無聲調拼音維度；數字路線號用 Damerau-Levenshtein＋音近數字折扣（1/7、4/10、2/8、6/9 替換成本 0.4，首位不打折）；四支查詢工具查無時 renderer 自動用 top 候選重查、真實狀態放進工具回覆；所有 render 路徑輸出收斂成單一結論句且一律用 canonical 站名（「有路線但末班已過」與「無路線」句式分離）；LLM sampling 加 `stop:["\n\n"]`＋`max_tokens:200` 斷退化迴圈（repetition penalty 實測會弄壞 tool-call JSON，勿用）。設計原則：真實狀態由工具給、4B 只改寫成確認句——prompt-only 修法兩度實測無效。剩餘天花板：4B 呼叫工具前自行改字、改寫時複誦錯字原文（各 1-2/60），要再上去需換大模型；ASR 端 hotword biasing（Breeze ASR 走 Whisper 相容 API）是未動工的上游防線。測試集：scratchpad ground_truth_v2.json 60 案六類分層（含控制組），run_rescue_eval_v5.py。

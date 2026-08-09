@@ -1,0 +1,27 @@
+[Unit]
+Description=Taigi Agent backend API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=@@APP_USER@@
+Group=@@APP_GROUP@@
+WorkingDirectory=@@DEPLOY_ROOT@@/current/backend
+EnvironmentFile=@@ENV_FILE@@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@@DEPLOY_ROOT@@/current/backend/.venv/bin/uvicorn api:app --host 127.0.0.1 --port @@BACKEND_PORT@@ --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+LimitNOFILE=65536
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

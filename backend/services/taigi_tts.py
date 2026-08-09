@@ -17,9 +17,8 @@ from dataclasses import dataclass
 
 import httpx
 
-from providers.cloudflare_access import merge_access_headers
-
 from pipeline.text_processor import process_async as text_process_async
+from providers.cloudflare_access import merge_access_headers
 from providers.http import get_http_client
 
 TTS_TIMEOUT_SECONDS = 15.0

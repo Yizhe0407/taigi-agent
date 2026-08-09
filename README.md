@@ -93,6 +93,11 @@ cp .env.example .env
 uv run uvicorn api:app --reload --port 8000
 ```
 
+正式環境部署（systemd + Nginx + release/rollback）見
+[`docs/production-deployment.md`](docs/production-deployment.md)。正式 backend 使用
+`127.0.0.1:8080`；模型服務可保留在 `127.0.0.1:8000`。前端 production build
+使用 same-origin `/api/*`，由 Nginx 轉送到 backend。
+
 LLM、ASR、TTS 若透過 Cloudflare Tunnel 與 Access Service Token 發布，完整設定與
 驗證步驟見 [`docs/cloudflare-model-services.md`](docs/cloudflare-model-services.md)。
 
