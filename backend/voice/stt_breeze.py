@@ -16,7 +16,7 @@ from pipecat.frames.frames import Frame, TranscriptionFrame, TTSSpeakFrame
 from pipecat.services.settings import STTSettings
 from pipecat.services.stt_service import SegmentedSTTService
 
-from providers.asr import get_asr_config, post_asr_audio
+from providers.asr import build_asr_headers, get_asr_config, post_asr_audio
 from telemetry import get_telemetry
 
 _log = logging.getLogger(__name__)
@@ -56,9 +56,7 @@ class BreezeSTTService(SegmentedSTTService):
 
         get_telemetry().record_asr_audio_bytes(len(audio))
 
-        headers: dict[str, str] = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+        headers = build_asr_headers(api_key)
 
         try:
             response = await post_asr_audio(

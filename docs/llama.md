@@ -37,18 +37,76 @@ curl -LsSf https://llama.app/install.sh | sh
 
 ### 三、啟動 OpenAI 相容 API 伺服器
 
-執行下列指令。llama.cpp 會自動處理 Hugging Face 模型下載並載入至 GPU：
+#### 4B（本 Cloudflare 流程使用）
+
+[`cloudflare-model-services.md`](cloudflare-model-services.md) 的 Cloudflare Tunnel + Access
+流程使用下列 4B 啟動命令。llama.cpp 會自動處理 Hugging Face 模型下載並載入至 GPU：
 
 ```bash
 llama serve -hf unsloth/Qwen3.5-4B-GGUF:Q8_0 \
   --jinja \
-  --host 0.0.0.0 --port 8000 \
+  --host 127.0.0.1 --port 8000 \
   -ngl 99 \
   -fa on \
   -c 8192 \
   --temp 0 \
   --chat-template-kwargs '{"enable_thinking": false}'
 ```
+
+只走 Cloudflare Tunnel 時綁定 `127.0.0.1`；若確實需要 LAN 直連，才改回 `0.0.0.0`，並自行設定防火牆保護。
+
+#### 4B systemd 開機自動啟動與崩潰重啟
+
+以下段落請以**非 root 的 service account** 執行；它會從該帳號的 `command -v llama` 取得絕對路徑。若已有 `llama-4b` unit，**不可直接覆寫**，先用 `sudo systemctl cat llama-4b` 確認目前設定是否等效，再決定是否調整：
+
+```bash
+SERVICE_USER="$(id -un)"
+if [ "$SERVICE_USER" = root ]; then
+  echo "請以非 root 的 service account 執行此段落" >&2
+  exit 1
+fi
+
+if sudo systemctl cat llama-4b >/dev/null 2>&1; then
+  echo "已有 llama-4b unit；請先確認目前設定，未覆寫任何檔案：" >&2
+  sudo systemctl cat llama-4b
+  exit 1
+fi
+
+SERVICE_HOME="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
+LLAMA_BIN="$(sudo -u "$SERVICE_USER" -H sh -lc 'command -v llama')"
+if [ -z "$SERVICE_HOME" ] || [ -z "$LLAMA_BIN" ] || [ "${LLAMA_BIN#/}" = "$LLAMA_BIN" ]; then
+  echo "找不到 service account 的 llama 絕對路徑或家目錄" >&2
+  exit 1
+fi
+
+sudo tee /etc/systemd/system/llama-4b.service >/dev/null <<EOF
+[Unit]
+Description=Qwen3.5-4B llama.cpp API server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=$SERVICE_USER
+Environment="HOME=$SERVICE_HOME"
+ExecStart=$LLAMA_BIN serve -hf unsloth/Qwen3.5-4B-GGUF:Q8_0 --jinja --host 127.0.0.1 --port 8000 -ngl 99 -fa on -c 8192 --temp 0 --chat-template-kwargs '{"enable_thinking": false}'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now llama-4b
+sudo systemctl is-enabled llama-4b
+sudo systemctl is-active llama-4b
+sudo journalctl -u llama-4b -n 50 --no-pager
+```
+
+#### 9B（替代方案）
+
+下列 9B 啟動命令僅為替代方案，不是上述 Cloudflare 流程使用的預設模型：
 
 ```bash
 llama serve -hf unsloth/Qwen3.5-9B-GGUF:IQ4_NL \

@@ -17,6 +17,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from providers.cloudflare_access import merge_access_headers
+
 from pipeline.text_processor import process_async as text_process_async
 from providers.http import get_http_client
 
@@ -54,6 +56,8 @@ class TTSConfig:
     model: str
     voice: str
     api_key: str
+    cf_access_client_id: str = ""
+    cf_access_client_secret: str = ""
 
 
 def load_tts_config() -> TTSConfig:
@@ -65,6 +69,8 @@ def load_tts_config() -> TTSConfig:
         model=os.getenv("TTS_MODEL", "tts-1"),
         voice=os.getenv("TTS_VOICE", "taigi"),
         api_key=os.getenv("TTS_API_KEY", ""),
+        cf_access_client_id=os.getenv("CF_ACCESS_CLIENT_ID", ""),
+        cf_access_client_secret=os.getenv("CF_ACCESS_CLIENT_SECRET", ""),
     )
 
 
@@ -164,6 +170,11 @@ async def synthesize_segments(
     headers = {"Content-Type": "application/json"}
     if config.api_key:
         headers["Authorization"] = f"Bearer {config.api_key}"
+    headers = merge_access_headers(
+        headers,
+        client_id=config.cf_access_client_id,
+        client_secret=config.cf_access_client_secret,
+    )
     base_payload = {"model": config.model, "voice": config.voice}
     client = get_http_client()
     results: list[httpx.Response | Exception | None] = [None] * len(segments)

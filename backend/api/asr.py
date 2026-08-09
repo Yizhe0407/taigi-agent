@@ -6,7 +6,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
-from providers.asr import ASRConfigError, get_asr_config, post_asr_audio
+from providers.asr import ASRConfigError, build_asr_headers, get_asr_config, post_asr_audio
 from telemetry import get_telemetry
 
 from .request_limits import ASR_RATE_LIMIT
@@ -54,9 +54,7 @@ async def transcribe_audio(request: Request, file: UploadFile) -> object:
     filename = file.filename or "audio.webm"
     content_type = file.content_type or "audio/webm"
 
-    headers: dict[str, str] = {}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    headers = build_asr_headers(api_key)
 
     try:
         response = await post_asr_audio(

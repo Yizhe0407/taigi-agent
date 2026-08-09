@@ -13,6 +13,7 @@ import os
 
 import httpx
 
+from providers.cloudflare_access import merge_access_headers
 from providers.http import get_http_client
 
 ASR_TIMEOUT_SECONDS = 30
@@ -33,6 +34,14 @@ def get_asr_config() -> tuple[str, str, str]:
     if not base_url or not model:
         raise ASRConfigError("ASR 服務尚未設定（ASR_BASE_URL / ASR_MODEL）")
     return base_url.rstrip("/"), model, os.getenv("ASR_API_KEY", "")
+
+
+def build_asr_headers(api_key: str) -> dict[str, str]:
+    """Build upstream ASR headers, including optional Cloudflare Access auth."""
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return merge_access_headers(headers)
 
 
 async def post_asr_audio(

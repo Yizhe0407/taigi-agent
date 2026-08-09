@@ -93,6 +93,9 @@ cp .env.example .env
 uv run uvicorn api:app --reload --port 8000
 ```
 
+LLM、ASR、TTS 若透過 Cloudflare Tunnel 與 Access Service Token 發布，完整設定與
+驗證步驟見 [`docs/cloudflare-model-services.md`](docs/cloudflare-model-services.md)。
+
 離站決策首頁使用：
 
 - `GET /api/departures/here`：本站路線、方向、到站 / 未發車 / 末班決策

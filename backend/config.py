@@ -24,6 +24,7 @@ from openai import AsyncOpenAI
 from agent.prompt import build_system_prompt
 from agent.session import AgentSession, InputEnricher
 from agent.tools import TOOL_HANDLERS, TOOL_SCHEMAS
+from providers.cloudflare_access import access_headers
 from telemetry import configure_telemetry
 
 # Anti-degeneration sampling. On confirmation turns ("對") Qwen3.5-4B loops the
@@ -68,6 +69,10 @@ class Settings:
     tts_voice: str  # voice name forwarded to /v1/audio/speech
     tts_api_key: str  # empty string = no Authorization header
 
+    # ── Cloudflare Access (optional service-token headers) ───────────────────
+    cf_access_client_id: str
+    cf_access_client_secret: str
+
     # ── HTTP API ───────────────────────────────────────────────────────────────
     cors_origins: list[str]
 
@@ -98,6 +103,8 @@ class Settings:
             tts_model=os.getenv("TTS_MODEL", "tts-1"),
             tts_voice=os.getenv("TTS_VOICE", "taigi"),
             tts_api_key=os.getenv("TTS_API_KEY", ""),
+            cf_access_client_id=os.getenv("CF_ACCESS_CLIENT_ID", ""),
+            cf_access_client_secret=os.getenv("CF_ACCESS_CLIENT_SECRET", ""),
             cors_origins=parse_cors_origins(),
         )
 
@@ -109,8 +116,13 @@ def get_settings() -> Settings:
 
 
 @functools.lru_cache(maxsize=4)
-def _make_llm_client(base_url: str, api_key: str) -> AsyncOpenAI:
-    """Build (and cache) an `AsyncOpenAI` client per (base_url, api_key) pair.
+def _make_llm_client(
+    base_url: str,
+    api_key: str,
+    cf_access_client_id: str = "",
+    cf_access_client_secret: str = "",
+) -> AsyncOpenAI:
+    """Build (and cache) an `AsyncOpenAI` client per endpoint/auth-header tuple.
 
     `lru_cache` makes this a process-wide singleton per key — cheap for the
     normal case (one event loop, one process) but two things to know:
@@ -134,7 +146,13 @@ def _make_llm_client(base_url: str, api_key: str) -> AsyncOpenAI:
     )
     # Retry ownership stays in agent.llm_client so one observable attempt maps
     # to exactly one HTTP attempt. SDK retries would otherwise multiply it.
-    return AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout, max_retries=0)
+    return AsyncOpenAI(
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+        max_retries=0,
+        default_headers=access_headers(cf_access_client_id, cf_access_client_secret),
+    )
 
 
 def make_agent_session(
@@ -147,7 +165,12 @@ def make_agent_session(
     session rehydration don't duplicate the OpenAI client + session wiring.
     """
     return AgentSession(
-        client=_make_llm_client(settings.llm_base_url, settings.llm_api_key),
+        client=_make_llm_client(
+            settings.llm_base_url,
+            settings.llm_api_key,
+            settings.cf_access_client_id,
+            settings.cf_access_client_secret,
+        ),
         model=settings.llm_model,
         system_prompt=build_system_prompt(),
         tool_schemas=TOOL_SCHEMAS,
