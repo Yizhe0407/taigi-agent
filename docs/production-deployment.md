@@ -93,7 +93,7 @@ cd /path/to/taigi-agent
 5. 將 `.env` 與 `.agent_state/` 改為共享路徑，避免更新覆蓋 secrets/runtime state。
 6. 安裝並驗證 systemd、Nginx 設定。
 7. 啟動 `taigi-agent.service`，reload Nginx。
-8. 驗證 backend health、Nginx proxy 與 frontend SPA。
+8. 等待 backend ready，再驗證 backend health、Nginx proxy 與 frontend SPA。
 
 ## 4. 版本與檔案位置
 

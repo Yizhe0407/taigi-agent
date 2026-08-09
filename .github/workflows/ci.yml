@@ -101,7 +101,9 @@ jobs:
           done < <(find deploy -type f -name '*.sh' -print0)
 
       - name: Test deployment helpers
-        run: bash deploy/tests/test_lib.sh
+        run: |
+          bash deploy/tests/test_lib.sh
+          bash deploy/tests/test_verify.sh
 
       - name: Render service templates
         shell: bash
