@@ -186,6 +186,26 @@ sudo systemctl enable nginx
 
 systemd backend 使用 `Restart=on-failure`。Cloudflare Tunnel、LLM、ASR、TTS 是否開機啟動，取決於各自的 systemd service；它們不是由本 repo 的 `taigi-agent.service` 啟動。模型服務必須先能在 `LLM_BASE_URL`、`ASR_BASE_URL`、`TTS_BASE_URL` 提供服務。
 
-## 9. WebRTC 限制
+## 9. 公網 WebRTC / Cloudflare Realtime TURN
 
-`/api/voice/offer` 的 HTTP signaling 可以經由 HTTPS/Cloudflare 到達 backend；Cloudflare Tunnel 不會自動替 WebRTC media 提供 STUN/TURN。若 kiosk 與 backend 不在同一個可直連網路，仍需設定可達的 STUN/TURN/ICE 路徑，否則 voice 連線可能只成功 signaling、無法傳音訊。
+Cloudflare Tunnel 只轉送 `/api/voice/offer` signaling，不轉送 WebRTC media。公網語音必須另外設定 Cloudflare Realtime TURN：
+
+1. 在 Cloudflare Dashboard 的 Realtime TURN 建立 TURN key。
+2. 將 persistent key ID 與 API token 只寫入正式主機的 `/etc/taigi-agent/taigi-agent.env`：
+
+   ```dotenv
+   CLOUDFLARE_TURN_KEY_ID=...
+   CLOUDFLARE_TURN_KEY_API_TOKEN=...
+   CLOUDFLARE_TURN_TTL_SECONDS=86400
+   ```
+
+3. 不得把 TURN API token 寫進 frontend、Git 或瀏覽器。Backend 會向 Cloudflare 換取短效 credentials，快取到到期前，再由 `/api/voice/ice-servers` 回傳給 browser；同一組 ICE servers 也會套用到 server-side aiortc。
+4. 更新環境後重啟並檢查：
+
+   ```bash
+   sudo systemctl restart taigi-agent.service
+   curl -fsS http://127.0.0.1:3000/api/voice/ice-servers
+   sudo journalctl -u taigi-agent.service -n 100 --no-pager
+   ```
+
+`/api/voice/ice-servers` 應回傳含 `turn:` 或 `turns:` 的 `iceServers`，但不得在文件、issue 或 log 貼出其中的短效 username/credential。從外網開啟語音後，journal 的 ICE state 應進入 `connected`/`completed`，不應在約 60 秒後 timeout。

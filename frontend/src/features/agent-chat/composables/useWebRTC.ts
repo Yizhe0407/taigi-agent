@@ -5,6 +5,10 @@ import { reportClientEvent } from "@/lib/report-client-event"
 
 export type WebRTCState = "disconnected" | "connecting" | "connected" | "error"
 
+type IceServersResponse = {
+  iceServers: RTCIceServer[]
+}
+
 export type WebRTCCallbacks = {
   /** Final ASR transcript for the user's turn. */
   onTranscript: (text: string) => void
@@ -164,10 +168,23 @@ export function useWebRTC(
     // Create AudioContext inside user gesture so it starts un-suspended
     if (!audioCtx || audioCtx.state === "closed") audioCtx = new AudioContext()
 
-    // No STUN: the backend runs on the same host/LAN, so host candidates suffice.
-    // A STUN server the kiosk can't reach makes ICE gathering stall until the
-    // 3 s timeout below — that was the bulk of the audio start-up delay.
-    pc = new RTCPeerConnection({ iceServers: [] })
+    let iceServers: RTCIceServer[]
+    try {
+      const iceResponse = await fetch(`${apiBaseUrl}/api/voice/ice-servers`)
+      if (!iceResponse.ok) throw new Error(`GET /api/voice/ice-servers -> ${iceResponse.status}`)
+      const payload = await iceResponse.json() as IceServersResponse
+      if (!Array.isArray(payload.iceServers)) throw new Error("Invalid ICE server response")
+      iceServers = payload.iceServers
+    } catch (err) {
+      if (currentId !== connectId || destroyed) return
+      reportClientEvent("webrtc_ice_config_error", err instanceof Error ? err.message : String(err))
+      cleanup()
+      state.value = "error"
+      return
+    }
+
+    if (currentId !== connectId || destroyed) return
+    pc = new RTCPeerConnection({ iceServers })
 
     localStream.getTracks().forEach(t => {
       const sender = pc!.addTrack(t, localStream!)
@@ -262,7 +279,11 @@ export function useWebRTC(
           }
         }
         pc!.addEventListener("icegatheringstatechange", handler)
-        setTimeout(() => { pc?.removeEventListener("icegatheringstatechange", handler); resolve() }, 3000)
+        setTimeout(() => {
+          pc?.removeEventListener("icegatheringstatechange", handler)
+          reportClientEvent("webrtc_ice_gathering_timeout", `ICE gathering state: ${pc?.iceGatheringState ?? "closed"}`)
+          resolve()
+        }, 10000)
       })
 
       if (currentId !== connectId || destroyed || !pc) return

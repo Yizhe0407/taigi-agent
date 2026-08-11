@@ -155,6 +155,7 @@ ASR_RATE_LIMIT = RateLimit(20, 60.0)
 CHAT_SESSION_RATE_LIMIT = RateLimit(10, 60.0)
 CHAT_MESSAGE_RATE_LIMIT = RateLimit(30, 60.0)
 VOICE_RATE_LIMIT = RateLimit(10, 60.0)
+VOICE_ICE_RATE_LIMIT = RateLimit(10, 60.0)
 CLIENT_EVENT_RATE_LIMIT = RateLimit(20, 60.0)
 ADMIN_WRITE_RATE_LIMIT = RateLimit(10, 60.0)
 # Admin's GET endpoints (kiosk config read, stop catalog) aren't the kiosk's

@@ -19,8 +19,14 @@ from pipecat.transports.smallwebrtc.request_handler import (
 
 from agent.diagnostics import log_diagnostic
 from api.chat import get_store
+from providers.cloudflare_turn import (
+    CloudflareTurnConfigurationError,
+    CloudflareTurnUpstreamError,
+    TurnIceServers,
+    get_turn_ice_servers,
+)
 
-from .request_limits import VOICE_RATE_LIMIT
+from .request_limits import VOICE_ICE_RATE_LIMIT, VOICE_RATE_LIMIT
 
 router = APIRouter()
 _log = logging.getLogger(__name__)
@@ -32,6 +38,30 @@ _handler = SmallWebRTCRequestHandler()
 # shutdown (see shutdown() below) can wait for / cancel them instead of
 # leaving them orphaned when the process exits.
 _pipeline_tasks: set[asyncio.Task] = set()
+
+
+async def _configured_ice_servers() -> TurnIceServers:
+    """Load browser/server ICE configuration without exposing persistent secrets."""
+    try:
+        ice_servers = await get_turn_ice_servers()
+    except CloudflareTurnConfigurationError as exc:
+        _log.error("Cloudflare TURN configuration error: %s", exc)
+        raise HTTPException(status_code=503, detail="WebRTC TURN is not configured correctly") from exc
+    except CloudflareTurnUpstreamError as exc:
+        _log.warning("Cloudflare TURN credential request failed: %s", exc)
+        raise HTTPException(status_code=502, detail="WebRTC TURN is temporarily unavailable") from exc
+
+    # SmallWebRTCRequestHandler reads this value when it creates the server-side
+    # aiortc peer connection. The browser gets the matching short-lived values.
+    _handler.update_ice_servers(list(ice_servers.aiortc))
+    return ice_servers
+
+
+@router.get("/api/voice/ice-servers", dependencies=[Depends(VOICE_ICE_RATE_LIMIT)])
+async def webrtc_ice_servers() -> dict:
+    """Return short-lived STUN/TURN credentials safe for use by the browser."""
+    ice_servers = await _configured_ice_servers()
+    return {"iceServers": list(ice_servers.browser)}
 
 
 async def shutdown() -> None:
@@ -68,6 +98,11 @@ async def webrtc_offer(body: dict) -> dict:
     voice and text interactions share a single conversation context.
     If omitted, a new session is created as a fallback (e.g. voice-only mode).
     """
+    # Refresh/apply the same TURN credentials returned to the browser before
+    # creating the server-side peer connection. This also protects non-browser
+    # clients that call the offer endpoint directly.
+    await _configured_ice_servers()
+
     # Prefer the session_id passed by the frontend so voice and text share context.
     # Only create a new session if the client didn't supply one.
     client_session_id: str | None = body.pop("session_id", None)

@@ -103,6 +103,7 @@ validate_env_file() {
     local key value value_lower pair first second first_value second_value
     local pairs=(
         "CF_ACCESS_CLIENT_ID:CF_ACCESS_CLIENT_SECRET"
+        "CLOUDFLARE_TURN_KEY_ID:CLOUDFLARE_TURN_KEY_API_TOKEN"
         "ASR_BASE_URL:ASR_MODEL"
     )
     [[ -f "$file" ]] || die "環境檔不存在：$file"

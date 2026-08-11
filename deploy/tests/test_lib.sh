@@ -45,6 +45,11 @@ write_required_env "$bad_cf_env"
 printf 'CF_ACCESS_CLIENT_ID=client-id\n' >>"$bad_cf_env"
 (validate_env_file "$bad_cf_env") >/dev/null 2>&1 && fail "incomplete Cloudflare Access pair passed validation"
 
+bad_turn_env="$TEST_ROOT/bad-turn.env"
+cp "$good_env" "$bad_turn_env"
+printf 'CLOUDFLARE_TURN_KEY_ID=turn-key-id\n' >>"$bad_turn_env"
+(validate_env_file "$bad_turn_env") >/dev/null 2>&1 && fail "incomplete Cloudflare TURN pair passed validation"
+
 bad_asr_env="$TEST_ROOT/bad-asr.env"
 write_required_env "$bad_asr_env"
 printf 'ASR_MODEL=asr-model\n' >>"$bad_asr_env"
