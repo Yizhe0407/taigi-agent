@@ -52,8 +52,8 @@ async def _eta_warmup_loop() -> None:
 
 from .admin import router as admin_router  # noqa: E402
 from .asr import router as asr_router  # noqa: E402
+from .chat import close_store, run_lock_purge_loop  # noqa: E402
 from .chat import router as chat_router  # noqa: E402
-from .chat import run_lock_purge_loop  # noqa: E402
 from .client_events import router as client_events_router  # noqa: E402
 from .departures import notify_snapshot_refreshed  # noqa: E402
 from .departures import router as departures_router  # noqa: E402
@@ -85,6 +85,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # the shared httpx client goes away — those tasks still make outbound HTTP
         # calls (ASR/TTS) during their own cleanup.
         await voice_shutdown()
+        # Only now is the sqlite connection safe to close: both the lock purge
+        # loop and the voice pipelines query the store, and a query on a closed
+        # connection raises. Must stay after the awaits above, not beside the
+        # .cancel() calls — cancellation isn't delivered until the task runs.
+        close_store()
         provider = get_provider()
         close = getattr(provider, "aclose", None)
         if close is not None:

@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -47,6 +49,9 @@ _LOCK_PURGE_INTERVAL_SECONDS = 300.0
 
 _store: ChatSessionStore | None = None
 _session_locks: dict[str, asyncio.Lock] = {}  # ponytail: module-level dict, pop on delete to avoid unbounded growth
+# Holders + waiters per session_id. A Lock with a non-zero count must never be
+# removed from `_session_locks` (see `_discard_session_lock`).
+_session_lock_users: dict[str, int] = {}
 
 
 def get_store() -> ChatSessionStore:
@@ -68,18 +73,73 @@ def set_store(store: ChatSessionStore) -> None:
     _store = store
 
 
-async def purge_expired_locks() -> None:
-    """Drop `_session_locks` entries for sessions the store just expired.
+def close_store() -> None:
+    """Close the process-wide store's sqlite connection (lifespan shutdown).
 
-    `respond_in_session_stream` only cleans up a session's lock when that same
-    session_id is looked up again after expiry (the LookupError path) — a
-    session created but never revisited leaves its Lock behind forever.
-    Over a long kiosk uptime with steady session churn that grows unbounded.
+    No-op when no store was ever created, so shutting down a process that
+    never served chat doesn't materialise a sqlite file on the way out.
+    """
+    global _store
+    if _store is not None:
+        _store.close()
+        _store = None
+
+
+@asynccontextmanager
+async def _hold_session_lock(session_id: str) -> AsyncIterator[None]:
+    """Acquire (creating on demand) the per-session write lock.
+
+    The user count is bumped *before* awaiting the Lock so that a purge pass
+    running while we're still queued can't swap the Lock object out from under
+    us — that would hand the next caller a second, unrelated Lock for the same
+    session and quietly destroy mutual exclusion.
+    """
+    lock = _session_locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _session_locks[session_id] = lock
+    _session_lock_users[session_id] = _session_lock_users.get(session_id, 0) + 1
+    try:
+        async with lock:
+            yield
+    finally:
+        remaining = _session_lock_users.get(session_id, 1) - 1
+        if remaining > 0:
+            _session_lock_users[session_id] = remaining
+        else:
+            _session_lock_users.pop(session_id, None)
+
+
+def _discard_session_lock(session_id: str) -> None:
+    """Drop a session's Lock unless somebody is holding or waiting on it.
+
+    An in-use Lock is left in place and reclaimed by a later purge pass; the
+    entry is bounded either way because the session's row is already gone.
+    """
+    if _session_lock_users.get(session_id):
+        return
+    _session_locks.pop(session_id, None)
+
+
+async def purge_expired_locks() -> None:
+    """Reconcile `_session_locks` against the session rows that still exist.
+
+    Acting only on `purge_expired()`'s return value leaks locks: a row can also
+    vanish *without* being reported, because `load_messages()` deletes an
+    expired row in place and returns None. The kiosk hits that path on every
+    voice reconnect carrying a stale session_id (`api.voice` validates the id
+    via `load_messages`), so those sessions never appear in any purge result,
+    and their Locks used to survive for the process's whole multi-week uptime.
+    Diffing the live id set catches them regardless of how the row died.
     """
     store = get_store()
-    purged_ids = await asyncio.to_thread(store.purge_expired)
-    for session_id in purged_ids:
-        _session_locks.pop(session_id, None)
+    await asyncio.to_thread(store.purge_expired)
+    live_ids = await asyncio.to_thread(store.session_ids)
+    # No awaits below: `_session_locks` and the id snapshot can't drift apart
+    # mid-iteration. A session created *after* the snapshot is safe too — its
+    # Lock is either absent or in use, and in-use locks are never dropped.
+    for session_id in [sid for sid in _session_locks if sid not in live_ids]:
+        _discard_session_lock(session_id)
 
 
 async def run_lock_purge_loop() -> None:
@@ -166,17 +226,15 @@ async def respond_in_session_stream(
     behaviour is unchanged.
     """
     store = get_store()
-    lock = _session_locks.get(session_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _session_locks[session_id] = lock
-    async with lock:
+    async with _hold_session_lock(session_id):
         # SQLite I/O is synchronous — run it off the event loop
         messages = await asyncio.to_thread(store.load_messages, session_id)
         if messages is None:
-            # Session gone (expired/never existed) — drop its lock too, otherwise
-            # _session_locks grows unbounded for every expired session_id ever seen.
-            _session_locks.pop(session_id, None)
+            # Session gone (expired/never existed). Deliberately *not* popping
+            # the Lock here: we still hold it, and another caller may already be
+            # queued on it — dropping it now would let that caller's successor
+            # build a rival Lock for the same session. purge_expired_locks()
+            # reclaims it once nobody is using it.
             raise LookupError(session_id)
 
         session = _rehydrate_session(
@@ -249,4 +307,4 @@ async def send_chat_message_stream(session_id: str, body: ChatMessageRequest) ->
 def delete_chat_session(session_id: str) -> None:
     """Explicitly end a chat session and free its row."""
     get_store().delete(session_id)
-    _session_locks.pop(session_id, None)
+    _discard_session_lock(session_id)

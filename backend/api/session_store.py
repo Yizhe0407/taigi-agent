@@ -149,6 +149,20 @@ class ChatSessionStore:
                 )
         return [row[0] for row in rows]
 
+    def session_ids(self) -> set[str]:
+        """Return every session_id currently in the table.
+
+        Callers holding per-session in-memory state keyed by session_id (e.g.
+        api.chat's `_session_locks`) diff against this instead of relying on
+        `purge_expired()`'s return value alone: rows can also disappear
+        *without* going through `purge_expired()` — `load_messages()` deletes
+        an expired row in place and reports nothing — so that return value is
+        not a complete feed of deletions.
+        """
+        with self._lock:
+            rows = self._conn.execute("SELECT session_id FROM sessions").fetchall()
+        return {row[0] for row in rows}
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
