@@ -76,7 +76,6 @@ onMounted(async () => {
     const [cfg, allStops] = await Promise.all([fetchAdminKiosk(), fetchAdminStops()])
     current.value = cfg
     stops.value = allStops
-    // Pre-select the currently active stop
     selectedDirection.value = cfg.direction
     // Pre-select the currently active stop by name
     const match = allStops.find((s) => s.name === cfg.stop_name)

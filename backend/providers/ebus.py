@@ -250,6 +250,48 @@ class EbusBusProvider:
         finally:
             temporary.unlink(missing_ok=True)
 
+    def _stop_route_fresh(self, cached: tuple[float, dict[str, dict], bool]) -> bool:
+        """True if a `_stop_route_cache` entry is still within its TTL.
+
+        `had_failures` (cached[2]) selects the short partial TTL so a route
+        that failed mid-scan gets re-checked soon instead of staying
+        "missing" for a full day.
+        """
+        ttl = self._stop_route_ttl if not cached[2] else _STOP_ROUTE_PARTIAL_TTL
+        return not self._expired(cached[0], ttl)
+
+    async def _scan_all_routes(self) -> tuple[dict[str, dict[str, dict]], bool]:
+        """Fetch every known route's estimate (20 concurrent) and index stops by name.
+
+        Returns ({exact_stop_name: {sub_route_name: {id, go_dest, back_dest}}}, had_failures).
+        """
+        route_map = await self._load_route_map()
+        names = list(route_map.keys())
+        sem = asyncio.Semaphore(20)
+
+        async def _check(name: str) -> tuple[dict, set[str]] | None:
+            async with sem:
+                rows = await self.fetch_route_estimate(name)
+                if not rows:
+                    return None
+                terminals = _terminals_from_estimate(rows)
+                stop_names = {str(row.get("stop_name") or "").strip() for row in rows}
+                stop_names.discard("")
+                return {"id": name, **terminals}, stop_names
+
+        results = await asyncio.gather(*[_check(n) for n in names], return_exceptions=True)
+        route_index: dict[str, dict[str, dict]] = {}
+        had_failures = False
+        for name, result in zip(names, results):
+            if isinstance(result, BaseException):
+                _log.warning("ebus route scan failed for %s: %s", name, result)
+                had_failures = True
+            elif result is not None:
+                route_info, stop_names = result
+                for exact_stop_name in stop_names:
+                    route_index.setdefault(exact_stop_name, {})[name] = route_info
+        return route_index, had_failures
+
     async def find_routes_at_stop(self, stop_name: str) -> dict[str, dict]:
         """Discover all routes serving stop_name by scanning all route estimates. Cached 24h
         (or 60s if the scan had per-route failures — see `_STOP_ROUTE_PARTIAL_TTL`).
@@ -258,41 +300,16 @@ class EbusBusProvider:
         Covers city routes and 7xxx intercity routes alike.
         """
         cached = self._stop_route_cache.get(stop_name)
-        if cached is not None and not self._expired(cached[0], self._stop_route_ttl if not cached[2] else _STOP_ROUTE_PARTIAL_TTL):
+        if cached is not None and self._stop_route_fresh(cached):
             return cached[1]
 
         async with self._route_index_lock:
             # Re-check after acquiring: the first caller builds every stop.
             cached = self._stop_route_cache.get(stop_name)
-            if cached is not None and not self._expired(cached[0], self._stop_route_ttl if not cached[2] else _STOP_ROUTE_PARTIAL_TTL):
+            if cached is not None and self._stop_route_fresh(cached):
                 return cached[1]
 
-            route_map = await self._load_route_map()
-            names = list(route_map.keys())
-            sem = asyncio.Semaphore(20)
-
-            async def _check(name: str) -> tuple[dict, set[str]] | None:
-                async with sem:
-                    rows = await self.fetch_route_estimate(name)
-                    if not rows:
-                        return None
-                    terminals = _terminals_from_estimate(rows)
-                    stop_names = {str(row.get("stop_name") or "").strip() for row in rows}
-                    stop_names.discard("")
-                    return {"id": name, **terminals}, stop_names
-
-            results = await asyncio.gather(*[_check(n) for n in names], return_exceptions=True)
-            route_index: dict[str, dict[str, dict]] = {}
-            had_failures = False
-            for name, result in zip(names, results):
-                if isinstance(result, BaseException):
-                    _log.warning("ebus route scan failed for %s: %s", name, result)
-                    had_failures = True
-                elif result is not None:
-                    route_info, stop_names = result
-                    for exact_stop_name in stop_names:
-                        route_index.setdefault(exact_stop_name, {})[name] = route_info
-
+            route_index, had_failures = await self._scan_all_routes()
             info = route_index.get(stop_name.strip(), {})
 
             if not info and cached is not None:

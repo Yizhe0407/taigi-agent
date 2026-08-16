@@ -6,18 +6,18 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from providers.bus import BusProvider
-from services.departures.classification import DepartureSection, _classify_stop
+from services.departures.classification import DepartureSection, StopClassification, _classify_stop
 from services.departures.normalize import (
     TAIPEI_TZ,
     _dedup_stop_rows_by_direction,
     _direction_label_from_info,
-    _downstream_names,
     _fuzzy_candidates,
-    _is_traffic_controlled,
+    _iter_downstream_directions,
     _lookup_route,
     _name_matches,
     _resolve_forward_match,
     _route_candidates,
+    _rows_for_stop,
     _stops_by_direction_with_seq,
 )
 from services.departures.provider import get_provider
@@ -52,11 +52,10 @@ class _RouteMiss:
 def _rescue_prefix(best: str) -> str:
     """Confirmation cue for an auto-resolved ASR-rescue candidate.
 
-    Deliberately never restates the mis-heard original: a compressive
-    downstream model (Qwen3.5-4B) treats a repeated original term as license
-    to echo it back in its final reply instead of the resolved canonical name
-    `best` (eval E3 「虎尾科大」→虎尾科技大學 collapsed back to the mis-heard
-    form; eval R9 "YO2"→Y02 likewise). `best` is the sentence's sole subject.
+    Deliberately never restates the mis-heard original: the downstream 4B
+    treats a repeated original term as licence to echo it back instead of the
+    resolved `best` (eval E3 「虎尾科大」, R9 "YO2"), so `best` is the
+    sentence's sole subject.
     """
     return f"最接近的是「{best}」。{best}的狀態："
 
@@ -71,18 +70,22 @@ def _is_real_status(text: str) -> bool:
     return text != _QUERY_FAILED and not text.startswith(("本站沒有", "查無", "路線 "))
 
 
-def _mark_incoming(status_text: str) -> str:
-    """Relative-time ETA (ends with 後) → append 到這站. Anchors the arrival to a
-    *place* (這站 = here) so it contrasts with 抵達{destination} rather than both
-    ending in 站; critical for elderly riders. Reads naturally if copied verbatim."""
-    return f"{status_text}到這站" if status_text.endswith("後") else status_text
-
-
 def _with_schedule(status_text: str, scheduled_time: str | None) -> str:
     """Append next scheduled arrival time when bus hasn't departed yet."""
     if scheduled_time:
         return f"{status_text}（預計 {scheduled_time}）"
     return status_text
+
+
+def _incoming_status_text(c: StopClassification) -> str:
+    """Status of a bus heading *to the kiosk*, as the rider should hear it.
+
+    A relative-time ETA (ends with 後) is anchored to a place — 到這站 — so it
+    contrasts with 抵達{destination} instead of both ending in 站; that
+    distinction matters for elderly riders and the line is read verbatim.
+    """
+    anchored = f"{c.status_text}到這站" if c.status_text.endswith("後") else c.status_text
+    return _with_schedule(anchored, c.scheduled_time)
 
 
 async def _resolve_route_estimate(
@@ -188,25 +191,18 @@ async def render_arrivals(
     """
 
     def _body(route_info: dict, data: list[dict]) -> str:
-        matches = [
-            stop
-            for stop in data
-            if stop_name in stop.get("stop_name", "") and (go_back is None or stop.get("direction") == go_back) and not _is_traffic_controlled(stop)
-        ]
-        matches = _dedup_stop_rows_by_direction(matches)
+        matches = _rows_for_stop(data, stop_name, go_back)
         if not matches:
             return f"路線 {route} 不停 {stop_name}。"
 
         now = datetime.now(TAIPEI_TZ)
         results = []
         for stop in matches:
-            stop_direction = stop.get("direction", 0)
-            c = _classify_stop(stop, now)
-            status_text = _with_schedule(_mark_incoming(c.status_text), c.scheduled_time)
+            status_text = _incoming_status_text(_classify_stop(stop, now))
             # Single-direction query: direction is already implied by kiosk config;
             # label only adds noise for TTS and short-response constraints.
             if go_back is None:
-                label = _direction_label_from_info(route_info, route, stop_direction)
+                label = _direction_label_from_info(route_info, route, stop.get("direction", 0))
                 results.append(f"{label}：{status_text}")
             else:
                 results.append(status_text)
@@ -310,14 +306,11 @@ async def render_stop_on_route(
     """
 
     def _body(route_info: dict, data: list[dict]) -> str:
-        matched: list[str] = []
-        for gb, stops in sorted(_stops_by_direction_with_seq(data).items()):
-            downstream = _downstream_names(stops, kiosk_stop)
-            if downstream is None:
-                continue
-            if any(_name_matches(stop_name, n) for n in downstream):
-                matched.append(_direction_label_from_info(route_info, route, gb))
-
+        matched = [
+            _direction_label_from_info(route_info, route, direction)
+            for direction, downstream in sorted(_iter_downstream_directions(data, kiosk_stop), key=lambda item: item[0])
+            if any(_name_matches(stop_name, n) for n in downstream)
+        ]
         if matched:
             return f"有，{route} {'、'.join(matched)}有停{stop_name}。"
         return f"沒有，{route} 不停{stop_name}。"
@@ -361,6 +354,36 @@ def _dest_arrival_text(
     return ""
 
 
+def _boarding_status(
+    data: list[dict],
+    kiosk_stop: str,
+    direction: int,
+    canonical_dest: str,
+    now: datetime,
+) -> tuple[str, int, DepartureSection]:
+    """One direction's kiosk-side status text, with its sort key and section."""
+    kiosk_rows = _rows_for_stop(data, kiosk_stop, direction)
+    if not kiosk_rows:
+        return "無即時資料", 9999, DepartureSection.UNKNOWN
+
+    boarding = kiosk_rows[0]
+    c = _classify_stop(boarding, now)
+
+    # Keep only destination occurrences downstream of the boarding point —
+    # circular routes repeat stop names, and an upstream occurrence would
+    # report a shorter/negative travel time.
+    boarding_seq = boarding.get("stop_sequence") or 0
+    dest_rows = _dedup_stop_rows_by_direction(
+        [
+            row
+            for row in data
+            if _name_matches(canonical_dest, row.get("stop_name", "")) and row.get("direction") == direction and (row.get("stop_sequence") or 0) >= boarding_seq
+        ]
+    )
+    dest_suffix = _dest_arrival_text(dest_rows, boarding, canonical_dest, now)
+    return f"{_incoming_status_text(c)}{dest_suffix}", c.sort_minutes, c.section
+
+
 async def _check_route_arrivals(
     route_name: str,
     route_id: str,
@@ -388,12 +411,7 @@ async def _check_route_arrivals(
     hits: list[tuple[str, int, DepartureSection]] = []
     all_downstream: set[str] = set()
     canonical_dest: str | None = None
-    for direction, stops in _stops_by_direction_with_seq(data).items():
-        if go_back is not None and direction != go_back:
-            continue
-        downstream = _downstream_names(stops, kiosk_stop)
-        if downstream is None:
-            continue
+    for direction, downstream in _iter_downstream_directions(data, kiosk_stop, go_back):
         all_downstream.update(downstream)
         canonical = _resolve_forward_match(destination, downstream)
         if canonical is None:
@@ -401,31 +419,13 @@ async def _check_route_arrivals(
         canonical_dest = canonical
 
         dir_label = _direction_label_from_info(route_info, route_name, direction)
+        # 「往<本站>」tells a rider standing here nothing — this direction departs
+        # from the kiosk and comes back to it, so label it as the loop it is.
         if _name_matches(kiosk_stop, dir_label.removeprefix("往")):
             dir_label = "（循環）"
 
-        kiosk_rows = [
-            row for row in data if kiosk_stop in row.get("stop_name", "") and row.get("direction", 0) == direction and not _is_traffic_controlled(row)
-        ]
-        kiosk_rows = _dedup_stop_rows_by_direction(kiosk_rows)
-        if kiosk_rows:
-            c = _classify_stop(kiosk_rows[0], now)
-            status_text = _with_schedule(_mark_incoming(c.status_text), c.scheduled_time)
-
-            # Filter to the destination occurrence downstream of the kiosk boarding
-            # point — circular routes repeat stop names, and picking an upstream
-            # occurrence would report a shorter/negative travel time.
-            kiosk_seq = kiosk_rows[0].get("stop_sequence") or 0
-            dest_rows = [
-                row
-                for row in data
-                if _name_matches(canonical, row.get("stop_name", "")) and row.get("direction") == direction and (row.get("stop_sequence") or 0) >= kiosk_seq
-            ]
-            dest_rows = _dedup_stop_rows_by_direction(dest_rows)
-            dest_suffix = _dest_arrival_text(dest_rows, kiosk_rows[0], canonical, now)
-            hits.append((f"{route_name} {dir_label}：{status_text}{dest_suffix}", c.sort_minutes, c.section))
-        else:
-            hits.append((f"{route_name} {dir_label}：無即時資料", 9999, DepartureSection.UNKNOWN))
+        status_text, sort_minutes, section = _boarding_status(data, kiosk_stop, direction, canonical, now)
+        hits.append((f"{route_name} {dir_label}：{status_text}", sort_minutes, section))
 
     return hits, all_downstream, canonical_dest
 
@@ -436,14 +436,12 @@ def _pick_canonical_destination(
 ) -> str:
     """Resolve `destination` to the real stop name it matched, across all routes.
 
-    Used in rider-facing text instead of a possibly abbreviated or mis-heard
-    `destination` string. Different routes can resolve to differently-specific
-    real names sharing the same prefix (a route ending at "北港朝天宮" vs one
-    continuing through bare "北港") — shortest wins, same exact-match-preferred
-    tie-break as `_resolve_forward_match` itself. Secondary sort key (the string
-    itself) makes the tie-break deterministic across restarts: `min()` over a
-    `set` with tied `len()` keys otherwise depends on hash-seed-dependent
-    iteration order. Falls back to `destination` when nothing resolved.
+    Used in rider-facing text instead of the possibly abbreviated or mis-heard
+    `destination`. Routes can resolve to differently-specific names sharing a
+    prefix ("北港朝天宮" vs bare "北港"); shortest wins, the same
+    exact-match-preferred tie-break as `_resolve_forward_match`. The string
+    itself is the secondary key so tied lengths stay deterministic across
+    restarts — `min()` over a `set` otherwise follows hash-seed order.
     """
     canonical_candidates = {c for _, _, c in results if c}
     return min(canonical_candidates, key=lambda s: (len(s), s)) if canonical_candidates else destination
@@ -452,22 +450,21 @@ def _pick_canonical_destination(
 def _summarize_route_hits(raw: list[tuple[str, int, DepartureSection]], canonical: str) -> str:
     """Sort route hits by ETA and return only the single most relevant status group.
 
-    Only the highest-priority section (AVAILABLE, then NOT_DEPARTED) is returned
-    so the LLM sees one consistent situation. When every serving route has run
-    its last bus today, collapse the per-route "末班駛離" lines into one closed
-    conclusion the LLM can only copy: the 4B was re-reading the granular list as
-    無直達 (route doesn't exist), conflating "no bus left today" with "no such
-    route". The wording avoids 沒有 so it can't slip back into the 無直達
-    template. [eval v5 hole #1]
+    Only the highest-priority section (AVAILABLE, then NOT_DEPARTED) is
+    returned so the LLM sees one consistent situation. When every route has run
+    its last bus, the per-route "末班駛離" lines collapse into one closed
+    conclusion: the 4B re-read the granular list as 無直達, conflating "no bus
+    left today" with "no such route". The wording avoids 沒有 so it can't slip
+    back into the 無直達 template. [eval v5 hole #1]
     """
-    raw.sort(key=lambda x: x[1])
+    by_eta = sorted(raw, key=lambda hit: hit[1])
     for section in (DepartureSection.AVAILABLE, DepartureSection.NOT_DEPARTED):
-        group = [d for d, _, s in raw if s == section]
+        group = [d for d, _, s in by_eta if s == section]
         if group:
             return "\n".join(group)
-    if any(s == DepartureSection.LAST_DEPARTED for _, _, s in raw):
+    if any(s == DepartureSection.LAST_DEPARTED for _, _, s in by_eta):
         return f"去{canonical}的公車今天班次都跑完了，末班已經開走囉。"
-    return "\n".join(d for d, _, __ in raw)
+    return "\n".join(d for d, _, __ in by_eta)
 
 
 async def render_arrivals_to_destination(
@@ -496,17 +493,14 @@ async def render_arrivals_to_destination(
         return _QUERY_FAILED
 
     now = datetime.now(TAIPEI_TZ)
-    valid = [(name, info.get("id")) for name, info in route_info.items()]
-    # Semaphore limits concurrent TDX calls; firing all N routes in parallel
-    # causes 429 storms when cache is cold.
+    # Firing all N routes in parallel causes 429 storms when the cache is cold.
     sem = asyncio.Semaphore(3)
 
-    async def _guarded(name: str, rid: str) -> tuple[list[tuple[str, int, DepartureSection]], set[str], str | None]:
+    async def _guarded(name: str, route_id: str) -> tuple[list[tuple[str, int, DepartureSection]], set[str], str | None]:
         async with sem:
-            return await _check_route_arrivals(name, rid, provider, kiosk_stop, go_back, destination, route_info, now)
+            return await _check_route_arrivals(name, route_id, provider, kiosk_stop, go_back, destination, route_info, now)
 
-    tasks_guarded = [_guarded(name, rid) for name, rid in valid if rid]
-    results = await asyncio.gather(*tasks_guarded)
+    results = await asyncio.gather(*(_guarded(name, info["id"]) for name, info in route_info.items() if info.get("id")))
     raw = [item for hits, _, _ in results for item in hits]
     all_stops = {name for _, stops, _ in results for name in stops}
     canonical = _pick_canonical_destination(results, destination)
@@ -539,12 +533,6 @@ async def render_routes_at_stop(stop_name: str) -> str:
     if not data:
         return f"查無 {stop_name} 站牌。"
 
-    seen: set[str] = set()
-    lines: list[str] = []
-    for r in data:
-        name = r.get("sub_route_name", "?")
-        if name not in seen:
-            seen.add(name)
-            lines.append(name)
-
-    return f"{stop_name} 停靠路線：\n" + "\n".join(lines)
+    # One line per route: the same route appears once per direction upstream.
+    routes = dict.fromkeys(r.get("sub_route_name", "?") for r in data)
+    return f"{stop_name} 停靠路線：\n" + "\n".join(routes)

@@ -1,8 +1,8 @@
 """HybridBusProvider: ebus primary, TDX as emergency fallback.
 
-ebus.yunlin.gov.tw has no observed rate limits and covers both city routes and
-7xxx intercity routes. ebus is used for all route discovery and ETA. TDX is
-only called when ebus fails entirely.
+ebus.yunlin.gov.tw has no observed rate limits and covers city routes and
+7xxx intercity routes alike, so it handles all route discovery and ETA; see
+the class docstring below for exactly which TDX call backs up which method.
 """
 
 from __future__ import annotations

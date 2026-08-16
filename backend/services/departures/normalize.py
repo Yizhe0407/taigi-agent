@@ -86,25 +86,20 @@ def _weighted_route_edit_distance(a: str, b: str, *, sub_cost: float = 1.0, inde
 def _route_candidates(route: str, route_names: Iterable[str], limit: int = 5) -> list[str]:
     """Return up to `limit` route names most similar to `route`, best first.
 
-    ASR mis-hearing rescue path for route numbers: matching is done on
-    `_normalize_route_key` (halfwidth/uppercase/no trailing 路) so e.g. "301"
-    vs "301路" still line up.
+    ASR mis-hearing rescue path for route numbers; matching runs on
+    `_normalize_route_key` so "301" and "301路" line up.
 
-    When the query is a plain digit string, ranking uses
-    `_weighted_route_edit_distance` against other digit-only route keys
-    instead of `difflib`: with many same-length numeric routes (a real stop
-    can serve a dozen "71xx"-style codes), `difflib.SequenceMatcher.ratio()`
-    ties every single-digit-off neighbor at the same score, so which ones
-    survive the top-`limit` cut becomes an accident of dict iteration order
-    — this previously squeezed the actual target out of the list. Distance
-    ties are broken by numeric closeness (`abs(int(a) - int(b))`), and the
-    threshold (half the digit length, minimum 2) mirrors the old cutoff=0.5
-    behavior of allowing roughly half the digits to differ.
+    Digit-only queries rank by `_weighted_route_edit_distance` rather than
+    `difflib`: a real stop can serve a dozen "71xx" codes, and
+    `SequenceMatcher.ratio()` scores every single-digit-off neighbour
+    identically, so which survive the top-`limit` cut becomes an accident of
+    dict order — that used to squeeze the actual target out. Ties break on
+    numeric closeness; the threshold (half the digit length, min 2) mirrors
+    difflib's cutoff=0.5 of roughly half the digits differing.
 
-    Non-numeric queries (and numeric queries when no digit-only route names
-    exist) fall back to the original `difflib` matching — cutoff=0.5 keeps
-    single-digit-off or short alias matches (e.g. "301" -> 701/302/201) while
-    dropping unrelated route names (e.g. "ABCDE" -> no matches).
+    Everything else falls back to `difflib` at cutoff=0.5, which keeps
+    single-digit-off and short-alias matches ("301" -> 701/302/201) while
+    dropping unrelated names ("ABCDE" -> none).
     """
     key_to_name: dict[str, str] = {}
     query_key = _normalize_route_key(route)
@@ -182,15 +177,13 @@ def _pinyin_syllables(core: tuple[str, ...]) -> tuple[str, ...]:
 def _stop_similarity(a: str, b: str) -> float:
     """Character-token Jaccard, plus a no-tone-pinyin dimension for homophone ASR errors.
 
-    Strips common geographic suffixes so '雲林高鐵站' vs '高鐵雲林站' scores 1.0
-    (identical character sets) and auto-remaps without LLM intervention.
+    Geographic suffixes are stripped so '雲林高鐵站' vs '高鐵雲林站' scores 1.0
+    and auto-remaps without LLM intervention.
 
     The pinyin dimension exists because ASR mis-hearings are homophone-driven,
-    not orthographic: "刺同" vs "莿桐" share zero characters (莿 is a rare,
-    visually unrelated glyph) yet are pronounced identically. Tones are
-    dropped before comparing — ASR substitutes a similar-sounding character,
-    which usually keeps the syllable but not the tone (e.g. "背港" bei4-gang3
-    vs "北港" bei3-gang3).
+    not orthographic: "刺同" vs "莿桐" share zero characters yet sound
+    identical. Tones are dropped — the substituted character usually keeps the
+    syllable but not the tone ("背港" bei4-gang3 vs "北港" bei3-gang3).
     """
     a_core = [c for c in a if c not in _STOP_SUFFIX]
     b_core = [c for c in b if c not in _STOP_SUFFIX]
@@ -265,16 +258,13 @@ def _downstream_names(
 ) -> list[str] | None:
     """Return stop names at or after the first kiosk-matching position.
 
-    Returns None when kiosk doesn't appear in this direction — caller should
-    skip it.  Includes the kiosk itself so「有沒有停 X」when X is the kiosk
-    answers 有.
+    None when the kiosk doesn't appear in this direction — caller skips it.
+    Includes the kiosk itself so「有沒有停 X」when X is the kiosk answers 有.
 
-    `stops` arrives in raw TDX row order, not guaranteed sorted by sequence.
-    Sorting first (like `render_route_stops`'s `sorted(stops)`) ensures the
-    lowest-sequence kiosk occurrence is picked as the boarding point — matters
-    for circular routes where the kiosk's stop name repeats later in the same
-    direction as the loop-completion arrival; picking that later occurrence
-    would report a shorter downstream list than actually available.
+    `stops` arrives in raw TDX row order, so it is sorted first: on circular
+    routes the kiosk name repeats as the loop-completion arrival, and taking
+    that later occurrence as the boarding point would report a shorter
+    downstream list than is actually reachable.
     """
     ordered = sorted(stops)
     kiosk_seq = next(
@@ -284,6 +274,24 @@ def _downstream_names(
     if kiosk_seq is None:
         return None
     return [n for s, n in ordered if s >= kiosk_seq]
+
+
+def _iter_downstream_directions(
+    data: list[dict],
+    kiosk_stop: str,
+    go_back: int | None = None,
+) -> Iterator[tuple[int, list[str]]]:
+    """Yield (direction, stop names from the kiosk onward) per served direction.
+
+    Directions where the kiosk never appears are skipped. `go_back` restricts
+    to one TDX Direction (0=去程, 1=回程); None means both.
+    """
+    for direction, stops in _stops_by_direction_with_seq(data).items():
+        if go_back is not None and direction != go_back:
+            continue
+        downstream = _downstream_names(stops, kiosk_stop)
+        if downstream is not None:
+            yield direction, downstream
 
 
 def _is_traffic_controlled(stop: dict) -> bool:
@@ -313,6 +321,22 @@ def _dedup_stop_rows_by_direction(rows: list[dict]) -> list[dict]:
         if existing is None or (existing.get("stop_sequence") or 9999) > seq:
             best[direction] = row
     return list(best.values())
+
+
+def _rows_for_stop(rows: list[dict], stop_name: str, direction: int | None) -> list[dict]:
+    """Boarding rows for `stop_name`, at most one per direction.
+
+    Substring name match (aliases like '斗六' hit '斗六火車站'); `direction`
+    restricts to one TDX Direction (0/1) or None for both; StopStatus 2
+    (交管不停) rows are dropped before they can reach `_classify_stop`, and
+    circular-route repeats collapse to the boarding occurrence.
+    """
+    matched = [
+        row
+        for row in rows
+        if stop_name in row.get("stop_name", "") and (direction is None or row.get("direction", 0) == direction) and not _is_traffic_controlled(row)
+    ]
+    return _dedup_stop_rows_by_direction(matched)
 
 
 def _direction_label_from_info(
