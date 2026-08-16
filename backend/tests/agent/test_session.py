@@ -269,6 +269,76 @@ def test_session_records_turn_outcomes_for_canned_limit_and_error_paths():
     assert failing.turns == [("llm", "unknown", "error", 0)]
 
 
+def test_error_path_calls_trim_before_reraising():
+    """The except branch in `_run_llm_loop` must trim history, not just the
+    other exit paths (canned / normal-finish / tool_round_limit / respond_directly).
+
+    Spies on the bound `_trim` method (not `_prepare_context`'s internal
+    `trim_history` call, which runs earlier and unconditionally) so this pins
+    down specifically that the error path's own `_trim()` call fires.
+    """
+    session = make_session([RuntimeError("boom")])
+    trim_calls = []
+    original_trim = session._trim
+
+    def spy_trim():
+        trim_calls.append(len(session.messages))
+        original_trim()
+
+    session._trim = spy_trim
+
+    raised = None
+    try:
+        asyncio.run(session.respond("查一下"))
+    except RuntimeError as e:
+        raised = e
+
+    assert raised is not None
+    assert trim_calls == [1]  # user turn only — error fires before any tool round
+
+
+def test_error_path_drops_dangling_tool_call_without_orphaning_history():
+    """If `execute_tool_calls` itself raises (not a handler exception, which
+
+    `_execute_one` already converts to an error ToolCallResult — see
+    `agent/tool_dispatch.py`), `messages` is left with an assistant(tool_calls)
+    entry and no matching `role: tool` results. The error path must not trim
+    that entry into permanent history as an orphaned tool_call_id; it must
+    drop the whole incomplete round.
+    """
+    import agent.session as session_module
+
+    session = make_session(
+        [llm_response(assistant_message(tool_calls=[tool_call("bus", "{}", "c1")]))],
+    )
+
+    async def failing_execute_tool_calls(tool_calls, handlers, telemetry):
+        raise RuntimeError("dispatch exploded")
+
+    original = session_module.execute_tool_calls
+    session_module.execute_tool_calls = failing_execute_tool_calls
+    try:
+        raised = None
+        try:
+            asyncio.run(session.respond("到站時間"))
+        except RuntimeError as e:
+            raised = e
+        assert raised is not None and str(raised) == "dispatch exploded"
+    finally:
+        session_module.execute_tool_calls = original
+
+    # No assistant tool_calls entry may survive without every referenced
+    # tool_call_id answered later in history.
+    for i, msg in enumerate(session.messages):
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            ids = {call["id"] for call in msg["tool_calls"]}
+            answered = {m["tool_call_id"] for m in session.messages[i + 1 :] if m.get("role") == "tool"}
+            assert ids <= answered, "orphaned tool_call_id left in trimmed history"
+    # Concretely for this scenario: the failed round is dropped entirely,
+    # leaving only the user turn that started it.
+    assert session.messages == [{"role": "user", "content": "到站時間"}]
+
+
 def test_summarize_error_collapses_cloudflare_tunnel_html():
     error = RuntimeError("<!DOCTYPE html><head><title>Cloudflare Tunnel error | example</title></head><body>Error 1033 Cloudflare Tunnel error</body>")
 

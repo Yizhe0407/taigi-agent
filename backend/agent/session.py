@@ -117,6 +117,23 @@ class AgentSession:
     def _trim(self) -> None:
         self.messages = trim_history(self.messages, self.max_history_tokens)
 
+    def _drop_dangling_tool_call(self) -> None:
+        """Remove a trailing assistant(tool_calls) entry with no tool results yet.
+
+        The only window that can leave `messages` in this half-completed shape
+        is between appending the assistant tool_calls entry and extending
+        `messages` with `execute_tool_calls`'s results in `_run_llm_loop`
+        (nothing else appends between those two points) — if that call raises,
+        `messages` ends on the assistant entry with none of its tool_call_ids
+        answered yet. Trimming as-is could keep that entry (it's always in the
+        newest, always-kept exchange), freezing an orphaned tool_call_id into
+        history. The round never completed, so dropping the entry outright is
+        safe: there is no tool result to lose, and any earlier, fully-paired
+        rounds in the same exchange are untouched.
+        """
+        if self.messages and self.messages[-1].get("role") == "assistant" and self.messages[-1].get("tool_calls"):
+            self.messages.pop()
+
     def _finish_with_assistant(self, content: str) -> str:
         self.messages.append({"role": "assistant", "content": content})
         self._trim()
@@ -380,6 +397,14 @@ class AgentSession:
                     yield ("result", _LlmTurnResult(outcome="ok", tool_rounds=tool_rounds))
                     return
         except Exception as error:
+            # Mirror every other exit path: trim before handing control back so
+            # a caller that later decides to persist messages on the error
+            # path too (unlike today's stream-must-finish-cleanly convention
+            # in api/chat.py) can't silently accumulate unbounded history.
+            # Must run before the "result" event, since the caller re-raises
+            # `error` immediately upon receiving it.
+            self._drop_dangling_tool_call()
+            self._trim()
             yield (
                 "result",
                 _LlmTurnResult(outcome="error", tool_rounds=tool_rounds, error=error),
