@@ -6,7 +6,11 @@ import wave
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pipecat.frames.frames import TTSAudioRawFrame
+from pipecat.frames.frames import InterruptionFrame, TTSAudioRawFrame
+from pipecat.processors.frame_processor import FrameDirection
+from pipecat.services.tts_service import TTSContext
+from pipecat.utils.asyncio.task_manager import TaskManager, TaskManagerParams
+from pipecat.utils.base_object import BaseObject
 
 from services.taigi_tts import TTSConfig, TTSConfigError
 from voice.tts_taigi import (
@@ -304,3 +308,69 @@ def test_run_tts_oversized_reply_still_synthesizes_and_plays_when_cache_bypassed
     assert isinstance(frames[0], SubtitleFrame)
     assert any(isinstance(f, TTSAudioRawFrame) for f in frames)
     assert _decoded_cache_total_bytes() <= _DECODED_CACHE_MAX_BYTES
+
+
+async def _service_with_task_manager() -> TaigiTTSService:
+    """A TaigiTTSService wired up just enough to run the base class's real
+    `_handle_interruption`, which creates/cancels the audio-context task.
+
+    Deliberately not a full `FrameProcessor.setup()` (that needs a clock and a
+    live PipelineWorker); only the task manager from `BaseObject.setup` is
+    required for the interruption path.
+    """
+    svc = TaigiTTSService()
+    task_manager = TaskManager()
+    task_manager.setup(TaskManagerParams(loop=asyncio.get_running_loop()))
+    await BaseObject.setup(svc, task_manager)
+    return svc
+
+
+def test_interruption_clears_tts_context_of_interrupted_turn():
+    """Barge-in mid-speech must not strand the base class's `_tts_contexts` entry.
+
+    Pipecat only deletes that entry when a TTSStoppedFrame for the context passes
+    through push_frame, and every TTSStoppedFrame emit site is gated on
+    `push_stop_frames` (False for us) — so before the fix an interrupted turn (the
+    common case at a kiosk) left a permanent entry behind. Drives the real
+    `TTSService._handle_interruption`, not our override, so the test still covers
+    the leak if pipecat changes which hook it calls.
+    """
+
+    async def _scenario():
+        svc = await _service_with_task_manager()
+        # State of a turn whose audio is mid-playback: synthesis registered the
+        # TTS context and the audio context queue is still live.
+        svc._tts_contexts["ctx-speaking"] = TTSContext()
+        svc._audio_contexts["ctx-speaking"] = asyncio.Queue()
+
+        await svc._handle_interruption(InterruptionFrame(), FrameDirection.DOWNSTREAM)
+        try:
+            assert "ctx-speaking" not in svc._tts_contexts
+            assert svc._tts_contexts == {}
+        finally:
+            # _handle_interruption spawns a fresh audio-context task; stop it so
+            # the loop closes without a pending-task warning.
+            await svc._stop_audio_context_task()
+
+    asyncio.run(_scenario())
+
+
+def test_completed_audio_context_only_clears_its_own_tts_context():
+    """The cleanup must be scoped to the context that just ended.
+
+    Synthesis runs ahead of playback, so a later turn's entry can already be
+    registered while the current context finishes — clearing the whole dict here
+    would drop bookkeeping for audio that has not been spoken yet.
+    """
+
+    async def _scenario():
+        svc = TaigiTTSService()
+        svc._tts_contexts["ctx-finished"] = TTSContext()
+        svc._tts_contexts["ctx-next-turn"] = TTSContext()
+
+        await svc.on_audio_context_completed(context_id="ctx-finished")
+
+        assert "ctx-finished" not in svc._tts_contexts
+        assert "ctx-next-turn" in svc._tts_contexts
+
+    asyncio.run(_scenario())

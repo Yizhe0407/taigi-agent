@@ -165,6 +165,43 @@ class TaigiTTSService(TTSService):
         )
         self._turn_timer = turn_timer
 
+    def _discard_tts_context(self, context_id: str) -> None:
+        """Drop the base class's per-context bookkeeping entry for `context_id`.
+
+        Pipecat's `TTSService` registers one `TTSContext` per synthesis context in
+        `_tts_contexts` (tts_service.py:1080) and only ever deletes it when a
+        `TTSStoppedFrame` carrying that context_id passes through `push_frame`
+        (tts_service.py:833). Every site that emits a `TTSStoppedFrame` is gated on
+        `push_stop_frames`, which we leave at its default False, so that deletion
+        never runs for us — and `_handle_interruption` (tts_service.py:912-947)
+        does not touch the dict either. Result: one stranded entry per LLM turn
+        (context ids are reused within a turn), forever, in a kiosk process that
+        stays up for weeks. Each entry is small (a uuid key plus two bools), so
+        this is unbounded growth rather than a fast leak — but barge-in is
+        constant at a bus stop and nothing else ever reclaims these.
+
+        Called only from the two per-context lifecycle hooks below, each of which
+        pipecat invokes exactly once with the id of the context that just ended,
+        so this can never drop a context that is still in flight (synthesis for
+        turn N+1 can register its entry while turn N is still playing back).
+        Audio output is unaffected: nothing reads `_tts_contexts` after these
+        points — the `TTSStartedFrame` stamping at tts_service.py:1525 only runs
+        under `push_start_frame=True` (we keep the default False), and
+        `_push_tts_frames` re-registers the entry before appending anything to a
+        recreated context.
+        """
+        self._tts_contexts.pop(context_id, None)
+
+    async def on_audio_context_completed(self, context_id: str) -> None:
+        """Clean up after an audio context that played to the end."""
+        await super().on_audio_context_completed(context_id=context_id)
+        self._discard_tts_context(context_id)
+
+    async def on_audio_context_interrupted(self, context_id: str) -> None:
+        """Clean up after an audio context cut short by barge-in."""
+        await super().on_audio_context_interrupted(context_id=context_id)
+        self._discard_tts_context(context_id)
+
     async def run_tts(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
         text: str,
