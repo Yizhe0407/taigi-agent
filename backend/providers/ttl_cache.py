@@ -17,9 +17,70 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, MutableMapping
+from collections.abc import AsyncIterator, Awaitable, Callable, MutableMapping
+from contextlib import asynccontextmanager
 
 _log = logging.getLogger(__name__)
+
+# Sweep the store no more often than "once the live set has doubled", so the
+# O(n) scan is O(1) amortised per store while keeping the key set within ~2x
+# of what is actually unexpired.  Below this floor a sweep isn't worth running.
+_MIN_SWEEP_THRESHOLD = 32
+
+
+class _LockEntry:
+    """An `asyncio.Lock` plus the number of tasks holding or queued for it."""
+
+    __slots__ = ("lock", "users")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.users = 0
+
+
+class KeyedLocks[K]:
+    """Per-key `asyncio.Lock` registry that forgets keys nobody is using.
+
+    The point of a per-key lock here is *coalescing*: concurrent misses on the
+    same key must collapse into one upstream fetch, or TDX answers with a 429
+    cascade.  Coalescing only works while every contender for a key receives
+    the *same* Lock object, so the naive "delete on release" is wrong — a task
+    arriving during the handoff window would mint a second lock and start a
+    duplicate fetch.
+
+    Entries are therefore reference-counted: the count is incremented before
+    awaiting the lock and decremented after leaving the critical section, both
+    in straight-line sync code (no await in between, so the single-threaded
+    event loop cannot interleave).  A key's lock survives exactly as long as at
+    least one task is inside or queued for it, which makes the registry bounded
+    by in-flight concurrency rather than by the lifetime key space.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[K, _LockEntry] = {}
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._entries
+
+    @asynccontextmanager
+    async def acquire(self, key: K) -> AsyncIterator[None]:
+        entry = self._entries.get(key)
+        if entry is None:
+            entry = _LockEntry()
+            self._entries[key] = entry
+        entry.users += 1
+        try:
+            async with entry.lock:
+                yield
+        finally:
+            entry.users -= 1
+            # Identity check: a previous holder may already have dropped this key
+            # and a later arrival re-created it under a fresh entry.
+            if entry.users == 0 and self._entries.get(key) is entry:
+                del self._entries[key]
 
 
 class TtlCache[K, V]:
@@ -37,12 +98,33 @@ class TtlCache[K, V]:
         self._clock = clock
         self._cache_name = cache_name
         self._record_hit = record_hit
-        self._locks: dict[K, asyncio.Lock] = {}
+        self._locks: KeyedLocks[K] = KeyedLocks()
+        self._sweep_threshold = _MIN_SWEEP_THRESHOLD
 
     def _expired(self, fetched_at: float, ttl: float | None) -> bool:
         if ttl is None or ttl <= 0:
             return False
         return (self._clock() - fetched_at) >= ttl
+
+    def _maybe_sweep(self, retain_ttl: float | None) -> None:
+        """Drop entries past `retain_ttl`, amortised so stores stay O(1).
+
+        Read-time expiry alone leaves dead keys in the store forever, so the key
+        set grows monotonically for the life of the process.  Sweeping after a
+        store bounds it to "distinct keys seen within one retention window".
+
+        `retain_ttl` is the *retention* horizon, not the freshness TTL: when the
+        caller uses stale-serve, entries past `ttl` but within `stale_ttl` are
+        still load-bearing and must survive the sweep.
+        """
+        if retain_ttl is None or retain_ttl <= 0:
+            return  # no expiry configured — nothing is ever removable
+        if len(self._store) <= self._sweep_threshold:
+            return
+        expired = [key for key, (fetched_at, _value) in self._store.items() if self._expired(fetched_at, retain_ttl)]
+        for key in expired:
+            del self._store[key]
+        self._sweep_threshold = max(_MIN_SWEEP_THRESHOLD, 2 * len(self._store))
 
     async def get_or_fetch(
         self,
@@ -70,8 +152,7 @@ class TtlCache[K, V]:
                 on_hit(key)
             return cached[1]
 
-        lock = self._locks.setdefault(key, asyncio.Lock())
-        async with lock:
+        async with self._locks.acquire(key):
             # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
             cached = self._store.get(key)
             if cached is not None and not self._expired(cached[0], ttl):
@@ -90,4 +171,6 @@ class TtlCache[K, V]:
             self._store[key] = (self._clock(), value)
             if on_store is not None:
                 on_store(key, value)
+            # Sweep after on_store so a caller-owned LRU trim has already run.
+            self._maybe_sweep(stale_ttl if stale_ttl is not None else ttl)
             return value

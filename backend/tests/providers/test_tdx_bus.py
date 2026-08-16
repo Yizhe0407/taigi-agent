@@ -618,3 +618,127 @@ def test_fetch_eta_at_stop_returns_stale_on_error(monkeypatch):
     fake_now[0] = 30.0 + tdx_bus._MAX_STALE_SECONDS + 1.0
     with pytest.raises(Exception):  # noqa: B017 — any upstream failure, not a specific type
         asyncio.run(provider.fetch_eta_at_stop("A"))
+
+
+# ── Cache-growth bounds (see providers/ttl_cache.py) ──────────────────────────
+
+
+def test_route_info_locks_do_not_accumulate(monkeypatch):
+    """Per-key route-info locks must not leak one entry per stop name ever seen."""
+    _patch_http(monkeypatch, _TOKEN, _STOP_OF_ROUTE)
+    provider = TdxBusProvider("id", "secret")
+
+    async def load_many() -> None:
+        for index in range(200):
+            await provider.load_route_info(f"stop-{index}")
+
+    asyncio.run(load_many())
+    assert len(provider._route_info_locks) == 0
+
+
+def test_concurrent_load_route_info_coalesces_into_one_fetch(monkeypatch):
+    """Concurrent misses on one stop must share a single upstream round trip.
+
+    This is what keeps a burst of requests from turning into a 429 cascade.
+    """
+    get_calls: list[str] = []
+    gate = asyncio.Event()
+
+    class GatedClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            get_calls.append(url)
+            await gate.wait()
+            return _FakeResp(_STOP_OF_ROUTE)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: GatedClient())
+    provider = TdxBusProvider("id", "secret")
+
+    async def scenario():
+        tasks = [asyncio.create_task(provider.load_route_info("雲林科技大學")) for _ in range(15)]
+        # Spin the loop until all 15 are registered on the stop's lock.
+        while len(provider._route_info_locks) == 0 or provider._route_info_locks._entries["雲林科技大學"].users < 15:
+            await asyncio.sleep(0)
+        gate.set()
+        return await asyncio.gather(*tasks)
+
+    results = asyncio.run(scenario())
+
+    # One winner fetches both endpoints (City + InterCity); the other 14 re-check
+    # under the lock and hit the freshly filled cache.
+    assert len(get_calls) == 2, f"expected a single coalesced fetch, got {len(get_calls)} requests"
+    assert all(result == results[0] for result in results)
+    assert len(provider._route_info_locks) == 0
+
+
+def _patch_http_echoing_stop_name(monkeypatch):
+    """Fake TDX that returns a StopOfRoute payload containing the queried stop.
+
+    `_kiosk_uids` is only populated when the requested stop actually appears in
+    the payload, so a fixed fixture would leave it empty and make the eviction
+    assertions vacuous.
+    """
+    import re
+
+    class EchoClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            match = re.search(r"eq '([^']*)'", kwargs.get("params", {}).get("$filter", ""))
+            stop_name = match.group(1) if match else "unknown"
+            return _FakeResp(
+                [
+                    {
+                        "SubRouteName": {"Zh_tw": "201"},
+                        "Direction": 0,
+                        "Stops": [
+                            {"StopUID": f"UID-{stop_name}", "StopSequence": 1, "StopName": {"Zh_tw": stop_name}},
+                            {"StopUID": "UID-END", "StopSequence": 2, "StopName": {"Zh_tw": "終點"}},
+                        ],
+                    }
+                ]
+            )
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: EchoClient())
+
+
+def test_route_info_cache_evicts_expired_entries(monkeypatch):
+    """_route_info_by_stop and _kiosk_uids must not grow for the process lifetime."""
+    _patch_http_echoing_stop_name(monkeypatch)
+    fake_now = [0.0]
+    provider = TdxBusProvider("id", "secret", route_info_ttl_seconds=100.0, clock=lambda: fake_now[0])
+
+    async def load_many() -> None:
+        for index in range(300):
+            await provider.load_route_info(f"stop-{index}")
+            fake_now[0] += 200.0  # every entry expires before the next store
+
+    asyncio.run(load_many())
+
+    assert len(provider._route_info_by_stop) < 64, f"route_info cache grew to {len(provider._route_info_by_stop)}"
+    # Removal, not read-time masking.
+    assert "stop-0" not in provider._route_info_by_stop
+    # _kiosk_uids is pruned in lockstep with the entries actually swept.
+    assert "stop-0" not in provider._kiosk_uids
+    assert len(provider._kiosk_uids) == len(provider._route_info_by_stop)
+
+
+def test_route_info_sweep_keeps_unexpired_entries(monkeypatch):
+    """A sweep must never drop a still-live route-info entry (or its UIDs)."""
+    _patch_http_echoing_stop_name(monkeypatch)
+    fake_now = [0.0]
+    provider = TdxBusProvider("id", "secret", route_info_ttl_seconds=10_000.0, clock=lambda: fake_now[0])
+
+    async def load_many() -> None:
+        for index in range(100):
+            await provider.load_route_info(f"stop-{index}")
+            fake_now[0] += 1.0
+
+    asyncio.run(load_many())
+
+    assert len(provider._route_info_by_stop) == 100
+    assert "stop-0" in provider._route_info_by_stop
+    assert "stop-0" in provider._kiosk_uids

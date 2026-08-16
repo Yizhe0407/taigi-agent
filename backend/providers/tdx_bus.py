@@ -60,7 +60,7 @@ import httpx
 from providers.bus import BusProvider
 from providers.http import get_http_client
 from providers.tdx_auth import TdxTokenClient
-from providers.ttl_cache import TtlCache
+from providers.ttl_cache import KeyedLocks, TtlCache
 from telemetry import get_telemetry
 
 _log = logging.getLogger(__name__)
@@ -72,6 +72,7 @@ _DEFAULT_ROUTE_INFO_TTL = 600.0
 _ROUTE_INFO_PARTIAL_TTL = 60.0  # short TTL when a StopOfRoute endpoint failed mid-fetch
 _DEFAULT_ROUTE_ESTIMATE_TTL = 30.0  # TDX updates ~30 s; 10 s caused 429 rate-limit hits
 _MAX_ROUTE_ESTIMATE_CACHE_ENTRIES = 256
+_MIN_ROUTE_INFO_SWEEP = 32  # don't bother sweeping _route_info_by_stop below this size
 _DEFAULT_ETA_TTL = 60.0  # must exceed wait_for(12s) + warmup_sleep(25s) = 37s to break 429 cascade
 _MAX_RETRIES = 1  # retries on HTTP 429; Retry-After is 20-40 s so 3 retries = 60-120 s blocking
 _MAX_UIDS_PER_FILTER = 15  # keeps encoded $filter well under typical gateway URL-length limits
@@ -152,8 +153,12 @@ class TdxBusProvider(BusProvider):
         # that failed mid-fetch gets re-checked soon instead of caching a partial
         # result for the full TTL.
         self._route_info_by_stop: dict[str, tuple[float, dict[str, dict], bool]] = {}
-        # per-key lock prevents concurrent cache-miss storms on load_route_info
-        self._route_info_locks: dict[str, asyncio.Lock] = {}
+        # per-key lock prevents concurrent cache-miss storms on load_route_info;
+        # KeyedLocks drops a key once no task holds or awaits it, so the registry
+        # is bounded by in-flight concurrency instead of by every stop ever asked for.
+        self._route_info_locks: KeyedLocks[str] = KeyedLocks()
+        # Amortised sweep bookkeeping for _route_info_by_stop (see _maybe_sweep_route_info).
+        self._route_info_sweep_threshold = _MIN_ROUTE_INFO_SWEEP
         # stop_name → set of boarding StopUIDs (first occurrence of that stop in each route)
         self._kiosk_uids: dict[str, set[str]] = {}
         # sub_route_name → (fetched_at, rows)
@@ -317,8 +322,7 @@ class TdxBusProvider(BusProvider):
         # TTL depends on had_failures from the *previous* fetch, which doesn't fit
         # TtlCache's fixed-ttl/2-tuple shape without contorting it more than the
         # manual per-key lock below costs.
-        lock = self._route_info_locks.setdefault(stop_name, asyncio.Lock())
-        async with lock:
+        async with self._route_info_locks.acquire(stop_name):
             # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
             cached = self._route_info_by_stop.get(stop_name)
             ttl = self._route_info_ttl if cached is None or not cached[2] else _ROUTE_INFO_PARTIAL_TTL
@@ -330,7 +334,33 @@ class TdxBusProvider(BusProvider):
             self._route_info_by_stop[stop_name] = (self._clock(), info, had_failures)
             if boarding_uids:
                 self._kiosk_uids[stop_name] = boarding_uids
+            self._maybe_sweep_route_info()
             return info
+
+    def _maybe_sweep_route_info(self) -> None:
+        """Evict expired `_route_info_by_stop` entries (and their `_kiosk_uids`).
+
+        Both dicts only ever expired at read time, so every stop name ever looked
+        up stayed resident for the life of the process.  Sweeping on store bounds
+        them to "distinct stops seen within one route-info TTL".
+
+        Retention uses the full TTL even for `had_failures` entries whose read-time
+        TTL is the shorter partial one: keeping a dead entry slightly longer is
+        harmless, dropping a live one would cost an extra upstream fetch.
+
+        `_kiosk_uids` carries no timestamp of its own, so it is pruned strictly in
+        lockstep with the route-info entries actually removed here — never by
+        reconciling the whole dict, which would also discard directly-seeded UIDs.
+        """
+        if self._route_info_ttl is None or self._route_info_ttl <= 0:
+            return
+        if len(self._route_info_by_stop) <= self._route_info_sweep_threshold:
+            return
+        expired = [key for key, (fetched_at, _info, _failed) in self._route_info_by_stop.items() if self._expired(fetched_at, self._route_info_ttl)]
+        for key in expired:
+            del self._route_info_by_stop[key]
+            self._kiosk_uids.pop(key, None)
+        self._route_info_sweep_threshold = max(_MIN_ROUTE_INFO_SWEEP, 2 * len(self._route_info_by_stop))
 
     async def load_route_terminals(self, route_name: str) -> dict[str, str]:
         """Return {go_dest, back_dest} from TDX StopOfRoute filtered by route name.
