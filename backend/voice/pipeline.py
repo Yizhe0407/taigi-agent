@@ -46,10 +46,9 @@ class TurnLatencyTracker:
     """Bridges 'user finished speaking -> first TTS audio frame' latency across
     two separate pipeline stages (agent_processor -> tts_taigi).
 
-    ponytail: single mutable timestamp slot shared by both processors for one
-    pipeline run. Correct for the common non-overlapping-turn case; a barge-in
-    that starts a new turn mid-measurement can produce a stale/dropped sample
-    (low-stakes latency metric — upgrade to per-turn IDs if it gets noisy).
+    Single mutable timestamp slot shared by both processors, so a barge-in
+    that starts a new turn mid-measurement can produce a stale/dropped sample.
+    Low-stakes metric — fine for now, upgrade to per-turn IDs if it gets noisy.
     """
 
     def __init__(self) -> None:
@@ -68,9 +67,9 @@ class TurnLatencyTracker:
 def _drain_chunk_queue(queue: deque) -> None:
     """Drain aiortc RawAudioTrack._chunk_queue, resolving any pending futures.
 
-    ponytail: deque.clear() leaves in-flight futures un-resolved so their awaiters
-    hang forever. Popleft loop resolves each future before discarding the chunk.
-    Only the last chunk of each add_audio_bytes() call carries a non-None future.
+    deque.clear() would leave in-flight futures un-resolved and their awaiters
+    hanging forever, so pop each entry and resolve its future before discarding
+    it. Only the last chunk of each add_audio_bytes() call carries a future.
     """
     while queue:
         _, fut = queue.popleft()
@@ -84,30 +83,18 @@ class BargeInProcessor(FrameProcessor):
     PipelineWorker's LLMResponseUniversalAggregator normally does this, but we
     use a custom agent instead of an LLMService, so we need it explicitly.
 
-    Gate: only interrupt when the bot is currently speaking.
-    Rationale: while the bot is silent (still reasoning/tool-calling, nothing
-    pushed downstream yet), a VAD blip from noise/cough would kill in-flight
-    work with no recovery path, so this processor stays quiet and leaves that
-    case to agent_processor.py's own TranscriptionFrame handling instead — it
-    cancels the prior inference task on the next transcript and, if that task
-    had already pushed frames downstream (Start/TextFrame reached TTS before
-    the bot's audio actually started), sends its own InterruptionFrame to
-    clear them. That inference-level check (not this bot-speaking gate) is
-    what closes the barge-in-before-audio-starts race — see agent_processor.py.
+    Gated on bot-speaking: while the bot is silent (still reasoning/tool-calling,
+    nothing pushed downstream yet), a VAD blip from noise/cough would kill
+    in-flight work with no recovery path, so this processor stays quiet in that
+    case. The barge-in-before-audio-starts race is instead closed at the
+    inference level in agent_processor.py, which cancels the prior task on the
+    next transcript and sends its own InterruptionFrame if that task had
+    already pushed frames downstream.
 
-    BotStartedSpeakingFrame / BotStoppedSpeakingFrame are broadcast upstream by the
-    output transport's MediaSender and travel through this processor on their way to
-    the input transport.
-
-    Also forwards these two frames to the client over the data channel (send_event)
-    as {"type": "bot_speaking"} / {"type": "bot_silent"} — the frontend uses this to
-    know playback is still active instead of relying solely on timers.
-
-    Likewise forwards the Silero VAD frames as {"type": "user_speaking"} /
-    {"type": "user_silent"} so the frontend's conversation state machine can show
-    a "listening" vs "recognizing" phase. user_speaking fires regardless of the
-    bot-speaking gate (the frontend always wants to know the mic picked up speech);
-    only the barge-in interruption stays gated on the bot currently talking.
+    Also forwards bot-speaking / user-speaking state to the client over the data
+    channel (send_event) so the frontend can drive its playback and listening/
+    recognizing UI states. user_speaking fires regardless of the bot-speaking
+    gate; only the interruption itself stays gated on the bot currently talking.
     """
 
     def __init__(self, send_event: Callable[[Any], None] | None = None, **kwargs):
@@ -141,15 +128,13 @@ class BargeInProcessor(FrameProcessor):
 class SubtitleSyncProcessor(FrameProcessor):
     """Forwards SubtitleFrames to the client as playback-synced subtitles.
 
-    Placed after transport.output() in the pipeline: BaseOutputTransport's
-    _audio_task_handler drains its internal audio queue at real playback
-    speed and only pushes each frame downstream once it has actually been
-    queued for playback (frames with no `pts` queue inline with audio — see
-    SubtitleFrame's docstring in tts_taigi.py). A processor sitting after
-    transport.output() therefore sees each SubtitleFrame at ~the moment its
-    audio starts playing, not at LLM-generation time. The frontend uses
-    durationMs to reveal the text progressively over the actual playback
-    window instead of dumping it all at once.
+    Placed after transport.output(): BaseOutputTransport's _audio_task_handler
+    drains its audio queue at real playback speed and only pushes a frame
+    downstream once it's actually queued for playback (a pts-less frame like
+    SubtitleFrame queues inline with audio — see tts_taigi.py). So a processor
+    here sees each SubtitleFrame at ~the moment its audio starts playing, not
+    at LLM-generation time, letting the frontend reveal durationMs of text
+    progressively over the real playback window instead of dumping it at once.
     """
 
     def __init__(self, send_event: Callable[[Any], None] | None = None, **kwargs):
@@ -166,9 +151,9 @@ class SubtitleSyncProcessor(FrameProcessor):
 class _TaigiSmallWebRTCOutputTransport(SmallWebRTCOutputTransport):
     """Extends SmallWebRTCOutputTransport to clear aiortc's audio buffer on barge-in.
 
-    ponytail: pipecat's handle_interruptions() resets its own _audio_queue but
-    audio already written to aiortc's RawAudioTrack._chunk_queue keeps playing.
-    No public API to clear it — override until upstream adds one.
+    pipecat's handle_interruptions() resets its own _audio_queue, but audio
+    already written to aiortc's RawAudioTrack._chunk_queue keeps playing —
+    there's no public API to clear it, so override until upstream adds one.
     """
 
     async def _handle_frame(self, frame: Frame) -> None:
@@ -176,8 +161,8 @@ class _TaigiSmallWebRTCOutputTransport(SmallWebRTCOutputTransport):
             if self._client and getattr(self._client, "_audio_output_track", None):
                 track = self._client._audio_output_track
                 chunk_queue = getattr(track, "_chunk_queue", None)
-                # aiortc RawAudioTrack uses a collections.deque for _chunk_queue.
-                # Guard the type explicitly so a future aiortc refactor doesn't silently no-op.
+                # Guard the type (aiortc uses a plain deque here) so a future
+                # aiortc refactor doesn't silently no-op instead of erroring.
                 if isinstance(chunk_queue, deque):
                     try:
                         _drain_chunk_queue(chunk_queue)
@@ -233,8 +218,8 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
         ]
     )
 
-    # ponytail: idle_timeout_secs=None — disconnect cancels the worker (fix #1),
-    # so the 5-min idle kill is unnecessary and harmful (kills a live connection).
+    # on_disconnected already cancels the worker, so PipelineWorker's own 5-min
+    # idle kill is unnecessary and would just cut off a still-live connection.
     task = PipelineWorker(pipeline, idle_timeout_secs=None, params=PipelineParams())
 
     # Event set by on_app_message when the client sends {"type": "client_ready"}.
@@ -278,12 +263,11 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
                     "client_ready not received within 3 s for session %s — sending welcome anyway",
                     session_id,
                 )
-            # Single source of truth for the welcome: the server announces the text on
-            # the data channel (subtitle/chat) at the same moment it queues the audio,
-            # so the subtitle can no longer appear seconds before the voice.
+            # Announce the text at the same moment we queue the audio, so the
+            # subtitle can't appear seconds ahead of the voice.
             webrtc_connection.send_app_message({"type": "agent_reply", "text": _WELCOME_TEXT, "role": "assistant"})
-            # ponytail: TTSSpeakFrame is the canonical standalone-utterance signal for TTS
-            # services (tts_service.py:752); TextFrame relies on sentence aggregator flush.
+            # TTSSpeakFrame is TTSService's canonical standalone-utterance signal;
+            # a plain TextFrame would rely on the sentence aggregator to flush it.
             await task.queue_frame(TTSSpeakFrame(text=_WELCOME_TEXT))
 
         def _on_welcome_done(t: asyncio.Task) -> None:
@@ -296,15 +280,13 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
                 _log.exception("Welcome greeting task failed for session %s", session_id, exc_info=exc)
 
         # Do not block on_client_connected; transport needs to process on_app_message.
-        # Keep a strong reference (+ done_callback to drop it) so the task can't be
-        # garbage-collected mid-run.
         _welcome_task = asyncio.create_task(_send_welcome())
         _welcome_task.add_done_callback(_on_welcome_done)
 
     @transport.event_handler("on_client_disconnected")
     async def on_disconnected(_transport, _connection) -> None:
-        # ponytail: pipecat's _on_client_disconnected only fires the event handler;
-        # it does NOT push an EndFrame, so task.run() never returns. Cancel explicitly.
+        # pipecat's _on_client_disconnected only fires the event handler — it does
+        # NOT push an EndFrame, so task.run() never returns on its own; cancel it.
         # Session data is preserved — frontend owns lifecycle via DELETE /api/chat/sessions/{id}.
         nonlocal _session_active
         _session_active = False
@@ -327,24 +309,24 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
             # the +1 recorded in on_connected so the gauge doesn't drift.
             get_telemetry().record_voice_active_sessions(-1)
 
-        # The welcome task is fire-and-forget: it can still be parked on the 3 s
-        # _client_ready wait (or on queue_frame) when the pipeline unwinds. Left
-        # alone it outlives run_voice_pipeline and keeps the worker + connection
-        # reachable, so cancel it and let its cleanup finish here.
+        # The welcome task is fire-and-forget and can still be parked on the 3 s
+        # _client_ready wait (or on queue_frame) when the pipeline unwinds; left
+        # alone it would outlive run_voice_pipeline and keep the worker +
+        # connection reachable, so cancel it and wait for its cleanup here.
         _pending_welcome = _welcome_task
         if _pending_welcome is not None and not _pending_welcome.done():
             _pending_welcome.cancel()
             with suppress(asyncio.CancelledError):
                 await _pending_welcome
 
-        # pipecat's SmallWebRTCRequestHandler only drops a peer connection from
-        # its _pcs_map when the pc emits "closed", and only pc.close() emits it.
-        # On the normal client-disconnect path the client's own close does that;
-        # when connect()/task.run() raises, nothing does — the pc (with its ICE
-        # /DTLS transports and the transport's Silero ONNX session hanging off
-        # the pipeline) would then sit in _pcs_map for the life of the process.
-        # disconnect() is idempotent (aiortc's RTCPeerConnection.close() returns
-        # early once closed), so this is a no-op on the normal path.
+        # pipecat's SmallWebRTCRequestHandler only drops a pc from its _pcs_map
+        # when the pc emits "closed", which only pc.close() triggers. The normal
+        # client-disconnect path gets that from the client's own close; when
+        # connect()/task.run() raises instead, nothing does, so the pc (and the
+        # ICE/DTLS transports + Silero ONNX session hanging off it) would sit in
+        # _pcs_map for the life of the process. disconnect() is idempotent
+        # (aiortc's RTCPeerConnection.close() returns early once closed), so
+        # this call is a no-op on the normal path and only matters here.
         try:
             await webrtc_connection.disconnect()
         except Exception as close_exc:

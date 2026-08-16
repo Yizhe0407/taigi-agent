@@ -47,9 +47,8 @@ class _ResponseState:
     LLMFullResponseStartFrame/TextFrame downstream.
 
     Passed explicitly into `_run_agent_inference` (not read off `self`) so a
-    task being cancelled and the task replacing it never race over the same
-    flag: each in-flight call owns its own instance, and only that call ever
-    writes to it.
+    cancelled task and the task replacing it never race over the same flag —
+    each in-flight call owns its own instance.
     """
 
     __slots__ = ("started",)
@@ -78,11 +77,9 @@ class TaigiBusAgentProcessor(FrameProcessor):
     def _end_conversation_tool(self) -> tuple[dict, Any]:
         """Build the (schema, handler) pair injected into this session's tools.
 
-        The handler is a closure over `self._send_event` so it can push the
-        end-of-conversation signal to the client. It returns a short string that
-        goes back to the LLM as the tool result; the model then speaks the actual
-        farewell on the following round (the frontend waits for bot_silent before
-        closing, so the goodbye audio still plays out).
+        The handler's return string goes back to the LLM as the tool result; the
+        model speaks the actual farewell on the following round (the frontend
+        waits for bot_silent before closing, so the goodbye audio still plays).
         """
 
         async def end_conversation() -> str:
@@ -95,22 +92,17 @@ class TaigiBusAgentProcessor(FrameProcessor):
     async def _cancel_inference_task(self) -> None:
         """Cancel `self._inference_task` and wait for its cleanup to finish.
 
-        Ordering guarantee: `asyncio.Task.cancel()` only schedules a
-        CancelledError to be raised the next time that task is resumed — it
-        does not run the task's except/cleanup code synchronously. If a caller
-        cancels and then immediately starts a new task (fire-and-forget), the
-        old task's CancelledError handler (which may push a stale
-        LLMFullResponseEndFrame, see `_run_agent_inference`) races the new
-        task's own LLMFullResponseStartFrame with no ordering guarantee between
-        them — a stale End can land downstream *after* the new Start, breaking
-        the TTS sentence aggregator's Start/End pairing.
-
-        Awaiting the task here (swallowing the CancelledError it re-raises)
-        forces its cleanup to run to completion before this coroutine
-        continues, so any frames it pushes are always fully flushed before the
-        caller creates a replacement task. The old task is parked on an I/O
-        await (LLM stream / push_frame), so cancellation propagates and this
-        await resolves quickly — it does not block process_frame for long.
+        `asyncio.Task.cancel()` only schedules a CancelledError for the next
+        time the task resumes — it does not run its except/cleanup code
+        synchronously. Firing a bare cancel() and immediately starting a
+        replacement task would let the old task's CancelledError handler
+        (which may push a stale LLMFullResponseEndFrame, see
+        `_run_agent_inference`) race the new task's own
+        LLMFullResponseStartFrame with no ordering guarantee, so a stale End
+        could land *after* the new Start and break the TTS sentence
+        aggregator's Start/End pairing. Awaiting the task here forces its
+        cleanup to finish first; it's parked on an I/O await (LLM stream /
+        push_frame), so cancellation propagates quickly.
         """
         task = self._inference_task
         if task is None or task.done():
@@ -123,13 +115,11 @@ class TaigiBusAgentProcessor(FrameProcessor):
         """Cancel any in-flight inference before the base class tears us down.
 
         `FrameProcessor.cleanup()` only cancels the input/process tasks it
-        created itself — it knows nothing about the task we spawn with
-        `create_task()` in `process_frame`. Without this override, that task is
-        only ever cancelled by the *next* Transcription/InterruptionFrame, which
-        never arrives once the client disconnects mid-inference: the task keeps
-        running and holds the AgentSession, the open LLM streaming response and
-        (through `push_frame`) the whole processor chain alive for the rest of
-        the process lifetime.
+        created itself — it doesn't know about the task we spawn with
+        `create_task()` in `process_frame`. Without this override, that task
+        would only be cancelled by the *next* Transcription/InterruptionFrame,
+        which never arrives once the client disconnects mid-inference, leaving
+        it running and holding the AgentSession + LLM stream alive forever.
 
         Ours is cancelled first, while the processor can still flush the frames
         its CancelledError handler pushes; `super().cleanup()` afterwards then
@@ -159,15 +149,13 @@ class TaigiBusAgentProcessor(FrameProcessor):
             if self._turn_timer:
                 self._turn_timer.mark_transcription()
 
-            # Cancel any existing task just in case, and wait for its cleanup to
-            # finish (see _cancel_inference_task docstring for the ordering
-            # guarantee this provides). If it already pushed
-            # LLMFullResponseStartFrame/TextFrame downstream (into TTS), a bare
-            # .cancel() only stops further generation — audio already queued for
-            # that stale reply keeps playing and overlaps the new one. Broadcasting
-            # here (rather than relying on BargeInProcessor, which gates on
-            # _bot_speaking and may not have fired yet) guarantees downstream state
-            # gets cleared whenever a partially-streamed response is abandoned.
+            # Cancel any existing task and wait for its cleanup (see
+            # _cancel_inference_task docstring). If it already pushed Start/
+            # TextFrame into TTS, a bare .cancel() would only stop further
+            # generation while the stale reply's queued audio keeps playing and
+            # overlaps the new one — so send our own InterruptionFrame here
+            # rather than relying on BargeInProcessor, whose _bot_speaking gate
+            # may not have fired yet.
             if self._inference_task and not self._inference_task.done():
                 state_was_started = bool(self._inference_state and self._inference_state.started)
                 await self._cancel_inference_task()
@@ -184,15 +172,12 @@ class TaigiBusAgentProcessor(FrameProcessor):
     async def _open_stream(self, text: str, stream_kwargs: dict[str, Any]):
         """Open `respond_in_session_stream`, recreating the session once if it expired.
 
-        Returns `(stream, first_chunk)` on success, or `None` if the session is
-        still gone after recreation. Bounded to two attempts: `get_store().create()`
-        always succeeds, so a second LookupError means the store itself can't
-        find its own freshly-created session — retrying further wouldn't help.
-
-        The chat session's TTL can expire while this long-lived WebRTC connection
-        stays open; without the retry, every later utterance would hit
-        LookupError and the kiosk would go permanently silent for a still-
-        connected user.
+        The chat session's TTL can expire while this long-lived WebRTC
+        connection stays open; without this retry every later utterance would
+        hit LookupError and the kiosk would go permanently silent. Returns
+        `(stream, first_chunk)` on success, or `None` if the session is still
+        gone after recreation — bounded to two attempts, since a second
+        LookupError means the store can't find its own freshly-created session.
         """
         from api.chat import get_store, respond_in_session_stream
 
@@ -213,15 +198,14 @@ class TaigiBusAgentProcessor(FrameProcessor):
     async def _run_agent_inference(self, text: str, direction: FrameDirection, state: _ResponseState | None = None):
         """Run the agent logic in a background task so we don't block process_frame.
 
-        Streams reply chunks straight into the pipeline — Pipecat's TTS
-        sentence aggregator starts synthesizing the first sentence while the
-        LLM is still generating the rest, instead of waiting for the full
-        reply.
+        Streams reply chunks straight into the pipeline so pipecat's TTS
+        sentence aggregator can start synthesizing the first sentence while the
+        LLM is still generating the rest, instead of waiting for the full reply.
 
-        `state` defaults to a fresh `_ResponseState` for callers (tests, mainly)
-        that don't need to observe it — `process_frame` always passes its own so
-        it can check `.started` when deciding whether a later cancellation needs
-        an explicit InterruptionFrame.
+        `state` defaults to a fresh `_ResponseState` for callers that don't need
+        to observe it; `process_frame` always passes its own so it can check
+        `.started` when deciding whether a later cancellation needs an
+        explicit InterruptionFrame.
         """
         if state is None:
             state = _ResponseState()

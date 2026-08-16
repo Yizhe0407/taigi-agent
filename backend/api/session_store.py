@@ -68,13 +68,11 @@ class ChatSessionStore:
     def load_messages(self, session_id: str) -> list[dict] | None:
         """Return messages and bump `last_used`, or None if missing / expired.
 
-        Does its own per-row TTL check (and deletes this row if expired) but,
-        unlike earlier versions, no longer runs a full-table `purge_expired()`
-        first — that was a table scan + DELETE under the global lock on every
-        single message, and `api.chat.run_lock_purge_loop` already sweeps the
-        whole table every 300s. Other sessions' expiry is only that much
-        (<=300s) less eager now; this session's own expiry check below is
-        unaffected.
+        Only checks this one row's TTL — deliberately does not run a
+        full-table `purge_expired()` first (that would be a table scan under
+        the global lock on every single message). `api.chat.run_lock_purge_loop`
+        already sweeps the whole table every 300s, so other sessions' expiry
+        is at most that much less eager.
         """
         now = time.time()
         with self._lock:
@@ -98,12 +96,11 @@ class ChatSessionStore:
 
     def exists(self, session_id: str) -> bool:
         """Cheap presence check with the same TTL semantics as `load_messages`,
-        minus the payload read, the `last_used` bump, and `purge_expired()`.
+        minus the payload read and the `last_used` bump.
 
-        Used for `api.chat`'s pre-stream 404 check so the message payload
-        isn't loaded and JSON-decoded twice per request — the authoritative
-        read for the actual turn still happens inside the session lock via
-        `load_messages`.
+        Used for `api.chat`'s pre-stream 404 check so the payload isn't
+        loaded and JSON-decoded twice per request; the authoritative read
+        still happens inside the session lock via `load_messages`.
         """
         now = time.time()
         with self._lock:
@@ -129,12 +126,9 @@ class ChatSessionStore:
             )
 
     def purge_expired(self) -> list[str]:
-        """Delete rows past TTL; return the purged session_ids.
-
-        Callers with per-session in-memory state keyed by session_id (e.g.
-        api.chat's `_session_locks`) use the return value to prune their own
-        state in step — otherwise a session that expires without ever being
-        revisited leaves its entry behind forever.
+        """Delete rows past TTL; return the purged session_ids so callers with
+        per-session in-memory state (e.g. `api.chat`'s `_session_locks`) can
+        prune it in step.
         """
         cutoff = time.time() - self._ttl
         with self._lock:
@@ -152,12 +146,10 @@ class ChatSessionStore:
     def session_ids(self) -> set[str]:
         """Return every session_id currently in the table.
 
-        Callers holding per-session in-memory state keyed by session_id (e.g.
-        api.chat's `_session_locks`) diff against this instead of relying on
-        `purge_expired()`'s return value alone: rows can also disappear
-        *without* going through `purge_expired()` — `load_messages()` deletes
-        an expired row in place and reports nothing — so that return value is
-        not a complete feed of deletions.
+        `api.chat`'s `_session_locks` purge diffs against this rather than
+        trusting `purge_expired()`'s return value alone: `load_messages()`
+        can also delete an expired row in place without reporting it, so
+        that return value is not a complete feed of deletions.
         """
         with self._lock:
             rows = self._conn.execute("SELECT session_id FROM sessions").fetchall()

@@ -78,8 +78,9 @@ _MAX_RETRIES = 1  # retries on HTTP 429; Retry-After is 20-40 s so 3 retries = 6
 _MAX_UIDS_PER_FILTER = 15  # keeps encoded $filter well under typical gateway URL-length limits
 _MAX_STALE_SECONDS = 300.0  # upstream-down grace period; beyond this, stop serving stale data
 _ETA_FETCH_TIMEOUT = 12.0  # outer budget for fetch_eta_at_stop's asyncio.wait_for
-_REQUEST_TIMEOUT_SECONDS = 10.0  # per-request timeout; must stay < _ETA_FETCH_TIMEOUT or the
-# wait_for cancels the request before its own timeout can ever fire
+# Per-request timeout; must stay below _ETA_FETCH_TIMEOUT or wait_for cancels the
+# request before this timeout can ever fire.
+_REQUEST_TIMEOUT_SECONDS = 10.0
 
 _INTERCITY_RE = re.compile(r"^7\d{3}")
 
@@ -138,9 +139,9 @@ class TdxBusProvider(BusProvider):
         self._eta_ttl = eta_ttl_seconds
         self._clock = clock
         self._sleep = sleep
-        # `get_http_client` below binds the name as currently seen in this module's
-        # globals, so tests that monkeypatch `tdx_bus.get_http_client` before
-        # constructing the provider also cover the token client's requests.
+        # Passed as a factory (not called here) so tests that monkeypatch
+        # `tdx_bus.get_http_client` before constructing the provider also cover
+        # the token client's requests.
         self._token_client = TdxTokenClient(
             client_id,
             client_secret,
@@ -148,14 +149,11 @@ class TdxBusProvider(BusProvider):
             timeout=_REQUEST_TIMEOUT_SECONDS,
             http_client_factory=get_http_client,
         )
-        # stop_name → (fetched_at, route_info_dict, had_failures)
-        # had_failures=True uses _ROUTE_INFO_PARTIAL_TTL so a StopOfRoute endpoint
-        # that failed mid-fetch gets re-checked soon instead of caching a partial
-        # result for the full TTL.
+        # stop_name → (fetched_at, route_info_dict, had_failures); had_failures
+        # selects _ROUTE_INFO_PARTIAL_TTL so a partial StopOfRoute result gets
+        # re-checked soon instead of caching it for the full TTL.
         self._route_info_by_stop: dict[str, tuple[float, dict[str, dict], bool]] = {}
-        # per-key lock prevents concurrent cache-miss storms on load_route_info;
-        # KeyedLocks drops a key once no task holds or awaits it, so the registry
-        # is bounded by in-flight concurrency instead of by every stop ever asked for.
+        # Per-key lock guarding load_route_info (see KeyedLocks in ttl_cache.py).
         self._route_info_locks: KeyedLocks[str] = KeyedLocks()
         # Amortised sweep bookkeeping for _route_info_by_stop (see _maybe_sweep_route_info).
         self._route_info_sweep_threshold = _MIN_ROUTE_INFO_SWEEP
@@ -201,9 +199,8 @@ class TdxBusProvider(BusProvider):
                     timeout=_REQUEST_TIMEOUT_SECONDS,
                 )
 
-            # Handles the 401 (token revoked/expired early server-side) → force
-            # refresh → retry-once dance internally; independent of the 429 retry
-            # budget below — a 401 refresh must not consume a rate-limit attempt.
+            # Handles the 401 refresh-and-retry dance internally, independent of
+            # the 429 retry budget below — a 401 refresh must not consume it.
             resp = await self._token_client.request_with_retry(_do)
             if resp.status_code == 429 and attempt < _MAX_RETRIES:
                 wait = self._retry_after_seconds(resp, float(1 << attempt))
@@ -267,10 +264,9 @@ class TdxBusProvider(BusProvider):
             fetch = self._fetch_eta_by_uids(uids) if uids else self._fetch_eta_by_name(stop_name)
             return await asyncio.wait_for(fetch, timeout=_ETA_FETCH_TIMEOUT)
 
-        # Stale-serve keeps fetched_at unbumped on failure, so staleness keeps
-        # accumulating toward _MAX_STALE_SECONDS instead of resetting on every
-        # failed retry (which would keep an upstream outage's last-good data alive
-        # forever) — see TtlCache.get_or_fetch.
+        # TtlCache.get_or_fetch leaves fetched_at unbumped on a stale-serve, so
+        # staleness keeps accumulating toward _MAX_STALE_SECONDS instead of an
+        # outage's last-good data resetting the clock on every failed retry.
         return await self._eta_ttl_cache.get_or_fetch(
             stop_name,
             _fetch,
@@ -318,10 +314,8 @@ class TdxBusProvider(BusProvider):
         if cached is not None and hit:
             return cached[1]
 
-        # Not a TtlCache: the cached value is a 3-tuple (info, had_failures) whose
-        # TTL depends on had_failures from the *previous* fetch, which doesn't fit
-        # TtlCache's fixed-ttl/2-tuple shape without contorting it more than the
-        # manual per-key lock below costs.
+        # Not a TtlCache: the TTL here depends on had_failures from the
+        # *previous* fetch, which doesn't fit TtlCache's fixed-ttl/2-tuple shape.
         async with self._route_info_locks.acquire(stop_name):
             # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
             cached = self._route_info_by_stop.get(stop_name)
@@ -340,15 +334,15 @@ class TdxBusProvider(BusProvider):
     def _maybe_sweep_route_info(self) -> None:
         """Evict expired `_route_info_by_stop` entries (and their `_kiosk_uids`).
 
-        Both dicts only ever expired at read time, so every stop name ever looked
-        up stayed resident for the life of the process.  Sweeping on store bounds
-        them to "distinct stops seen within one route-info TTL".
+        Bounds both dicts to "distinct stops seen within one route-info TTL" —
+        without this they'd grow for the life of the process, since entries only
+        ever expired at read time.
 
-        Retention uses the full TTL even for `had_failures` entries whose read-time
-        TTL is the shorter partial one: keeping a dead entry slightly longer is
-        harmless, dropping a live one would cost an extra upstream fetch.
+        Retention uses the full TTL even for `had_failures` entries (whose
+        read-time TTL is the shorter partial one): keeping a dead entry slightly
+        longer is harmless, dropping a live one costs an extra upstream fetch.
 
-        `_kiosk_uids` carries no timestamp of its own, so it is pruned strictly in
+        `_kiosk_uids` has no timestamp of its own, so it is pruned strictly in
         lockstep with the route-info entries actually removed here — never by
         reconciling the whole dict, which would also discard directly-seeded UIDs.
         """
@@ -356,7 +350,11 @@ class TdxBusProvider(BusProvider):
             return
         if len(self._route_info_by_stop) <= self._route_info_sweep_threshold:
             return
-        expired = [key for key, (fetched_at, _info, _failed) in self._route_info_by_stop.items() if self._expired(fetched_at, self._route_info_ttl)]
+        expired = [
+            key
+            for key, (fetched_at, _info, _failed) in self._route_info_by_stop.items()
+            if self._expired(fetched_at, self._route_info_ttl)
+        ]
         for key in expired:
             del self._route_info_by_stop[key]
             self._kiosk_uids.pop(key, None)

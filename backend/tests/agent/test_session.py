@@ -299,12 +299,11 @@ def test_error_path_calls_trim_before_reraising():
 
 def test_error_path_drops_dangling_tool_call_without_orphaning_history():
     """If `execute_tool_calls` itself raises (not a handler exception, which
-
     `_execute_one` already converts to an error ToolCallResult — see
     `agent/tool_dispatch.py`), `messages` is left with an assistant(tool_calls)
-    entry and no matching `role: tool` results. The error path must not trim
-    that entry into permanent history as an orphaned tool_call_id; it must
-    drop the whole incomplete round.
+    entry and no matching `role: tool` results. The error path must drop that
+    whole incomplete round instead of trimming it into permanent history as
+    an orphaned tool_call_id.
     """
     import agent.session as session_module
 
@@ -422,11 +421,9 @@ def test_respond_directly_discarded_when_called_with_other_tools():
 def test_respond_directly_handler_error_falls_through_to_llm_round():
     """A respond_directly handler exception must not short-circuit as the final reply.
 
-    Regression test for `ToolCallResult.is_error` (agent/tool_dispatch.py):
-    `_find_direct_response` now reads that structured flag instead of
-    string-matching the "工具 X 執行失敗：" prefix. This pins the observable
-    behavior — sole-call respond_directly failure still falls through to a
-    follow-up LLM round — across that refactor.
+    `_find_direct_response` decides this from `ToolCallResult.is_error`
+    (agent/tool_dispatch.py) — a sole-call respond_directly failure must still
+    fall through to a follow-up LLM round.
     """
 
     async def failing_respond_directly(message, intent=None):
@@ -453,11 +450,10 @@ def test_respond_directly_handler_error_falls_through_to_llm_round():
 def test_respond_directly_short_circuit_stores_normalized_assistant_history():
     """respond_directly-only short-circuit must record the reply in history.
 
-    Regression test: `_finish_normalized` used to trim and return the
-    normalized text without ever appending it to `self.messages`, leaving
-    history ending on a `role: tool` message with no assistant turn — a
-    silent violation of "assistant content == what was actually said" that
-    would corrupt every subsequent LLM call's context.
+    `_finish_normalized` must append to `self.messages`, not just return the
+    text — otherwise history ends on a `role: tool` message with no assistant
+    turn, violating "assistant content == what was actually said" and
+    corrupting every subsequent LLM call's context.
     """
 
     async def respond_directly_handler(message):
@@ -481,9 +477,9 @@ def test_respond_directly_short_circuit_stores_normalized_assistant_history():
 def test_history_stores_normalized_assistant_content_not_raw_reasoning():
     """Assistant content saved to history must be think-stripped and traditional Chinese.
 
-    Regression test: raw content (e.g. Qwen3's <think> blocks, simplified
-    Chinese) used to be appended to history verbatim, wasting context budget
-    and few-shotting the model into repeating its own dirty output.
+    Raw content (e.g. Qwen3's <think> blocks, simplified Chinese) left in
+    history would waste context budget and few-shot the model into repeating
+    its own dirty output.
     """
     session = make_session([llm_response(assistant_message("<think>我在想</think>没问题"))])
 

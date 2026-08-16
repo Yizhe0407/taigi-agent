@@ -189,24 +189,14 @@ def test_cancelling_response_that_already_started_sends_interruption_frame():
 
 
 def test_cancel_awaits_old_task_so_stale_end_never_lands_after_new_start():
-    """Regression test for the frame-order race: `asyncio.Task.cancel()` only
-    *schedules* a CancelledError to be raised the next time that task is
-    resumed — it does not run the task's cleanup synchronously. If
-    process_frame cancelled the old task and immediately created its
-    replacement (fire-and-forget), the old task's CancelledError handler
-    (which pushes a stale LLMFullResponseEndFrame, see _run_agent_inference)
-    would still be pending when the new task starts, free to interleave and
-    land downstream *after* the new task's own LLMFullResponseStartFrame —
-    breaking the TTS sentence aggregator's Start/End pairing.
-
-    _cancel_inference_task() now awaits the cancelled task (swallowing the
-    CancelledError it re-raises) before process_frame creates the new one.
-    The assertion below checks the actual invariant that fix provides —
-    old_task.done() must already be True, and its End frame already flushed —
-    by the time process_frame() returns control to the caller. This is a
-    deterministic check of task completion state, not a race won by scheduling
-    luck: a fire-and-forget `.cancel()` (no await) cannot make it true, since
-    nothing yields control back to the old task before process_frame returns."""
+    """Regression test for the frame-order race: a fire-and-forget `.cancel()`
+    on the old task would let its CancelledError handler (which pushes a stale
+    LLMFullResponseEndFrame) interleave with and land after the new task's own
+    LLMFullResponseStartFrame, breaking the TTS aggregator's Start/End pairing.
+    `_cancel_inference_task()` awaits the old task first, so by the time
+    process_frame() returns, old_task.done() must already be True and its End
+    frame already flushed — a deterministic check, not one a bare `.cancel()`
+    could satisfy by scheduling luck."""
     pushed = []
 
     class _RecordingProcessor(_FakeProcessor):
@@ -302,9 +292,9 @@ def test_cancelled_inference_that_already_started_pushes_end_frame():
 
 class _RealInitProcessor(TaigiBusAgentProcessor):
     """Real FrameProcessor.__init__ (so cleanup()'s super() chain is exercised),
-    but create_task bypasses pipecat's task manager, which needs a live pipeline.
-    setup() is never called, so the base class's own input/process tasks are None
-    and FrameProcessor.cleanup() handles that fine."""
+    but create_task bypasses pipecat's task manager, which needs a live
+    pipeline. setup() is never called, so FrameProcessor.cleanup() sees the
+    base class's own input/process tasks as None, which it handles fine."""
 
     def create_task(self, coro, name=None):
         return asyncio.ensure_future(coro)

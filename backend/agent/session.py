@@ -50,11 +50,9 @@ def _find_direct_response(tool_calls: list[ToolCall], tool_results: list[ToolCal
     call, result = tool_calls[0], tool_results[0]
     if call.function.name != "respond_directly":
         return None
-    # A handler exception ("工具 X 執行失敗：…") or a dispatch failure (bad
-    # JSON args / non-object args / missing handler) must never become the
-    # user's final reply — `is_error` is tool_dispatch's structured signal for
-    # that, set alongside the same string the model/prompt still sees in
-    # history. Fall through to a normal LLM round instead.
+    # A handler exception or dispatch failure (bad JSON args, missing handler)
+    # must never become the final reply; `is_error` is tool_dispatch's
+    # structured signal for that. Fall through to a normal LLM round instead.
     if result.is_error:
         return None
     return result.message["content"]
@@ -120,16 +118,13 @@ class AgentSession:
     def _drop_dangling_tool_call(self) -> None:
         """Remove a trailing assistant(tool_calls) entry with no tool results yet.
 
-        The only window that can leave `messages` in this half-completed shape
-        is between appending the assistant tool_calls entry and extending
-        `messages` with `execute_tool_calls`'s results in `_run_llm_loop`
-        (nothing else appends between those two points) — if that call raises,
-        `messages` ends on the assistant entry with none of its tool_call_ids
-        answered yet. Trimming as-is could keep that entry (it's always in the
-        newest, always-kept exchange), freezing an orphaned tool_call_id into
-        history. The round never completed, so dropping the entry outright is
-        safe: there is no tool result to lose, and any earlier, fully-paired
-        rounds in the same exchange are untouched.
+        Only the window between appending that entry and extending `messages`
+        with `execute_tool_calls`'s results in `_run_llm_loop` can leave this
+        half-completed shape — if that call raises, none of the entry's
+        tool_call_ids have been answered. Trimming as-is would keep the entry
+        (it's always in the newest, always-kept exchange) and freeze an
+        orphaned tool_call_id into history. The round never completed, so
+        dropping the entry outright is safe.
         """
         if self.messages and self.messages[-1].get("role") == "assistant" and self.messages[-1].get("tool_calls"):
             self.messages.pop()
@@ -142,12 +137,10 @@ class AgentSession:
     def _finish_normalized(self, content: str) -> str:
         """Normalize model output, append it as the assistant turn, trim, return it.
 
-        Used by the respond_directly short-circuit path. Must append to
-        history like `_finish_with_assistant` — otherwise history ends on a
-        `role: tool` message with no assistant reply recorded, breaking the
-        "assistant content == what was actually said" invariant and letting
-        raw (un-normalized) text leak past this point if any caller relied on
-        history instead of the return value.
+        Used by the respond_directly short-circuit path. Must append to history
+        (not just return the string) — otherwise history ends on a `role: tool`
+        message with no assistant reply, breaking the "assistant content ==
+        what was actually said" invariant.
         """
         normalized = normalize_llm_output(content)
         self.messages.append({"role": "assistant", "content": normalized})
@@ -221,8 +214,8 @@ class AgentSession:
         intent: Intent = Intent.UNKNOWN,
     ) -> AsyncIterator[str]:
         # Prefetch enrichment is best-effort: a failing enricher must not sink
-        # the turn. Previously an exception here propagated as a 500 with no
-        # agent.turn metric recorded; degrade to the raw user input instead.
+        # the turn (an uncaught exception here would surface as a 500 with no
+        # agent.turn metric recorded). Degrade to the raw user input instead.
         try:
             extra = await self.input_enricher(user_input) if self.input_enricher else ""
         except Exception as exc:  # noqa: BLE001 — enrichment is optional
@@ -397,11 +390,8 @@ class AgentSession:
                     yield ("result", _LlmTurnResult(outcome="ok", tool_rounds=tool_rounds))
                     return
         except Exception as error:
-            # Mirror every other exit path: trim before handing control back so
-            # a caller that later decides to persist messages on the error
-            # path too (unlike today's stream-must-finish-cleanly convention
-            # in api/chat.py) can't silently accumulate unbounded history.
-            # Must run before the "result" event, since the caller re-raises
+            # Mirror every other exit path by trimming before yielding — must
+            # happen before the "result" event, since the caller re-raises
             # `error` immediately upon receiving it.
             self._drop_dangling_tool_call()
             self._trim()

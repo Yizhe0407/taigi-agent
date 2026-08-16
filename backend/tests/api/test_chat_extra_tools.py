@@ -134,7 +134,6 @@ def test_injected_extra_tool_runs_handler_and_feeds_result_back(monkeypatch):
     assert reply == "再會啦。"
     # The handler's return value went back to the model as a tool result.
     assert any(m["role"] == "tool" and m["content"] == "已標記結束" for m in session.messages)
-    # Prompt guidance was appended.
     assert session.system_prompt.endswith("【結束對話】指示")
 
 

@@ -73,22 +73,17 @@ _DecodedSegment = tuple[bytes, int, int, int, int]
 
 # Bounded-by-bytes LRU cache of fully-decoded audio for repeated fixed text
 # (welcome greeting, fallback error replies, etc.) so a repeat hit skips both
-# the Hanlo/Taibun conversion and the upstream TTS HTTP round trip entirely —
-# the biggest win for time-to-first-audio on those lines. Keyed on
-# (config.model, config.voice, post-normalize_for_tts text) — folding in model/
-# voice keeps a runtime TTS_MODEL/TTS_VOICE change from serving stale audio
-# synthesized under the old config; module-level (not per-TaigiTTSService
-# instance) so the benefit is shared across sessions in this process.
+# the Hanlo/Taibun conversion and the upstream TTS HTTP round trip. Keyed on
+# (config.model, config.voice, post-normalize_for_tts text) so a runtime
+# TTS_MODEL/TTS_VOICE change can't serve stale audio; module-level (not
+# per-TaigiTTSService instance) so the benefit is shared across sessions.
 #
-# Budget is in *bytes of raw PCM*, not entry count: a count cap treats a
-# multi-second, multi-segment reply the same as a two-word one, and this
-# process runs for weeks without restarting, so a handful of long replies
-# under a count cap can quietly hold tens to hundreds of MB. A single decoded
-# reply at 24kHz/16-bit/mono runs roughly 48 KB/sec of speech, so a few
-# seconds of audio is a few hundred KB; 12 MB comfortably holds several dozen
-# distinct fixed replies (welcome greeting, ASR-failure sentence, error
-# sentences, ...) while keeping this cache's worst case in the low tens of MB
-# regardless of how many distinct dynamic (non-repeating) replies pass through.
+# Budget is in bytes of raw PCM, not entry count — an entry-count cap would
+# treat a multi-second reply the same as a two-word one and could quietly
+# hold tens to hundreds of MB over this long-running process's lifetime. At
+# ~48 KB/sec of 24kHz/16-bit/mono speech, 12 MB comfortably holds several
+# dozen distinct fixed replies while keeping the worst case in the low tens
+# of MB regardless of how many dynamic (non-repeating) replies pass through.
 _DECODED_CACHE_MAX_BYTES = 12 * 1024 * 1024
 
 # entry value: (decoded segments, total display duration ms, entry size in PCM bytes)
@@ -168,27 +163,20 @@ class TaigiTTSService(TTSService):
     def _discard_tts_context(self, context_id: str) -> None:
         """Drop the base class's per-context bookkeeping entry for `context_id`.
 
-        Pipecat's `TTSService` registers one `TTSContext` per synthesis context in
-        `_tts_contexts` (tts_service.py:1080) and only ever deletes it when a
-        `TTSStoppedFrame` carrying that context_id passes through `push_frame`
-        (tts_service.py:833). Every site that emits a `TTSStoppedFrame` is gated on
-        `push_stop_frames`, which we leave at its default False, so that deletion
-        never runs for us — and `_handle_interruption` (tts_service.py:912-947)
-        does not touch the dict either. Result: one stranded entry per LLM turn
-        (context ids are reused within a turn), forever, in a kiosk process that
-        stays up for weeks. Each entry is small (a uuid key plus two bools), so
-        this is unbounded growth rather than a fast leak — but barge-in is
-        constant at a bus stop and nothing else ever reclaims these.
+        Pipecat's `TTSService` registers one `TTSContext` per synthesis context
+        in `_tts_contexts` and only ever deletes it when a `TTSStoppedFrame`
+        carrying that context_id passes through `push_frame` — but every site
+        that emits `TTSStoppedFrame` is gated on `push_stop_frames`, which we
+        leave at its default False, so that deletion path never runs for us
+        (`_handle_interruption` doesn't touch the dict either). Without this,
+        every LLM turn strands one entry forever in a kiosk process that stays
+        up for weeks.
 
-        Called only from the two per-context lifecycle hooks below, each of which
-        pipecat invokes exactly once with the id of the context that just ended,
-        so this can never drop a context that is still in flight (synthesis for
-        turn N+1 can register its entry while turn N is still playing back).
-        Audio output is unaffected: nothing reads `_tts_contexts` after these
-        points — the `TTSStartedFrame` stamping at tts_service.py:1525 only runs
-        under `push_start_frame=True` (we keep the default False), and
-        `_push_tts_frames` re-registers the entry before appending anything to a
-        recreated context.
+        Safe to call here: pipecat invokes each of the two hooks below exactly
+        once, with the id of the context that just ended, so this never drops a
+        context still in flight (turn N+1's synthesis can register its own
+        entry while turn N is still playing back), and nothing reads
+        `_tts_contexts` again after these points.
         """
         self._tts_contexts.pop(context_id, None)
 
@@ -227,10 +215,7 @@ class TaigiTTSService(TTSService):
                 return
 
             tts_text = normalize_for_tts(text)
-            # Include (model, voice) in the key — otherwise switching TTS_VOICE/
-            # TTS_MODEL at runtime (or across sessions with different config) would
-            # keep serving audio synthesized under the old voice for text that was
-            # cached before the change.
+            # (model, voice, text) key — see _DECODED_CACHE_MAX_BYTES comment above.
             cache_key = f"{config.model}\x1f{config.voice}\x1f{tts_text}"
             cached = _decoded_cache_get(cache_key)
             if cached is not None:

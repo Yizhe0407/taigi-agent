@@ -41,19 +41,19 @@ class _LockEntry:
 class KeyedLocks[K]:
     """Per-key `asyncio.Lock` registry that forgets keys nobody is using.
 
-    The point of a per-key lock here is *coalescing*: concurrent misses on the
-    same key must collapse into one upstream fetch, or TDX answers with a 429
-    cascade.  Coalescing only works while every contender for a key receives
-    the *same* Lock object, so the naive "delete on release" is wrong — a task
-    arriving during the handoff window would mint a second lock and start a
-    duplicate fetch.
+    Coalescing (concurrent misses on one key collapsing into a single upstream
+    fetch — losing this reintroduces the TDX 429 cascade) requires every
+    contender to receive the *same* Lock object. A naive "delete on release"
+    breaks that: a task arriving in the release→resume handoff window mints a
+    second lock. `asyncio.Lock.locked()` can't detect that window either — it
+    reads False while a released lock's next waiter hasn't resumed yet.
 
-    Entries are therefore reference-counted: the count is incremented before
-    awaiting the lock and decremented after leaving the critical section, both
-    in straight-line sync code (no await in between, so the single-threaded
-    event loop cannot interleave).  A key's lock survives exactly as long as at
-    least one task is inside or queued for it, which makes the registry bounded
-    by in-flight concurrency rather than by the lifetime key space.
+    Entries are therefore reference-counted: incremented before awaiting the
+    lock, decremented after leaving the critical section, both in
+    straight-line sync code (no await in between, so the event loop cannot
+    interleave). A key's lock survives as long as at least one task is inside
+    or queued for it, bounding the registry by in-flight concurrency rather
+    than by the lifetime key space.
     """
 
     def __init__(self) -> None:
@@ -109,13 +109,13 @@ class TtlCache[K, V]:
     def _maybe_sweep(self, retain_ttl: float | None) -> None:
         """Drop entries past `retain_ttl`, amortised so stores stay O(1).
 
-        Read-time expiry alone leaves dead keys in the store forever, so the key
-        set grows monotonically for the life of the process.  Sweeping after a
-        store bounds it to "distinct keys seen within one retention window".
+        Read-time expiry alone would leave dead keys in the store forever, so
+        this bounds it to "distinct keys seen within one retention window".
 
-        `retain_ttl` is the *retention* horizon, not the freshness TTL: when the
-        caller uses stale-serve, entries past `ttl` but within `stale_ttl` are
-        still load-bearing and must survive the sweep.
+        `retain_ttl` is the caller's retention horizon, not the freshness TTL:
+        callers using stale-serve pass `stale_ttl` here, not `ttl` — entries
+        past `ttl` but within `stale_ttl` are still load-bearing and must
+        survive the sweep.
         """
         if retain_ttl is None or retain_ttl <= 0:
             return  # no expiry configured — nothing is ever removable

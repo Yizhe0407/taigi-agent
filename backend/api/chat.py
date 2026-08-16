@@ -48,7 +48,7 @@ _LOCK_PURGE_INTERVAL_SECONDS = 300.0
 
 
 _store: ChatSessionStore | None = None
-_session_locks: dict[str, asyncio.Lock] = {}  # ponytail: module-level dict, pop on delete to avoid unbounded growth
+_session_locks: dict[str, asyncio.Lock] = {}
 # Holders + waiters per session_id. A Lock with a non-zero count must never be
 # removed from `_session_locks` (see `_discard_session_lock`).
 _session_lock_users: dict[str, int] = {}
@@ -124,13 +124,11 @@ def _discard_session_lock(session_id: str) -> None:
 async def purge_expired_locks() -> None:
     """Reconcile `_session_locks` against the session rows that still exist.
 
-    Acting only on `purge_expired()`'s return value leaks locks: a row can also
-    vanish *without* being reported, because `load_messages()` deletes an
-    expired row in place and returns None. The kiosk hits that path on every
-    voice reconnect carrying a stale session_id (`api.voice` validates the id
-    via `load_messages`), so those sessions never appear in any purge result,
-    and their Locks used to survive for the process's whole multi-week uptime.
-    Diffing the live id set catches them regardless of how the row died.
+    Must diff against the live id set rather than trust `purge_expired()`'s
+    return value: `load_messages()` also deletes an expired row in place
+    without reporting it (hit on every voice reconnect with a stale
+    session_id), which used to leak that session's Lock for the process's
+    whole uptime.
     """
     store = get_store()
     await asyncio.to_thread(store.purge_expired)
@@ -183,16 +181,14 @@ def _rehydrate_session(
     """Rebuild an AgentSession from persisted messages for this one request.
 
     Only `messages` round-trips through the store — `conv_state` always comes
-    back as ConvState() (last_intent=None), so any router rule that reads
-    ConvState across turns will silently never see a non-default value here.
-    Currently harmless: IntentRouter.classify() only *writes* next_state,
-    nothing reads it back. If a future rule starts reading it, persist it
-    alongside messages in ChatSessionStore.
+    back as ConvState() (last_intent=None). Harmless today since
+    IntentRouter.classify() only writes next_state and never reads it back,
+    but a future rule that reads ConvState across turns would silently never
+    see a non-default value; persist it in ChatSessionStore if that happens.
 
-    `extra_tools` / `extra_system_prompt` layer per-session tools and prompt
-    guidance on top of the global set without touching AgentSession internals
-    or the module-level TOOL_SCHEMAS/TOOL_HANDLERS (rebuilt as fresh
-    list/dict copies so the injection can't leak into other sessions).
+    `extra_tools` / `extra_system_prompt` layer per-session additions on top
+    of the global tool set as fresh list/dict copies, so the injection can't
+    leak into other sessions via the module-level TOOL_SCHEMAS/TOOL_HANDLERS.
     """
     session = make_agent_session(get_settings())
     session.messages = messages

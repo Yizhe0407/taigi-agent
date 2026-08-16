@@ -28,24 +28,19 @@ from .sse import SSE_HEADERS, sse_event
 
 router = APIRouter()
 
-# Neither GET endpoint below carries a RateLimit dependency — this is
-# intentional, not an oversight. `/api/departures/here` and `/stream` are the
-# kiosk's own high-frequency primary path (SSE plus polling fallback), and
-# `services.departures` already caches the underlying provider snapshot for
-# 25 s, so there's no per-request upstream cost to protect against. `/stream`
-# does still need admission control though — see `_MAX_STREAM_CONNECTIONS`
-# below: rate limiting bounds request *frequency*, not concurrently open
-# long-lived connections, which is the actual resource an SSE endpoint spends
-# (one asyncio task + one generator each, each rebuilding a full snapshot at
-# least every 40 s).
+# No RateLimit on the GET endpoints below: they're the kiosk's high-frequency
+# primary path, and services.departures already caches the provider snapshot
+# for 25 s, so there's no per-request upstream cost to protect against.
+# `/stream` still needs admission control (see `_MAX_STREAM_CONNECTIONS`)
+# since rate limiting bounds request frequency, not concurrently open
+# long-lived SSE connections.
 
 
 # ── Kiosk-scoped service wrappers ─────────────────────────────────────────────
 #
-# These keep the env-driven kiosk scope at the HTTP boundary so the service
-# layer (services/departures.py) stays a pure (stop_name, go_back) function.
-# Tests monkeypatch these symbols on `api.departures` so route handlers see
-# the patched callable.
+# Keep the env-driven kiosk scope at the HTTP boundary so services/departures.py
+# stays a pure (stop_name, go_back) function. Tests monkeypatch these symbols
+# on `api.departures` so route handlers see the patched callable.
 
 
 async def get_departure_snapshot_here(*, updated_at: datetime | None = None) -> StopDepartureSnapshot:
@@ -144,16 +139,14 @@ async def get_departures_here() -> StopDepartureSnapshotResponse:
 
 # ── SSE push ──────────────────────────────────────────────────────────────────
 #
-# The ETA warmup loop (api/__init__._eta_warmup_loop) refreshes the provider
-# cache every 25 s and calls notify_snapshot_refreshed(); connected clients
-# get a fresh snapshot the moment the backend has one, instead of polling out
-# of phase with the cache.
+# api/__init__._eta_warmup_loop refreshes the provider cache every 25 s and
+# calls notify_snapshot_refreshed(); connected clients get a fresh snapshot
+# the moment it's ready instead of polling out of phase with the cache.
 
 # Fresh Event per tick: set-then-replace means every waiter of the old tick
 # wakes exactly once and new waiters latch onto the next tick — no clear() race.
 _refresh_event = asyncio.Event()
-# Warmup tick is 25 s; if it stalls, degrade to slow self-refresh instead of
-# leaving the dashboard frozen.
+# Warmup tick is 25 s; if it stalls, fall back to this instead of freezing.
 _STREAM_FALLBACK_SECONDS = 40.0
 
 
@@ -181,14 +174,12 @@ async def _departure_events():
 
 # ── Concurrent-connection admission control ────────────────────────────────
 #
-# `/stream` has no per-request RateLimit (see comment above) but is a public,
-# indefinitely-open SSE endpoint with no cap otherwise — hundreds of parallel
-# connections would each hold an asyncio task + generator and each rebuild a
-# full snapshot at least every `_STREAM_FALLBACK_SECONDS`. Cap set far above
-# real usage: the kiosk itself only ever opens a handful of `/stream`
-# connections (dashboard tab, occasional phone preview during testing), so
-# 200 gives two orders of magnitude of headroom — normal use should never
-# come close.
+# `/stream` is a public, indefinitely-open SSE endpoint with no cap
+# otherwise — hundreds of parallel connections would each hold an asyncio
+# task + generator, each rebuilding a full snapshot at least every
+# `_STREAM_FALLBACK_SECONDS`. 200 is far above real usage (the kiosk only
+# ever opens a handful of `/stream` connections), so this should never bind
+# in practice.
 _MAX_STREAM_CONNECTIONS = 200
 _active_stream_connections = 0
 
@@ -205,34 +196,21 @@ def _release_stream_slot() -> None:
 async def _admission_controlled_events():
     """Occupy a connection slot for the lifetime of this generator.
 
-    The acquire is the *first* statement in the body, before any `await`,
-    paired with a `finally` release wrapping everything else. This is
-    deliberately NOT split into "endpoint acquires, generator releases":
-    Starlette's `StreamingResponse` sends response headers (committing to
-    status 200) *before* it is guaranteed to ever drive this generator with
-    `__anext__` — on an immediate client disconnect, its collapsing task
-    group can cancel between sending headers and the first iteration (or
-    `send()` itself can raise), so the generator body may never start
-    executing. An async generator whose body never started runs no code on
-    `aclose()` — its `finally` never fires — so acquiring a slot anywhere
-    outside this function risks a slot that's taken but never freed
-    (permanent leak → endpoint eventually wedges into permanent 503, worse
-    than having no limit at all). Making the acquire itself the first thing
-    the body does means "never started" and "never acquired" are the same
-    event, so there is no way to hold a slot without the matching release
-    also being guaranteed.
+    The acquire must be the *first* statement in the body, before any
+    `await`. `StreamingResponse` sends headers (committing to status 200)
+    before it's guaranteed to ever drive this generator — on an immediate
+    disconnect the body may never start executing, and an async generator
+    that never started runs no code on `aclose()` (its `finally` never
+    fires). So acquiring anywhere outside this function risks a slot that's
+    taken but never freed — a permanent leak. Keeping "body started" and
+    "slot acquired" the same event is what guarantees the release always
+    matches.
 
-    Trade-off: `stream_departures_here` only *checks* capacity before
-    returning `StreamingResponse` (a precise 503 needs that check before
-    headers are sent, since status can't change after); the actual acquire
-    happens here, slightly later. Between that check and this acquire, other
-    concurrently arriving requests can pass the same check, so a burst can
-    briefly push the real count a little over `_MAX_STREAM_CONNECTIONS` —
-    bounded only by how many requests land in that window, and
-    self-correcting once they've all started. At a limit set two orders of
-    magnitude above real usage that slack is a non-issue; it's a much better
-    trade than an endpoint that can permanently wedge itself into 503 under
-    churn of quick-disconnecting clients.
+    `stream_departures_here` only checks capacity before returning the
+    response (a precise 503 needs that check before headers go out); the
+    acquire happens slightly later, here. A burst can therefore briefly push
+    the real count a little over the cap — bounded and self-correcting, and
+    a non-issue at a limit this far above real usage.
     """
     global _active_stream_connections
     _active_stream_connections += 1
