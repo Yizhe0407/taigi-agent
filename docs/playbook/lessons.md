@@ -49,3 +49,9 @@
 - 根因：並行 subagent 用 `git mv` 會立即動共用 index，指揮官 commit 另一批時 `git add <路徑>` 之外的 staged 項目照樣進 commit
 - 規則：派工 prompt 明寫「移動檔案用 mv + git add，禁用 git mv」（或所有批次都禁止動 index）；指揮官每次 commit 前跑 `git diff --cached --stat` 確認 staged 清單只含本批路徑，再下 commit
 - 證據：commit 937fcc2 內含三個 frontend rename（純改名零內容，無害但歷史不乾淨）
+
+## 2026-08-16 並行 agent 的 git stash 吃掉別人未 commit 的工作
+- 症狀：三個 agent 平行改不同檔案，其中一個中途 `git stash` → `git checkout stash@{0} -- <自己的兩個檔>` → `git stash drop`，另一個 agent 已完成的 `api/departures.py`（+67 行）與其測試整份從 working tree 消失；第三個 agent 的 `voice/tts_taigi.py` 也被還原過一次，它自行重新套用才沒丟
+- 根因：`git stash` 作用於**整個 working tree**，不是呼叫者的檔案子集。只取回自己的路徑再 drop，等於把別人的未 commit 改動連同 stash 一起丟棄；agent 自認「沒碰別人的檔案」而如實回報「其他人的工作原封不動」，但它從未驗證過
+- 規則：(1) 派並行 agent 的 prompt 一律寫死「禁用 `git stash` / `git checkout -- .` / `git reset`，只用 Edit/Write 改授權範圍內的檔案」；(2) 指揮官收到任何提及 git 狀態操作的回報，立刻自己跑 `git status --short` + `grep` 關鍵符號驗證別的 agent 的產出還在，不要採信「我沒碰」；(3) 真的丟了可救——`git fsck --unreachable | grep commit` 找 dangling stash commit，先 `git tag` 保住再取用
+- 證據：dangling stash `bc25688`（tag `salvage-dropped-stash`）內含被丟掉的 departures 改動；本輪最後 departures 是照新設計重寫而非還原舊版
