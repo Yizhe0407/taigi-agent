@@ -37,7 +37,6 @@ def _make_hybrid(
     ebus.find_routes_at_stop = AsyncMock(
         return_value=ebus_routes_at_stop if ebus_routes_at_stop is not None else {"Y01": {"id": "Y01"}, "7120": {"id": "7120"}}
     )
-    ebus.warmup_route_map = AsyncMock()
     ebus.aclose = AsyncMock()
 
     tdx = MagicMock()
@@ -222,19 +221,6 @@ def test_fetch_routes_at_stop_delegates_to_tdx():
     h, _, tdx = _make_hybrid(tdx_routes_at_stop=routes)
     result = asyncio.run(h.fetch_routes_at_stop("斗六火車站"))
     assert result == routes
-
-
-def test_warmup_calls_ebus_route_map_and_route_discovery():
-    h, ebus, _ = _make_hybrid()
-    asyncio.run(h.warmup("斗六火車站"))
-    ebus.warmup_route_map.assert_awaited_once()
-    ebus.find_routes_at_stop.assert_awaited_once_with("斗六火車站")
-
-
-def test_warmup_route_map_delegates_to_ebus():
-    h, ebus, _ = _make_hybrid()
-    asyncio.run(h.warmup_route_map())
-    ebus.warmup_route_map.assert_awaited_once()
 
 
 def test_aclose_closes_both():

@@ -35,15 +35,6 @@ class HybridBusProvider:
     def ebus(self) -> EbusBusProvider:
         return self._ebus
 
-    async def warmup(self, stop_name: str) -> None:
-        """Pre-fetch route map and discover routes at stop_name at startup."""
-        await self._ebus.warmup_route_map()
-        await self._ebus.find_routes_at_stop(stop_name)
-
-    async def warmup_route_map(self) -> None:
-        """Pre-fetch ebus /api/route at startup (legacy; prefer warmup(stop_name))."""
-        await self._ebus.warmup_route_map()
-
     # ── BusProvider protocol ───────────────────────────────────────────────────
 
     async def load_route_info(self, stop_name: str) -> dict[str, dict]:

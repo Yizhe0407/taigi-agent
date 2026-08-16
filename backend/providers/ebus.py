@@ -164,6 +164,22 @@ class EbusBusProvider:
         # stop_name → (fetched_at, {route_name: {id, go_dest, back_dest}}, had_failures)
         # had_failures=True uses _STOP_ROUTE_PARTIAL_TTL so a route that failed
         # mid-scan gets re-checked soon instead of staying "missing" for 24h.
+        #
+        # Deliberately NOT on `TtlCache` (unlike `_estimate_cache` above), because
+        # every part of that class's contract is wrong here:
+        #   - entries are 3-tuples with a per-entry TTL chosen by `had_failures`;
+        #     TtlCache stores 2-tuples under one caller-supplied scalar TTL.
+        #   - one scan populates *every* stop key at once, so all misses must
+        #     collapse into a single global lock. TtlCache locks per key, which
+        #     would let two cold stop names launch two full route scans.
+        #   - stale-serve fires when the scan *succeeds but returns empty* for
+        #     this stop, not when the fetch raises, and it is unbounded rather
+        #     than capped by a `stale_ttl`.
+        #   - `_maybe_sweep` would evict entries this cache intends to keep for
+        #     the full 24 h retention that backs the on-disk route index.
+        # Bending TtlCache to cover all four would add flags to a class shared by
+        # the TDX ETA path, where its per-key coalescing is what keeps the 429
+        # cascade from returning. The hand-rolled lock stays.
         self._stop_route_cache: dict[str, tuple[float, dict[str, dict], bool]] = {}
         # A single scan builds every stop, so all misses share one lock.
         self._route_index_lock = asyncio.Lock()
@@ -201,10 +217,6 @@ class EbusBusProvider:
         if base != sub_route_name:
             return route_map.get(base)
         return None
-
-    async def warmup_route_map(self) -> None:
-        """Pre-fetch /api/route at startup so the first fetch_route_estimate is warm."""
-        await self._load_route_map()
 
     def _load_persisted_route_index(self) -> None:
         path = self._route_index_path
