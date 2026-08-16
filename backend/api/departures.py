@@ -32,7 +32,12 @@ router = APIRouter()
 # intentional, not an oversight. `/api/departures/here` and `/stream` are the
 # kiosk's own high-frequency primary path (SSE plus polling fallback), and
 # `services.departures` already caches the underlying provider snapshot for
-# 25 s, so there's no per-request upstream cost to protect against.
+# 25 s, so there's no per-request upstream cost to protect against. `/stream`
+# does still need admission control though — see `_MAX_STREAM_CONNECTIONS`
+# below: rate limiting bounds request *frequency*, not concurrently open
+# long-lived connections, which is the actual resource an SSE endpoint spends
+# (one asyncio task + one generator each, each rebuilding a full snapshot at
+# least every 40 s).
 
 
 # ── Kiosk-scoped service wrappers ─────────────────────────────────────────────
@@ -174,11 +179,80 @@ async def _departure_events():
             await asyncio.wait_for(wakeup.wait(), timeout=_STREAM_FALLBACK_SECONDS)
 
 
+# ── Concurrent-connection admission control ────────────────────────────────
+#
+# `/stream` has no per-request RateLimit (see comment above) but is a public,
+# indefinitely-open SSE endpoint with no cap otherwise — hundreds of parallel
+# connections would each hold an asyncio task + generator and each rebuild a
+# full snapshot at least every `_STREAM_FALLBACK_SECONDS`. Cap set far above
+# real usage: the kiosk itself only ever opens a handful of `/stream`
+# connections (dashboard tab, occasional phone preview during testing), so
+# 200 gives two orders of magnitude of headroom — normal use should never
+# come close.
+_MAX_STREAM_CONNECTIONS = 200
+_active_stream_connections = 0
+
+
+def _stream_capacity_available() -> bool:
+    return _active_stream_connections < _MAX_STREAM_CONNECTIONS
+
+
+def _release_stream_slot() -> None:
+    global _active_stream_connections
+    _active_stream_connections -= 1
+
+
+async def _admission_controlled_events():
+    """Occupy a connection slot for the lifetime of this generator.
+
+    The acquire is the *first* statement in the body, before any `await`,
+    paired with a `finally` release wrapping everything else. This is
+    deliberately NOT split into "endpoint acquires, generator releases":
+    Starlette's `StreamingResponse` sends response headers (committing to
+    status 200) *before* it is guaranteed to ever drive this generator with
+    `__anext__` — on an immediate client disconnect, its collapsing task
+    group can cancel between sending headers and the first iteration (or
+    `send()` itself can raise), so the generator body may never start
+    executing. An async generator whose body never started runs no code on
+    `aclose()` — its `finally` never fires — so acquiring a slot anywhere
+    outside this function risks a slot that's taken but never freed
+    (permanent leak → endpoint eventually wedges into permanent 503, worse
+    than having no limit at all). Making the acquire itself the first thing
+    the body does means "never started" and "never acquired" are the same
+    event, so there is no way to hold a slot without the matching release
+    also being guaranteed.
+
+    Trade-off: `stream_departures_here` only *checks* capacity before
+    returning `StreamingResponse` (a precise 503 needs that check before
+    headers are sent, since status can't change after); the actual acquire
+    happens here, slightly later. Between that check and this acquire, other
+    concurrently arriving requests can pass the same check, so a burst can
+    briefly push the real count a little over `_MAX_STREAM_CONNECTIONS` —
+    bounded only by how many requests land in that window, and
+    self-correcting once they've all started. At a limit set two orders of
+    magnitude above real usage that slack is a non-issue; it's a much better
+    trade than an endpoint that can permanently wedge itself into 503 under
+    churn of quick-disconnecting clients.
+    """
+    global _active_stream_connections
+    _active_stream_connections += 1
+    try:
+        async for event in _departure_events():
+            yield event
+    finally:
+        _release_stream_slot()
+
+
 @router.get("/api/departures/stream")
 async def stream_departures_here() -> StreamingResponse:
     """SSE：每次 ETA cache 更新即推最新 snapshot。"""
+    if not _stream_capacity_available():
+        raise HTTPException(
+            status_code=503,
+            detail=f"目前串流連線數已達上限（{_MAX_STREAM_CONNECTIONS}），請稍後再試",
+        )
     return StreamingResponse(
-        _departure_events(),
+        _admission_controlled_events(),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
