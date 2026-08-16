@@ -7,20 +7,21 @@ from datetime import datetime, timedelta
 
 from providers.bus import BusProvider
 from services.departures.classification import DepartureSection, StopClassification, _classify_stop
-from services.departures.normalize import (
-    TAIPEI_TZ,
-    _dedup_stop_rows_by_direction,
-    _direction_label_from_info,
+from services.departures.fuzzy_match import (
     _fuzzy_candidates,
-    _iter_downstream_directions,
     _lookup_route,
-    _name_matches,
     _resolve_forward_match,
     _route_candidates,
+)
+from services.departures.normalize import TAIPEI_TZ, _name_matches
+from services.departures.provider import get_provider
+from services.departures.rows import (
+    _dedup_stop_rows_by_direction,
+    _direction_label_from_info,
+    _iter_downstream_directions,
     _rows_for_stop,
     _stops_by_direction_with_seq,
 )
-from services.departures.provider import get_provider
 from services.departures.snapshot import DepartureSnapshotUnavailable, build_departure_snapshot
 
 _QUERY_FAILED = "查詢失敗，請稍後再試。"

@@ -7,7 +7,7 @@ import pytest
 from providers.bus import BusProvider
 from services import departures
 from services.departures import provider as _departures_provider
-from services.departures.normalize import _is_terminal_direction
+from services.departures.rows import _is_terminal_direction
 
 
 def _updated_at() -> datetime:
@@ -854,7 +854,7 @@ def test_build_departure_snapshot_records_filtered_terminal_direction(use_provid
             ],
         )
     )
-    with patch("services.departures.normalize.get_telemetry") as mock_get_telemetry:
+    with patch("services.departures.rows.get_telemetry") as mock_get_telemetry:
         asyncio.run(departures.build_departure_snapshot("斗六火車站", updated_at=_updated_at()))
 
     mock_get_telemetry.return_value.record_departure_decision.assert_called_once_with(decision="filtered_terminal_direction")

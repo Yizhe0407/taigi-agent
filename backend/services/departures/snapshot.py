@@ -11,13 +11,13 @@ from services.departures.classification import (
     DepartureSection,
     _classify_stop,
 )
-from services.departures.normalize import (
-    TAIPEI_TZ,
+from services.departures.normalize import TAIPEI_TZ
+from services.departures.provider import get_provider
+from services.departures.rows import (
     _direction_label_from_info,
     _is_traffic_controlled,
     iter_scoped_stop_etas,
 )
-from services.departures.provider import get_provider
 from telemetry import get_telemetry
 
 _log = logging.getLogger(__name__)

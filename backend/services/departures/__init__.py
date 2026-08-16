@@ -17,10 +17,7 @@ from services.departures.classification import (
     StopClassification,
     _classify_stop,
 )
-from services.departures.normalize import (
-    TAIPEI_TZ,
-    _as_int,
-)
+from services.departures.normalize import TAIPEI_TZ
 from services.departures.provider import (
     get_provider,
     provider_override,
@@ -81,5 +78,4 @@ __all__ = [
     # constants & internals (used by tests / tools)
     "TAIPEI_TZ",
     "_classify_stop",
-    "_as_int",
 ]

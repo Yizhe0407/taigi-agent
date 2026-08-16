@@ -1,4 +1,4 @@
-"""Unit tests for the ASR mis-hearing rescue matching in services.departures.normalize.
+"""Unit tests for the ASR mis-hearing rescue matching in services.departures.fuzzy_match.
 
 Covers the two structural gaps found in the 2026-07-12 rescue-rate eval
 (20 cases, 20% full success): zero-character-overlap homophones (fuzzy stop
@@ -6,7 +6,8 @@ matching needs a pinyin dimension) and numeric route candidates getting
 squeezed out of top-5 by ties (route matching needs edit-distance ranking).
 """
 
-from services.departures.normalize import _downstream_names, _fuzzy_candidates, _route_candidates, _stop_similarity
+from services.departures.fuzzy_match import _fuzzy_candidates, _route_candidates, _stop_similarity
+from services.departures.rows import _downstream_names
 
 # ── fuzzy stop-name matching: pinyin rescue for homophone ASR errors ──────────
 

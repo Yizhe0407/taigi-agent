@@ -69,7 +69,7 @@ def _classify_stop(stop: dict, now: datetime) -> StopClassification:
     TDX StopStatus values:
       0 = 正常（有預估到站時間）
       1 = 尚未發車
-      2 = 交管不停靠  (caller must skip via `normalize._is_traffic_controlled`
+      2 = 交管不停靠  (caller must skip via `rows._is_traffic_controlled`
           before calling here — every facade in renderers.py/snapshot.py does)
       3 = 末班車已過
       4 = 今日未營運
