@@ -9,7 +9,15 @@ import pytest
 from pipecat.frames.frames import TTSAudioRawFrame
 
 from services.taigi_tts import TTSConfig, TTSConfigError
-from voice.tts_taigi import SubtitleFrame, TaigiTTSService, _decoded_cache
+from voice.tts_taigi import (
+    _DECODED_CACHE_MAX_BYTES,
+    SubtitleFrame,
+    TaigiTTSService,
+    _decoded_cache,
+    _decoded_cache_clear,
+    _decoded_cache_put,
+    _decoded_cache_total_bytes,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -17,9 +25,9 @@ def _clear_decoded_cache():
     """The decoded-audio LRU cache (finding 4) is process-wide by design so
     repeated fixed text benefits across sessions — but that means it must not
     leak between test cases that reuse "你好" with different mocked outcomes."""
-    _decoded_cache.clear()
+    _decoded_cache_clear()
     yield
-    _decoded_cache.clear()
+    _decoded_cache_clear()
 
 
 def _make_wav_bytes(sample_rate: int = 16000, n_samples: int = 160) -> bytes:
@@ -212,3 +220,87 @@ def test_run_tts_empty_text_does_not_record_stage():
 
     assert frames == []
     mock_get_telemetry.return_value.record_pipeline_stage.assert_not_called()
+
+
+def _decoded_of(pcm_len: int) -> list:
+    """One fake decoded segment holding `pcm_len` bytes of PCM."""
+    return [(b"\x00" * pcm_len, 16000, 1, 2, 0)]
+
+
+def test_decoded_cache_put_evicts_oldest_until_under_byte_budget():
+    """Filling the cache past its byte budget must evict the least-recently-used
+    entries (not just the newest) until the running total is back under budget."""
+    chunk = _DECODED_CACHE_MAX_BYTES // 4
+
+    for i in range(8):
+        _decoded_cache_put(f"key-{i}", (_decoded_of(chunk), 100))
+
+    assert _decoded_cache_total_bytes() <= _DECODED_CACHE_MAX_BYTES
+    # The most recently inserted entries must have survived the eviction.
+    assert "key-7" in _decoded_cache
+    assert "key-0" not in _decoded_cache
+
+
+def test_run_tts_second_call_with_same_text_returns_identical_pcm():
+    """A cache hit must yield the exact same PCM bytes as the original synthesis,
+    not just the same frame types/count."""
+    mock_resp = MagicMock(status_code=200, content=_make_wav_bytes(n_samples=320))
+
+    p1, p2, p3 = _patch_common()
+    with (
+        p1,
+        p2,
+        p3,
+        patch("voice.tts_taigi.synthesize_segments", new=AsyncMock(return_value=[mock_resp])),
+        patch("voice.tts_taigi.get_telemetry"),
+    ):
+        svc = TaigiTTSService()
+        first_frames = asyncio.run(_collect(svc.run_tts("你好", "ctx-1")))
+        second_frames = asyncio.run(_collect(svc.run_tts("你好", "ctx-2")))
+
+    first_audio = b"".join(f.audio for f in first_frames if isinstance(f, TTSAudioRawFrame))
+    second_audio = b"".join(f.audio for f in second_frames if isinstance(f, TTSAudioRawFrame))
+    assert first_audio == second_audio
+    assert len(first_audio) > 0
+
+
+def test_decoded_cache_put_skips_single_entry_larger_than_whole_budget():
+    """An oversized single reply (e.g. a long dynamic answer) must not be cached
+    at all, and must not wipe out entries already sitting in the cache."""
+    _decoded_cache_put("small", (_decoded_of(1024), 100))
+    bytes_before = _decoded_cache_total_bytes()
+
+    oversized = _decoded_of(_DECODED_CACHE_MAX_BYTES + 1)
+    _decoded_cache_put("huge", (oversized, 100))
+
+    assert "huge" not in _decoded_cache
+    assert "small" in _decoded_cache
+    assert _decoded_cache_total_bytes() == bytes_before
+
+
+def test_run_tts_oversized_reply_still_synthesizes_and_plays_when_cache_bypassed():
+    """Even when a reply is too large to cache, run_tts() must still synthesize
+    it and yield working audio frames — caching is a pure optimization, never
+    a precondition for correct playback."""
+    huge_samples = (_DECODED_CACHE_MAX_BYTES // 2) + 1  # bytes = samples * 2 (16-bit)
+    mock_resp = MagicMock(status_code=200, content=_make_wav_bytes(n_samples=huge_samples))
+
+    p1, p2, p3 = _patch_common()
+    with (
+        p1,
+        p2,
+        p3,
+        patch("voice.tts_taigi.synthesize_segments", new=AsyncMock(return_value=[mock_resp])) as mock_synth,
+        patch("voice.tts_taigi.get_telemetry"),
+    ):
+        svc = TaigiTTSService()
+        frames = asyncio.run(_collect(svc.run_tts("你好", "ctx-1")))
+        assert mock_synth.call_count == 1
+
+        # Not cached (bigger than the whole budget) -> a second call re-synthesizes.
+        asyncio.run(_collect(svc.run_tts("你好", "ctx-2")))
+        assert mock_synth.call_count == 2
+
+    assert isinstance(frames[0], SubtitleFrame)
+    assert any(isinstance(f, TTSAudioRawFrame) for f in frames)
+    assert _decoded_cache_total_bytes() <= _DECODED_CACHE_MAX_BYTES

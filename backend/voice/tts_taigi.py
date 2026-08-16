@@ -71,31 +71,82 @@ def _extract_pcm(wav_bytes: bytes) -> tuple[bytes, int, int, int]:
 # Decoded-segment tuple: (pcm_bytes, sample_rate, num_channels, sample_width, silence_ms)
 _DecodedSegment = tuple[bytes, int, int, int, int]
 
-# Bounded LRU cache of fully-decoded audio for repeated fixed text (welcome
-# greeting, fallback error replies, etc.) so a repeat hit skips both the
-# Hanlo/Taibun conversion and the upstream TTS HTTP round trip entirely —
+# Bounded-by-bytes LRU cache of fully-decoded audio for repeated fixed text
+# (welcome greeting, fallback error replies, etc.) so a repeat hit skips both
+# the Hanlo/Taibun conversion and the upstream TTS HTTP round trip entirely —
 # the biggest win for time-to-first-audio on those lines. Keyed on
 # (config.model, config.voice, post-normalize_for_tts text) — folding in model/
 # voice keeps a runtime TTS_MODEL/TTS_VOICE change from serving stale audio
 # synthesized under the old config; module-level (not per-TaigiTTSService
-# instance) so the benefit is shared across sessions in this process. Fixed
-# capacity keeps memory bounded regardless of how many distinct replies get spoken.
-_DECODED_CACHE_MAX = 64
-_decoded_cache: OrderedDict[str, tuple[list[_DecodedSegment], int]] = OrderedDict()
+# instance) so the benefit is shared across sessions in this process.
+#
+# Budget is in *bytes of raw PCM*, not entry count: a count cap treats a
+# multi-second, multi-segment reply the same as a two-word one, and this
+# process runs for weeks without restarting, so a handful of long replies
+# under a count cap can quietly hold tens to hundreds of MB. A single decoded
+# reply at 24kHz/16-bit/mono runs roughly 48 KB/sec of speech, so a few
+# seconds of audio is a few hundred KB; 12 MB comfortably holds several dozen
+# distinct fixed replies (welcome greeting, ASR-failure sentence, error
+# sentences, ...) while keeping this cache's worst case in the low tens of MB
+# regardless of how many distinct dynamic (non-repeating) replies pass through.
+_DECODED_CACHE_MAX_BYTES = 12 * 1024 * 1024
+
+# entry value: (decoded segments, total display duration ms, entry size in PCM bytes)
+_CacheEntry = tuple[list[_DecodedSegment], int, int]
+_decoded_cache: OrderedDict[str, _CacheEntry] = OrderedDict()
+_decoded_cache_bytes = 0
+
+
+def _entry_size_bytes(decoded: list[_DecodedSegment]) -> int:
+    return sum(len(pcm_bytes) for pcm_bytes, *_rest in decoded)
 
 
 def _decoded_cache_get(key: str) -> tuple[list[_DecodedSegment], int] | None:
     entry = _decoded_cache.get(key)
-    if entry is not None:
-        _decoded_cache.move_to_end(key)
-    return entry
+    if entry is None:
+        return None
+    _decoded_cache.move_to_end(key)
+    decoded, total_duration_ms, _size = entry
+    return decoded, total_duration_ms
 
 
 def _decoded_cache_put(key: str, value: tuple[list[_DecodedSegment], int]) -> None:
-    _decoded_cache[key] = value
+    global _decoded_cache_bytes
+    decoded, total_duration_ms = value
+    size = _entry_size_bytes(decoded)
+    if size > _DECODED_CACHE_MAX_BYTES:
+        # A single reply alone would blow the whole budget (e.g. a long
+        # dynamic answer with a station list) — skip caching it rather than
+        # evicting every other entry to make room for something that, being
+        # dynamic, is unlikely to be asked for again anyway.
+        return
+
+    existing = _decoded_cache.get(key)
+    if existing is not None:
+        _decoded_cache_bytes -= existing[2]
+    _decoded_cache[key] = (decoded, total_duration_ms, size)
     _decoded_cache.move_to_end(key)
-    if len(_decoded_cache) > _DECODED_CACHE_MAX:
-        _decoded_cache.popitem(last=False)
+    _decoded_cache_bytes += size
+
+    while _decoded_cache_bytes > _DECODED_CACHE_MAX_BYTES:
+        _, evicted = _decoded_cache.popitem(last=False)
+        _decoded_cache_bytes -= evicted[2]
+
+
+def _decoded_cache_total_bytes() -> int:
+    """Current running total of PCM bytes held by the cache — a function, not
+    a re-exported module int, so callers (tests included) always see the live
+    value instead of a snapshot frozen at import time."""
+    return _decoded_cache_bytes
+
+
+def _decoded_cache_clear() -> None:
+    """Reset both the entry dict and the running byte total together — tests
+    must not call `_decoded_cache.clear()` directly, which would leave
+    `_decoded_cache_bytes` stale and desync the eviction threshold."""
+    global _decoded_cache_bytes
+    _decoded_cache.clear()
+    _decoded_cache_bytes = 0
 
 
 class TaigiTTSService(TTSService):
