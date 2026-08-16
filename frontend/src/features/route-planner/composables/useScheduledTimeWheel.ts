@@ -1,4 +1,4 @@
-import { nextTick, ref, type Ref, useTemplateRef, watch } from "vue"
+import { nextTick, ref, type Ref, type TemplateRef, watch } from "vue"
 
 import { todayTaipeiDateInputValue } from "@/lib/time"
 
@@ -42,8 +42,6 @@ export function useScheduledTimeWheel(
   const sheetOpen = ref(false)
   const pendingHour = ref(0)
   const pendingMinute = ref(0)
-  const hourScrollEl = useTemplateRef<HTMLElement>("hour-wheel")
-  const minuteScrollEl = useTemplateRef<HTMLElement>("minute-wheel")
 
   function openSheet() {
     const selected = selectedTimeFromInput(scheduledDateTime.value)
@@ -51,20 +49,6 @@ export function useScheduledTimeWheel(
     pendingMinute.value = selected.minute
     sheetOpen.value = true
   }
-
-  watch(sheetOpen, async (open) => {
-    if (!open) return
-    await nextTick()
-
-    if (hourScrollEl.value) {
-      hourScrollEl.value.scrollTop = pendingHour.value * WHEEL_ITEM_HEIGHT
-    }
-    if (minuteScrollEl.value) {
-      const minuteIndex = MINUTES.indexOf(pendingMinute.value)
-      minuteScrollEl.value.scrollTop =
-        Math.max(0, minuteIndex) * WHEEL_ITEM_HEIGHT
-    }
-  })
 
   function handleHourScroll(event: Event) {
     const el = event.target as HTMLElement
@@ -95,4 +79,34 @@ export function useScheduledTimeWheel(
     handleMinuteScroll,
     confirmSheet,
   }
+}
+
+/**
+ * Keeps the hour/minute scroll wheels positioned at `pendingHour`/`pendingMinute`
+ * whenever the sheet is open. Re-syncs on every pendingHour/pendingMinute change
+ * (not just on open) so the wheel snaps to the exact item offset after a scroll.
+ */
+export function useWheelScrollSync(
+  open: Ref<boolean>,
+  pendingHour: Ref<number>,
+  pendingMinute: Ref<number>,
+  hourScrollEl: TemplateRef<HTMLElement>,
+  minuteScrollEl: TemplateRef<HTMLElement>,
+) {
+  watch(
+    () => [open.value, pendingHour.value, pendingMinute.value] as const,
+    async ([isOpen]) => {
+      if (!isOpen) return
+      await nextTick()
+
+      if (hourScrollEl.value) {
+        hourScrollEl.value.scrollTop = pendingHour.value * WHEEL_ITEM_HEIGHT
+      }
+      if (minuteScrollEl.value) {
+        const minuteIndex = MINUTES.indexOf(pendingMinute.value)
+        minuteScrollEl.value.scrollTop =
+          Math.max(0, minuteIndex) * WHEEL_ITEM_HEIGHT
+      }
+    },
+  )
 }

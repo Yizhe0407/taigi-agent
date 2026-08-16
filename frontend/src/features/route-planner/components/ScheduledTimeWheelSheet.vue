@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { nextTick, useTemplateRef, watch } from "vue"
+import { toRef, useTemplateRef } from "vue"
 
-import { HOURS, MINUTES } from "../composables/useScheduledTimeWheel"
+import { HOURS, MINUTES, useWheelScrollSync } from "../composables/useScheduledTimeWheel"
 
 const props = defineProps<{
   open: boolean
@@ -17,25 +17,15 @@ defineEmits<{
 }>()
 
 const pad = (n: number) => String(n).padStart(2, "0")
-const WHEEL_ITEM_HEIGHT = 56
 const hourScrollEl = useTemplateRef<HTMLElement>("hour-wheel")
 const minuteScrollEl = useTemplateRef<HTMLElement>("minute-wheel")
 
-watch(
-  () => [props.open, props.pendingHour, props.pendingMinute] as const,
-  async ([open]) => {
-    if (!open) return
-    await nextTick()
-
-    if (hourScrollEl.value) {
-      hourScrollEl.value.scrollTop = props.pendingHour * WHEEL_ITEM_HEIGHT
-    }
-    if (minuteScrollEl.value) {
-      const minuteIndex = MINUTES.indexOf(props.pendingMinute)
-      minuteScrollEl.value.scrollTop =
-        Math.max(0, minuteIndex) * WHEEL_ITEM_HEIGHT
-    }
-  },
+useWheelScrollSync(
+  toRef(props, "open"),
+  toRef(props, "pendingHour"),
+  toRef(props, "pendingMinute"),
+  hourScrollEl,
+  minuteScrollEl,
 )
 </script>
 
