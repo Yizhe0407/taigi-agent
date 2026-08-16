@@ -6,6 +6,7 @@ import logging
 import time
 from collections import deque
 from collections.abc import Callable
+from contextlib import suppress
 from typing import Any
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -325,4 +326,30 @@ async def run_voice_pipeline(webrtc_connection: SmallWebRTCConnection, session_i
             # Crashed/exited without on_client_disconnected firing — pay back
             # the +1 recorded in on_connected so the gauge doesn't drift.
             get_telemetry().record_voice_active_sessions(-1)
+
+        # The welcome task is fire-and-forget: it can still be parked on the 3 s
+        # _client_ready wait (or on queue_frame) when the pipeline unwinds. Left
+        # alone it outlives run_voice_pipeline and keeps the worker + connection
+        # reachable, so cancel it and let its cleanup finish here.
+        _pending_welcome = _welcome_task
+        if _pending_welcome is not None and not _pending_welcome.done():
+            _pending_welcome.cancel()
+            with suppress(asyncio.CancelledError):
+                await _pending_welcome
+
+        # pipecat's SmallWebRTCRequestHandler only drops a peer connection from
+        # its _pcs_map when the pc emits "closed", and only pc.close() emits it.
+        # On the normal client-disconnect path the client's own close does that;
+        # when connect()/task.run() raises, nothing does — the pc (with its ICE
+        # /DTLS transports and the transport's Silero ONNX session hanging off
+        # the pipeline) would then sit in _pcs_map for the life of the process.
+        # disconnect() is idempotent (aiortc's RTCPeerConnection.close() returns
+        # early once closed), so this is a no-op on the normal path.
+        try:
+            await webrtc_connection.disconnect()
+        except Exception as close_exc:
+            # Never let a teardown failure replace the original exception —
+            # log it and let the in-flight exception (if any) keep propagating.
+            _log.warning("Failed to close WebRTC connection for session %s: %s", session_id, close_exc)
+
         _log.info("Voice pipeline stopped for session_id=%s, pc_id=%s", session_id, webrtc_connection.pc_id)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 
 from fastapi import APIRouter, Depends, HTTPException
 from pipecat.transports.smallwebrtc.request_handler import (
@@ -112,24 +113,43 @@ async def webrtc_offer(body: dict) -> dict:
     except (TypeError, KeyError) as exc:
         raise HTTPException(status_code=422, detail=f"Invalid request body: {exc}") from exc
 
+    # Set by _start_pipeline when it fails before the pipeline task exists.
+    # pipecat swallows callback exceptions (request_handler.py) and hands back an
+    # SDP answer regardless, so the failure has to be carried out here instead.
+    failed_connection = None
+    startup_error: Exception | None = None
+
     async def _start_pipeline(connection) -> None:
         """Spin up voice pipeline in background so this endpoint returns immediately.
 
         Session resolution stays inside this callback on purpose: pipecat only
         invokes it for NEW connections. Renegotiations (existing pc_id) never
         reach here, so resolving the session earlier would create an orphaned
-        session per renegotiation. Store failures are logged by the handler
-        and by the pipeline done-callback below.
+        session per renegotiation.
+
+        If session resolution fails, no pipeline task is ever created and nobody
+        would own the peer connection: pipecat logs the exception, registers the
+        connection in its _pcs_map and returns the answer anyway. Record the
+        failure so the caller below can close the connection and fail the
+        request instead of leaving an orphaned pc behind.
         """
+        nonlocal failed_connection, startup_error
         from voice.pipeline import run_voice_pipeline
 
-        store = get_store()
-        if client_session_id and await asyncio.to_thread(store.load_messages, client_session_id) is not None:
-            session_id = client_session_id
-            _log.info("Voice pipeline reusing existing session %s", session_id)
-        else:
-            session_id = await asyncio.to_thread(store.create)
-            _log.info("Voice pipeline created new session %s (no valid session_id from client)", session_id)
+        try:
+            store = get_store()
+            if client_session_id and await asyncio.to_thread(store.load_messages, client_session_id) is not None:
+                session_id = client_session_id
+                _log.info("Voice pipeline reusing existing session %s", session_id)
+            else:
+                session_id = await asyncio.to_thread(store.create)
+                _log.info("Voice pipeline created new session %s (no valid session_id from client)", session_id)
+        except Exception as exc:
+            failed_connection = connection
+            startup_error = exc
+            _log.exception("Voice pipeline session resolution failed")
+            log_diagnostic("voice.pipeline", f"pc={getattr(connection, 'pc_id', '?')} session resolution failed: {exc}")
+            return
 
         def _on_pipeline_done(fut: asyncio.Task) -> None:
             if fut.cancelled() or fut.exception() is None:
@@ -150,6 +170,17 @@ async def webrtc_offer(body: dict) -> dict:
     except Exception as exc:
         _log.exception("WebRTC negotiation error")
         raise HTTPException(status_code=500, detail=f"WebRTC negotiation failed: {exc}") from exc
+    finally:
+        # Closing here (rather than inside the callback) is deliberate: pipecat
+        # inserts the connection into _pcs_map *after* the callback returns, so
+        # closing early would only get the entry re-added. Closing now makes the
+        # pc emit "closed", which is what evicts it from _pcs_map.
+        if failed_connection is not None:
+            with suppress(Exception):
+                await failed_connection.disconnect()
+
+    if startup_error is not None:
+        raise HTTPException(status_code=500, detail="Voice session could not be started") from startup_error
 
     if answer is None:
         raise HTTPException(status_code=500, detail="No SDP answer produced")

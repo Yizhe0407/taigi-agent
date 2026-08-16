@@ -293,3 +293,95 @@ def test_cancelled_inference_that_already_started_pushes_end_frame():
     asyncio.run(run())
     assert any(isinstance(f, LLMFullResponseStartFrame) for f in pushed)
     assert any(isinstance(f, LLMFullResponseEndFrame) for f in pushed)
+
+
+# ---------------------------------------------------------------------------
+# cleanup() must cancel the in-flight inference task
+# ---------------------------------------------------------------------------
+
+
+class _RealInitProcessor(TaigiBusAgentProcessor):
+    """Real FrameProcessor.__init__ (so cleanup()'s super() chain is exercised),
+    but create_task bypasses pipecat's task manager, which needs a live pipeline.
+    setup() is never called, so the base class's own input/process tasks are None
+    and FrameProcessor.cleanup() handles that fine."""
+
+    def create_task(self, coro, name=None):
+        return asyncio.ensure_future(coro)
+
+    async def push_frame(self, frame, direction):
+        pass
+
+
+def test_cleanup_cancels_in_flight_inference_task():
+    """A client disconnecting mid-inference tears the pipeline down via
+    cleanup(). pipecat's FrameProcessor.cleanup() only cancels the tasks it
+    created itself, so without our override the inference task keeps running and
+    holds the AgentSession + open LLM stream for the rest of the process life."""
+
+    async def run():
+        proc = _RealInitProcessor(session_id="sess-cleanup")
+        running = asyncio.Event()
+        reached_end = False
+
+        async def _long_inference():
+            nonlocal reached_end
+            running.set()
+            await asyncio.sleep(3600)
+            reached_end = True  # pragma: no cover
+
+        task = proc.create_task(_long_inference())
+        proc._inference_task = task
+        await asyncio.wait_for(running.wait(), timeout=2.0)
+        assert not task.done()
+
+        await proc.cleanup()
+
+        assert task.done() and task.cancelled(), "inference task survived cleanup()"
+        assert proc._inference_task is None
+        assert reached_end is False
+
+    asyncio.run(run())
+
+
+def test_cleanup_is_safe_with_no_inference_in_flight():
+    """cleanup() on an idle processor must not raise (and must still run the
+    base-class cleanup chain)."""
+
+    async def run():
+        proc = _RealInitProcessor(session_id="sess-idle")
+        await proc.cleanup()
+        assert proc._inference_task is None
+
+    asyncio.run(run())
+
+
+def test_cleanup_flushes_response_end_frame_of_cancelled_inference():
+    """The cancelled task's CancelledError handler still gets to push its
+    closing LLMFullResponseEndFrame — cleanup() awaits the task rather than
+    firing a bare cancel()."""
+    pushed = []
+
+    class _RecordingProcessor(_RealInitProcessor):
+        async def push_frame(self, frame, direction):
+            pushed.append(frame)
+
+    def fake_stream(sid, msg, **kwargs):
+        async def gen():
+            yield "第一句。"
+            await asyncio.sleep(10)
+            yield "unreachable"  # pragma: no cover
+
+        return gen()
+
+    async def run():
+        proc = _RecordingProcessor(session_id="sess-flush")
+        with patch("api.chat.respond_in_session_stream", fake_stream):
+            proc._inference_task = proc.create_task(proc._run_agent_inference("你好", None))
+            for _ in range(5):
+                await asyncio.sleep(0)
+            await proc.cleanup()
+
+    asyncio.run(run())
+    assert any(isinstance(f, LLMFullResponseStartFrame) for f in pushed)
+    assert any(isinstance(f, LLMFullResponseEndFrame) for f in pushed)

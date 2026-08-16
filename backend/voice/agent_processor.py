@@ -119,6 +119,26 @@ class TaigiBusAgentProcessor(FrameProcessor):
         with suppress(asyncio.CancelledError):
             await task
 
+    async def cleanup(self):
+        """Cancel any in-flight inference before the base class tears us down.
+
+        `FrameProcessor.cleanup()` only cancels the input/process tasks it
+        created itself — it knows nothing about the task we spawn with
+        `create_task()` in `process_frame`. Without this override, that task is
+        only ever cancelled by the *next* Transcription/InterruptionFrame, which
+        never arrives once the client disconnects mid-inference: the task keeps
+        running and holds the AgentSession, the open LLM streaming response and
+        (through `push_frame`) the whole processor chain alive for the rest of
+        the process lifetime.
+
+        Ours is cancelled first, while the processor can still flush the frames
+        its CancelledError handler pushes; `super().cleanup()` afterwards then
+        cancels the machinery those frames travel through.
+        """
+        await self._cancel_inference_task()
+        self._inference_task = None
+        await super().cleanup()
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         """Process incoming frames, trigger agent on transcription."""
         await super().process_frame(frame, direction)
