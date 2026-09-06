@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted } from "vue"
+import { ref, watch, onMounted } from "vue"
 import { Send, X } from "@lucide/vue"
 
 import type { PipChatMessage } from "../types"
 
 const props = defineProps<{
-  messages: PipChatMessage[]
+  messages: readonly Readonly<PipChatMessage>[]
   isSending: boolean
   heightPx: number
 }>()
@@ -21,19 +21,21 @@ defineEmits<{
 const inputRef = ref<HTMLInputElement | null>(null)
 const bodyRef = ref<HTMLElement | null>(null)
 
-watch(() => props.isSending, (isSending) => {
-  if (!isSending) {
-    nextTick(() => {
-      inputRef.value?.focus()
-    })
-  }
-})
+watch(
+  () => props.isSending,
+  (isSending) => {
+    if (!isSending) inputRef.value?.focus()
+  },
+  { flush: "post" },
+)
 
-watch(() => props.messages.length, () => {
-  nextTick(() => {
+watch(
+  () => props.messages.length,
+  () => {
     if (bodyRef.value) bodyRef.value.scrollTop = bodyRef.value.scrollHeight
-  })
-})
+  },
+  { flush: "post" },
+)
 
 onMounted(() => {
   inputRef.value?.focus()

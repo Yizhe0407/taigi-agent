@@ -71,7 +71,7 @@ voice/（pipecat WebRTC 語音 pipeline，api/voice.py 的 SmallWebRTCRequestHan
 |-----------|--------|----------|
 | `POST /api/asr` | `FastAPIInstrumentor` | `http.route`, `http.response.status_code` |
 | `POST /api/tts` | `FastAPIInstrumentor` | `http.route`, `http.response.status_code` |
-| `POST /api/chat/sessions/{sessionId}/messages` | `FastAPIInstrumentor` | `http.route`, `http.response.status_code` |
+| `POST /api/chat/sessions/{sessionId}/messages/stream` | `FastAPIInstrumentor` | `http.route`, `http.response.status_code` |
 | `POST {asr_upstream}/v1/audio/transcriptions` | `HTTPXClientInstrumentor` | `server.address`, `http.request.method`, `http.response.status_code` |
 | `POST {tts_upstream}/v1/audio/speech` | `HTTPXClientInstrumentor` | `server.address`, `http.request.method`, `http.response.status_code` |
 

@@ -6,6 +6,9 @@
 .pnpm-store/
 .playwright-mcp/
 
+# JetBrains project settings
+.idea/
+
 # Screenshot artifacts dropped at repo root by Playwright / dev scripts
 /frontend-*.png
 /route-planner-*.png

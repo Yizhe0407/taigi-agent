@@ -15,6 +15,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from async_lifecycle import ReclaimingAsyncLock
 from providers.http import get_http_client
 from providers.tdx_auth import TdxTokenClient
 from telemetry import get_telemetry
@@ -74,7 +75,7 @@ class TdxBikeProvider:
         self._timeout = timeout
         self._clock = clock
         self._token_client: TdxTokenClient | None = None
-        self._token_client_lock = asyncio.Lock()
+        self._token_client_lock = ReclaimingAsyncLock("TDX bike token-client construction")
 
     async def fetch_station_payloads(self) -> tuple[list[Any], list[Any]]:
         """Return raw (stations, availability) lists for the configured city."""
@@ -98,7 +99,7 @@ class TdxBikeProvider:
     async def _ensure_token_client(self) -> TdxTokenClient:
         if self._token_client is not None:
             return self._token_client
-        async with self._token_client_lock:
+        async with self._token_client_lock.acquire():
             # Re-check after acquiring: first caller constructs it, subsequent
             # callers reuse it — otherwise two concurrent cold-start requests
             # (Station + Availability gather) would each fetch their own token.

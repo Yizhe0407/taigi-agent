@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from "vue"
+import { onMounted, ref, watch } from "vue"
+
+import { observeAsynchronousScopeTeardown } from "@/lib/component-lifecycle"
+import {
+  createResourceOwner,
+  type ResourceClaim,
+  type ResourceReleaseAttempt,
+} from "@/lib/resource-owner"
+
 import { OfficialCubismAvatar } from "../live2d/officialCubismAvatar"
 
 const props = defineProps<{
@@ -10,61 +18,177 @@ const props = defineProps<{
 
 const host = ref<HTMLDivElement | null>(null)
 const isReady = ref(false)
+const resources = createResourceOwner("Live2D avatar component")
 
 let avatar: OfficialCubismAvatar | null = null
-let resizeObserver: ResizeObserver | null = null
-let loadAbort: AbortController | null = null
+let loadTask: Promise<void> | null = null
+let loadAbortClaim: ResourceClaim | null = null
+
+function throwFailures(failures: unknown[], message: string): void {
+  if (failures.length === 1) throw failures[0]
+  if (failures.length > 1) throw new AggregateError(failures, message)
+}
+
+function releaseResources(attempt: ResourceReleaseAttempt): void {
+  resources.dispose(attempt)
+  if (resources.settled) avatar = null
+}
+
+function failLive2D(
+  error: unknown,
+  attempt: ResourceReleaseAttempt = {},
+): never {
+  isReady.value = false
+  try {
+    releaseResources(attempt)
+  } catch (cleanupError) {
+    throw new AggregateError(
+      [error, cleanupError],
+      "Live2D failed and could not be fully released",
+    )
+  }
+  throw error
+}
 
 watch(
   () => props.mouthAmplitude,
-  (v) => avatar?.setMouthAmplitude(v),
+  (value) => {
+    if (resources.disposed || !avatar) return
+    try {
+      avatar.setMouthAmplitude(value)
+    } catch (error) {
+      failLive2D(error)
+    }
+  },
 )
 
-onMounted(async () => {
-  const target = host.value
-  if (!target) return
-
-  const current = new OfficialCubismAvatar(target, props.modelSrc)
-  const controller = new AbortController()
-  avatar = current
-  loadAbort = controller
+async function loadLive2D(
+  current: OfficialCubismAvatar,
+  controller: AbortController,
+  setupAttempt: ResourceReleaseAttempt,
+): Promise<void> {
   try {
     await current.load(controller.signal)
-    if (controller.signal.aborted || avatar !== current || !host.value) {
-      current.dispose()
-      return
+    if (resources.disposed || controller.signal.aborted || avatar !== current || !host.value) return
+
+    let observer: ResizeObserver | null = null
+    const observerClaim = resources.claim("Live2D resize observer", () => {
+      observer?.disconnect()
+    })
+    try {
+      observer = new ResizeObserver(() => {
+        if (resources.disposed || avatar !== current) return
+        try {
+          current.resize()
+        } catch (error) {
+          failLive2D(error)
+        }
+      })
+      observer.observe(host.value)
+    } catch (setupError) {
+      try {
+        observerClaim.release(setupAttempt)
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [setupError, cleanupError],
+          "Failed to register and roll back Live2D resize observer",
+        )
+      }
+      throw setupError
     }
 
-    resizeObserver = new ResizeObserver(() => current.resize())
-    resizeObserver.observe(host.value)
+    if (resources.disposed || avatar !== current) return
     isReady.value = true
-  }
-  catch (error) {
-    if (!(error instanceof DOMException && error.name === "AbortError")) {
-      console.error("Live2D avatar failed to load", error)
+  } catch (error) {
+    const aborted = error instanceof DOMException && error.name === "AbortError"
+    if (resources.disposed) {
+      if (aborted) return
+      throw error
     }
-    current.dispose()
-    if (avatar === current) avatar = null
+    if (avatar !== current) return
+    isReady.value = false
+    try {
+      releaseResources(setupAttempt)
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "Failed to load and roll back Live2D avatar",
+      )
+    }
+    if (!aborted) throw error
+  } finally {
+    if (loadAbortClaim?.active && !resources.disposed) loadAbortClaim.transfer()
   }
-  finally {
-    if (loadAbort === controller) loadAbort = null
-  }
-})
-
-onBeforeUnmount(() => {
-  destroyLive2D()
-})
-
-function destroyLive2D() {
-  loadAbort?.abort()
-  loadAbort = null
-  resizeObserver?.disconnect()
-  resizeObserver = null
-  avatar?.dispose()
-  avatar = null
-
-  isReady.value = false
 }
+
+onMounted(() => {
+  const target = host.value
+  if (resources.disposed || !target) return
+  const attempt: ResourceReleaseAttempt = {}
+
+  try {
+    const controllerAcquisition = resources.acquire(
+      () => new AbortController(),
+      controller => controller?.abort(),
+      "Live2D load abort controller",
+      attempt,
+    )
+    loadAbortClaim = controllerAcquisition
+    const avatarAcquisition = resources.acquire(
+      () => new OfficialCubismAvatar(target, props.modelSrc, failLive2D),
+      (current, releaseAttempt) => current?.dispose(releaseAttempt),
+      "Live2D avatar",
+      attempt,
+    )
+    avatar = avatarAcquisition.value
+
+    let operation!: Promise<void>
+    operation = loadLive2D(
+      avatar,
+      controllerAcquisition.value,
+      attempt,
+    ).finally(() => {
+      if (loadTask === operation) loadTask = null
+    })
+    loadTask = operation
+    return operation
+  } catch (setupError) {
+    isReady.value = false
+    try {
+      releaseResources(attempt)
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [setupError, cleanupError],
+        "Failed to initialize and roll back Live2D avatar",
+      )
+    }
+    throw setupError
+  }
+})
+
+const settleLive2DTeardown = observeAsynchronousScopeTeardown(
+  "Live2D avatar teardown",
+  async (attempt) => {
+    isReady.value = false
+    const failures: unknown[] = []
+    try {
+      releaseResources(attempt)
+    } catch (error) {
+      failures.push(error)
+    }
+    const task = loadTask
+    if (task) {
+      try {
+        await task
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    throwFailures(failures, "Failed to release Live2D component resources")
+  },
+)
+
+defineExpose({ settleLive2DTeardown })
 </script>
 
 <template>

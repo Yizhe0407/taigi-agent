@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from contextlib import suppress
 from datetime import datetime
 
@@ -11,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from async_lifecycle import create_lifecycle_task, join_task
 from services.departures import (
     DepartureDecision,
     DepartureRouteDetail,
@@ -143,58 +145,163 @@ async def get_departures_here() -> StopDepartureSnapshotResponse:
 # calls notify_snapshot_refreshed(); connected clients get a fresh snapshot
 # the moment it's ready instead of polling out of phase with the cache.
 
-# Fresh Event per tick: set-then-replace means every waiter of the old tick
-# wakes exactly once and new waiters latch onto the next tick — no clear() race.
-_refresh_event = asyncio.Event()
 # Warmup tick is 25 s; if it stalls, fall back to this instead of freezing.
 _STREAM_FALLBACK_SECONDS = 40.0
+# `/stream` is public and indefinitely open.  The runtime owns a bounded set of
+# stream leases so every generator that actually starts is accounted for until
+# its `finally` releases the lease.
+_MAX_STREAM_CONNECTIONS = 200
+
+
+class _DepartureStreamCapacityError(RuntimeError):
+    """Raised when capacity changed after response headers were prepared."""
+
+
+class _DepartureStreamLease:
+    """One stream strongly registered with its app-generation runtime."""
+
+    __slots__ = ("_owner", "_released")
+
+    def __init__(self, owner: _DepartureStreamRuntime) -> None:
+        self._owner = owner
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._owner._release(self)
+
+
+class _DepartureStreamRuntime:
+    """Authoritative owner for one lifespan's refresh signal and SSE leases.
+
+    Shutdown permanently closes admission, wakes every stream parked on the
+    current refresh generation, and waits until every generator that crossed
+    the gate has executed its release.  A late notifier can only address the
+    currently installed runtime; it can never create a replacement generation.
+    """
+
+    def __init__(self, max_connections: int) -> None:
+        self._max_connections = max_connections
+        self._refresh_event = asyncio.Event()
+        self._leases: set[_DepartureStreamLease] = set()
+        self._leases_empty = asyncio.Event()
+        self._leases_empty.set()
+        self._closing = False
+        self._closed = False
+        self._shutdown_task: asyncio.Task[None] | None = None
+
+    @property
+    def closing(self) -> bool:
+        return self._closing
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def active_count(self) -> int:
+        return len(self._leases)
+
+    @property
+    def max_connections(self) -> int:
+        return self._max_connections
+
+    @property
+    def capacity_available(self) -> bool:
+        return not self._closing and self.active_count < self._max_connections
+
+    def capture_refresh(self) -> asyncio.Event:
+        return self._refresh_event
+
+    def notify_snapshot_refreshed(self) -> None:
+        if self._closing:
+            return
+        # Set-then-replace semantics without clear(): every waiter holding the
+        # old event wakes exactly once and later waiters capture the next tick.
+        wakeup = self._refresh_event
+        self._refresh_event = asyncio.Event()
+        wakeup.set()
+
+    def acquire(self) -> _DepartureStreamLease:
+        if self._closing:
+            raise RuntimeError("Departure stream runtime is shutting down")
+        if self.active_count >= self._max_connections:
+            raise _DepartureStreamCapacityError("Departure stream capacity is exhausted")
+        lease = _DepartureStreamLease(self)
+        self._leases.add(lease)
+        self._leases_empty.clear()
+        return lease
+
+    def _release(self, lease: _DepartureStreamLease) -> None:
+        self._leases.discard(lease)
+        if not self._leases:
+            self._leases_empty.set()
+
+    async def _finalize(self) -> None:
+        await self._leases_empty.wait()
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closing = True
+        # A waiting stream captures the event before yielding its current
+        # snapshot.  Setting that exact generation lets it observe the closed
+        # gate and retire instead of sleeping through shutdown.
+        self._refresh_event.set()
+
+        task = self._shutdown_task
+        if task is None:
+            task = create_lifecycle_task(
+                self._finalize(),
+                name="departure-streams-shutdown",
+            )
+            self._shutdown_task = task
+
+        try:
+            await join_task(task)
+        finally:
+            if self._shutdown_task is task and task.done():
+                if not task.cancelled() and task.exception() is None:
+                    self._closed = True
+                self._shutdown_task = None
+
+
+_departure_runtime: _DepartureStreamRuntime | None = None
+
+
+async def startup_departure_streams() -> None:
+    """Install a fresh stream generation only after the previous one retired."""
+    global _departure_runtime
+    previous = _departure_runtime
+    if previous is not None:
+        await previous.aclose()
+    _departure_runtime = _DepartureStreamRuntime(_MAX_STREAM_CONNECTIONS)
+
+
+async def shutdown_departure_streams() -> None:
+    """Close admission and retain the runtime globally until teardown succeeds."""
+    global _departure_runtime
+    runtime = _departure_runtime
+    if runtime is None:
+        return
+    try:
+        await runtime.aclose()
+    finally:
+        if _departure_runtime is runtime and runtime.closed:
+            _departure_runtime = None
 
 
 def notify_snapshot_refreshed() -> None:
-    """Wake departure SSE clients after an ETA cache refresh."""
-    global _refresh_event
-    _refresh_event.set()
-    _refresh_event = asyncio.Event()
+    """Wake this app generation's clients without reviving a closed runtime."""
+    runtime = _departure_runtime
+    if runtime is not None:
+        runtime.notify_snapshot_refreshed()
 
 
-async def _departure_events():
-    """無限 SSE 事件流：snapshot JSON 或 {"error": …}，每次 cache 更新推一筆。"""
-    while True:
-        # Capture before building so a tick that lands mid-build isn't missed.
-        wakeup = _refresh_event
-        try:
-            snapshot = await get_departure_snapshot_here()
-            payload = _snapshot_to_response(snapshot).model_dump_json(by_alias=True)
-        except DepartureSnapshotUnavailable as error:
-            payload = json.dumps({"error": str(error)}, ensure_ascii=False)
-        yield sse_event(payload)
-        with suppress(TimeoutError):
-            await asyncio.wait_for(wakeup.wait(), timeout=_STREAM_FALLBACK_SECONDS)
-
-
-# ── Concurrent-connection admission control ────────────────────────────────
-#
-# `/stream` is a public, indefinitely-open SSE endpoint with no cap
-# otherwise — hundreds of parallel connections would each hold an asyncio
-# task + generator, each rebuilding a full snapshot at least every
-# `_STREAM_FALLBACK_SECONDS`. 200 is far above real usage (the kiosk only
-# ever opens a handful of `/stream` connections), so this should never bind
-# in practice.
-_MAX_STREAM_CONNECTIONS = 200
-_active_stream_connections = 0
-
-
-def _stream_capacity_available() -> bool:
-    return _active_stream_connections < _MAX_STREAM_CONNECTIONS
-
-
-def _release_stream_slot() -> None:
-    global _active_stream_connections
-    _active_stream_connections -= 1
-
-
-async def _admission_controlled_events():
-    """Occupy a connection slot for the lifetime of this generator.
+async def _departure_stream(runtime: _DepartureStreamRuntime) -> AsyncIterator[str]:
+    """Yield snapshots while holding one runtime-owned connection lease.
 
     The acquire must be the *first* statement in the body, before any
     `await`. `StreamingResponse` sends headers (committing to status 200)
@@ -206,31 +313,47 @@ async def _admission_controlled_events():
     "slot acquired" the same event is what guarantees the release always
     matches.
 
-    `stream_departures_here` only checks capacity before returning the
-    response (a precise 503 needs that check before headers go out); the
-    acquire happens slightly later, here. A burst can therefore briefly push
-    the real count a little over the cap — bounded and self-correcting, and
-    a non-issue at a limit this far above real usage.
+    `stream_departures_here` checks capacity before returning the response so
+    the normal full-capacity path gets a precise 503.  The authoritative
+    acquire repeats the check here: concurrent responses prepared before
+    either body starts may not exceed the hard cap after headers are sent.
     """
-    global _active_stream_connections
-    _active_stream_connections += 1
+    lease = runtime.acquire()
     try:
-        async for event in _departure_events():
-            yield event
+        while not runtime.closing:
+            # Capture before building so a tick that lands mid-build is not
+            # missed.  Shutdown also sets this captured generation.
+            wakeup = runtime.capture_refresh()
+            try:
+                snapshot = await get_departure_snapshot_here()
+                payload = _snapshot_to_response(snapshot).model_dump_json(by_alias=True)
+            except DepartureSnapshotUnavailable as error:
+                payload = json.dumps({"error": str(error)}, ensure_ascii=False)
+
+            if runtime.closing:
+                return
+            yield sse_event(payload)
+            if runtime.closing:
+                return
+            with suppress(TimeoutError):
+                await asyncio.wait_for(wakeup.wait(), timeout=_STREAM_FALLBACK_SECONDS)
     finally:
-        _release_stream_slot()
+        lease.release()
 
 
 @router.get("/api/departures/stream")
 async def stream_departures_here() -> StreamingResponse:
     """SSE：每次 ETA cache 更新即推最新 snapshot。"""
-    if not _stream_capacity_available():
+    runtime = _departure_runtime
+    if runtime is None or runtime.closing:
+        raise HTTPException(status_code=503, detail="離站串流服務正在關閉，請稍後再試")
+    if not runtime.capacity_available:
         raise HTTPException(
             status_code=503,
-            detail=f"目前串流連線數已達上限（{_MAX_STREAM_CONNECTIONS}），請稍後再試",
+            detail=f"目前串流連線數已達上限（{runtime.max_connections}），請稍後再試",
         )
     return StreamingResponse(
-        _admission_controlled_events(),
+        _departure_stream(runtime),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )

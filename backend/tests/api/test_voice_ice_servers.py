@@ -25,9 +25,11 @@ def test_voice_ice_servers_returns_browser_credentials_and_updates_handler(monke
 
     updated = []
     monkeypatch.setattr(voice, "get_turn_ice_servers", fake_servers)
-    monkeypatch.setattr(voice._handler, "update_ice_servers", updated.append)
 
-    response = TestClient(api.app).get("/api/voice/ice-servers")
+    with TestClient(api.app) as client:
+        runtime = voice._require_voice_runtime()
+        monkeypatch.setattr(runtime.handler, "update_ice_servers", updated.append)
+        response = client.get("/api/voice/ice-servers")
 
     assert response.status_code == 200
     assert response.json() == {"iceServers": [browser_server]}
@@ -40,7 +42,8 @@ def test_voice_ice_servers_maps_upstream_failure(monkeypatch):
 
     monkeypatch.setattr(voice, "get_turn_ice_servers", unavailable)
 
-    response = TestClient(api.app).get("/api/voice/ice-servers")
+    with TestClient(api.app) as client:
+        response = client.get("/api/voice/ice-servers")
 
     assert response.status_code == 502
     assert response.json() == {"detail": "WebRTC TURN is temporarily unavailable"}

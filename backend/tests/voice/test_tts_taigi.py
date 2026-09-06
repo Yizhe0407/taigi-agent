@@ -15,6 +15,7 @@ from pipecat.utils.base_object import BaseObject
 from services.taigi_tts import TTSConfig, TTSConfigError
 from voice.tts_taigi import (
     _DECODED_CACHE_MAX_BYTES,
+    _DECODED_CACHE_MAX_ENTRIES,
     SubtitleFrame,
     TaigiTTSService,
     _decoded_cache,
@@ -133,36 +134,77 @@ def test_run_tts_all_segments_upstream_error_records_error_outcome():
 
 
 def test_run_tts_cancelled_mid_request_records_cancelled_outcome():
-    """Barge-in cancels the enclosing Task while awaiting gather() — verifies the
-    outer except-CancelledError path, not per-item CancelledError (gather with
-    return_exceptions=True swallows those as regular results, never reaching here)."""
+    """Cancellation before the first yielded frame rolls back Pipecat's context.
 
-    async def _slow_post(*args, **kwargs):
-        await asyncio.sleep(10)
-        raise AssertionError("should have been cancelled before this returns")
+    At this point no `_audio_contexts` entry exists, so completion/interruption
+    hooks cannot release the base class's `_tts_contexts` registration.
+    """
 
-    p1, p2, p3 = _patch_common()
-    with (
-        p1,
-        p2,
-        p3,
-        patch("voice.tts_taigi.synthesize_segments", new=AsyncMock(side_effect=_slow_post)),
-        patch("voice.tts_taigi.get_telemetry") as mock_get_telemetry,
-    ):
-        svc = TaigiTTSService()
+    async def _run():
+        request_started = asyncio.Event()
+        never_finishes = asyncio.Event()
 
-        async def _run():
-            task = asyncio.ensure_future(_collect(svc.run_tts("你好", "ctx-1")))
-            await asyncio.sleep(0.05)
+        async def _slow_post(*args, **kwargs):
+            request_started.set()
+            await never_finishes.wait()
+            raise AssertionError("should have been cancelled before this returns")
+
+        p1, p2, p3 = _patch_common()
+        with (
+            p1,
+            p2,
+            p3,
+            patch("voice.tts_taigi.synthesize_segments", new=AsyncMock(side_effect=_slow_post)),
+            patch("voice.tts_taigi.get_telemetry") as mock_get_telemetry,
+        ):
+            svc = TaigiTTSService()
+            svc._tts_contexts["ctx-1"] = TTSContext()
+            task = asyncio.create_task(_collect(svc.run_tts("你好", "ctx-1")))
+            await request_started.wait()
+            assert "ctx-1" in svc._tts_contexts
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+            assert "ctx-1" not in svc._tts_contexts
 
-        asyncio.run(_run())
+        _, kwargs = mock_get_telemetry.return_value.record_pipeline_stage.call_args
+        assert kwargs["stage"] == "voice.tts"
+        assert kwargs["outcome"] == "cancelled"
 
-    _, kwargs = mock_get_telemetry.return_value.record_pipeline_stage.call_args
-    assert kwargs["stage"] == "voice.tts"
-    assert kwargs["outcome"] == "cancelled"
+    asyncio.run(_run())
+
+
+def test_run_tts_early_generator_close_retires_pre_playback_context():
+    """A downstream consumer may stop after the subtitle frame.
+
+    Upstream synthesis is already fully buffered by then, so the remaining
+    lifecycle debt is Pipecat's pre-playback context registration. Explicitly
+    closing the async generator must retire it immediately rather than waiting
+    for an audio-completion callback that can no longer happen.
+    """
+
+    async def run():
+        mock_resp = MagicMock(status_code=200, content=_make_wav_bytes())
+        p1, p2, p3 = _patch_common()
+        with (
+            p1,
+            p2,
+            p3,
+            patch("voice.tts_taigi.synthesize_segments", new=AsyncMock(return_value=[mock_resp])),
+            patch("voice.tts_taigi.get_telemetry"),
+        ):
+            svc = TaigiTTSService()
+            svc._tts_contexts["ctx-early-close"] = TTSContext()
+            generator = svc.run_tts("你好", "ctx-early-close")
+
+            assert isinstance(await anext(generator), SubtitleFrame)
+            assert "ctx-early-close" in svc._tts_contexts
+
+            await generator.aclose()
+
+            assert "ctx-early-close" not in svc._tts_contexts
+
+    asyncio.run(run())
 
 
 def test_run_tts_second_call_with_same_text_hits_cache_and_skips_reprocessing():
@@ -243,6 +285,16 @@ def test_decoded_cache_put_evicts_oldest_until_under_byte_budget():
     # The most recently inserted entries must have survived the eviction.
     assert "key-7" in _decoded_cache
     assert "key-0" not in _decoded_cache
+
+
+def test_decoded_cache_zero_byte_entries_stay_under_metadata_bound():
+    for i in range(_DECODED_CACHE_MAX_ENTRIES + 8):
+        _decoded_cache_put(f"zero-{i}", (_decoded_of(0), 0))
+
+    assert len(_decoded_cache) == _DECODED_CACHE_MAX_ENTRIES
+    assert "zero-0" not in _decoded_cache
+    assert f"zero-{_DECODED_CACHE_MAX_ENTRIES + 7}" in _decoded_cache
+    assert _decoded_cache_total_bytes() == 0
 
 
 def test_run_tts_second_call_with_same_text_returns_identical_pcm():
@@ -372,5 +424,31 @@ def test_completed_audio_context_only_clears_its_own_tts_context():
 
         assert "ctx-finished" not in svc._tts_contexts
         assert "ctx-next-turn" in svc._tts_contexts
+
+    asyncio.run(_scenario())
+
+
+@pytest.mark.parametrize("yielded_audio", [False, True])
+def test_turn_completion_closes_audio_context_once_without_timeout(yielded_audio: bool):
+    """HTTP turns must enqueue one explicit end sentinel in every outcome.
+
+    The zero-audio case used to rely on ``_handle_audio_context`` timing out;
+    the audio-producing case is included to prove the subclass does not add a
+    second sentinel after the base hook already closed the same context.
+    """
+
+    async def _scenario():
+        svc = TaigiTTSService()
+        context_id = "ctx-turn"
+        queue: asyncio.Queue = asyncio.Queue()
+        svc._turn_context_id = context_id
+        svc._is_yielding_frames_synchronously = yielded_audio
+        svc._audio_contexts[context_id] = queue
+
+        await svc.on_turn_context_completed()
+
+        assert svc._turn_context_id is None
+        assert queue.qsize() == 1
+        assert queue.get_nowait() is None
 
     asyncio.run(_scenario())

@@ -11,12 +11,12 @@ future TDX-backed provider) share it instead of re-implementing it.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import Awaitable, Callable
 
 import httpx
 
+from async_lifecycle import ReclaimingAsyncLock
 from providers.http import get_http_client
 
 _TOKEN_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
@@ -47,7 +47,7 @@ class TdxTokenClient:
         self._record_hit = record_hit
         self._token: str = ""
         self._token_expires_at: float = 0.0
-        self._lock = asyncio.Lock()
+        self._lock = ReclaimingAsyncLock("TDX OAuth token refresh")
 
     async def get_token(self) -> str:
         hit = self._clock() < self._token_expires_at
@@ -55,7 +55,7 @@ class TdxTokenClient:
             self._record_hit(hit)
         if hit:
             return self._token
-        async with self._lock:
+        async with self._lock.acquire():
             # Re-check after acquiring: first caller refreshes, subsequent callers reuse it.
             if self._clock() < self._token_expires_at:
                 return self._token

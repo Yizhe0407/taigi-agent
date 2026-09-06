@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { Bike } from "@lucide/vue"
-import { computed, ref, watch } from "vue"
+import { computed, ref } from "vue"
 
 import { MapMarker, MarkerContent, useMap } from "@/components/ui/map"
+import { useMapLayer } from "@/components/ui/map/composables/use-map-layer"
 
 import type { MoovoStation } from "../types"
 
@@ -10,7 +11,7 @@ const props = defineProps<{
   stations: MoovoStation[]
 }>()
 
-const { map } = useMap()
+const { map, isLoaded } = useMap()
 const zoom = ref(13)
 
 const MAJOR_STATION_KEYWORDS = [
@@ -30,25 +31,30 @@ const MAJOR_STATION_KEYWORDS = [
   "市場",
 ]
 
-const updateZoom = () => {
-  if (map.value) zoom.value = map.value.getZoom()
-}
-
-watch(
+useMapLayer(
   map,
-  (nextMap, _previousMap, onCleanup) => {
-    if (!nextMap) return
+  isLoaded,
+  "Moovo station map listeners",
+  (nextMap, owner, fail) => {
+    const updateZoom = () => {
+      if (owner.signal.aborted) return
+      try {
+        zoom.value = nextMap.getZoom()
+      } catch (error) {
+        fail(error)
+      }
+    }
 
     updateZoom()
-    nextMap.on("zoom", updateZoom)
-    nextMap.on("moveend", updateZoom)
-
-    onCleanup(() => {
-      nextMap.off("zoom", updateZoom)
-      nextMap.off("moveend", updateZoom)
-    })
+    owner.acquire(
+      () => nextMap.on("zoom", updateZoom),
+      () => nextMap.off("zoom", updateZoom),
+    )
+    owner.acquire(
+      () => nextMap.on("moveend", updateZoom),
+      () => nextMap.off("moveend", updateZoom),
+    )
   },
-  { immediate: true },
 )
 
 const serviceStatusLabel = (status: number) => {

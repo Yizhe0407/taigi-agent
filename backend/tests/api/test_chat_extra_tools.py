@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 from agent.session import AgentSession
 from api import chat as chat_module
+from async_lifecycle import AsyncResourceOwner
 
 # ---------------------------------------------------------------------------
 # Minimal LLM fakes (mirror tests/agent/test_session.py, kept self-contained).
@@ -56,6 +57,20 @@ async def _as_chunk_stream(response):
         )
 
 
+class _FakeOpenAIStream:
+    def __init__(self, response):
+        self._iterator = _as_chunk_stream(response)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        return await anext(self._iterator)
+
+    async def close(self):
+        await self._iterator.aclose()
+
+
 class _FakeCompletions:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -63,7 +78,7 @@ class _FakeCompletions:
     async def create(self, **kwargs):
         response = self.responses.pop(0)
         if kwargs.get("stream"):
-            return _as_chunk_stream(response)
+            return _FakeOpenAIStream(response)
         return response
 
 
@@ -89,6 +104,7 @@ def _patch_make_session(monkeypatch, responses):
     def fake_make(_settings):
         return AgentSession(
             client=_FakeClient(responses),
+            llm_http_owner=AsyncResourceOwner("test LLM streams"),
             model="test-model",
             system_prompt="system",
             tool_schemas=[],
@@ -144,7 +160,10 @@ def test_rehydrate_injection_does_not_mutate_globals(monkeypatch):
     base_schema_ids = id(base.tool_schemas)
     base_handler_ids = id(base.tool_handlers)
 
-    injected = chat_module._rehydrate_session([], extra_tools=[(_end_conversation_schema(), lambda: None)])
+    async def handler() -> str:
+        return ""
+
+    injected = chat_module._rehydrate_session([], extra_tools=[(_end_conversation_schema(), handler)])
 
     assert "end_conversation" in injected.tool_handlers
     assert "end_conversation" not in base.tool_handlers

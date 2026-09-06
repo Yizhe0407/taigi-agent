@@ -8,8 +8,7 @@ a `TextFrame` (for TTS) with the agent's reply.
 
 import asyncio
 import logging
-from collections.abc import Callable
-from contextlib import suppress
+from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
 from pipecat.frames.frames import (
@@ -21,6 +20,9 @@ from pipecat.frames.frames import (
     TranscriptionFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+from api.session_store import SessionTombstonedError
+from async_lifecycle import AsyncResourceOwner, OwnedAsyncResource, create_lifecycle_task, join_task, run_in_thread
 
 _log = logging.getLogger(__name__)
 
@@ -73,6 +75,11 @@ class TaigiBusAgentProcessor(FrameProcessor):
         self._turn_timer = turn_timer
         self._inference_task: asyncio.Task | None = None
         self._inference_state: _ResponseState | None = None
+        self._response_streams: AsyncResourceOwner[Any] = AsyncResourceOwner("agent response streams")
+        self._closing = False
+        self._cleanup_task: asyncio.Task[None] | None = None
+        self._base_cleanup_complete = False
+        self._cleanup_complete = False
 
     def _end_conversation_tool(self) -> tuple[dict, Any]:
         """Build the (schema, handler) pair injected into this session's tools.
@@ -83,11 +90,36 @@ class TaigiBusAgentProcessor(FrameProcessor):
         """
 
         async def end_conversation() -> str:
-            if self._send_event:
+            if not self._closing and self._send_event:
                 self._send_event({"type": "end_conversation"})
             return "好，對話已標記結束，跟使用者道別即可。"
 
         return (_END_CONVERSATION_SCHEMA, end_conversation)
+
+    def _on_inference_done(self, task: asyncio.Task[None]) -> None:
+        """Retire success/cancellation; retain a failed task as observable debt."""
+        if self._inference_task is not task:
+            return
+        if task.cancelled():
+            self._inference_task = None
+            self._inference_state = None
+            return
+        error = task.exception()
+        if error is None:
+            self._inference_task = None
+            self._inference_state = None
+
+    async def _settle_completed_inference(self) -> None:
+        """Surface and retire a completed inference before accepting new work."""
+        task = self._inference_task
+        if task is None or not task.done():
+            return
+        try:
+            await self.cancel_task(task, timeout=None)
+        finally:
+            if task.done() and self._inference_task is task:
+                self._inference_task = None
+                self._inference_state = None
 
     async def _cancel_inference_task(self) -> None:
         """Cancel `self._inference_task` and wait for its cleanup to finish.
@@ -105,11 +137,44 @@ class TaigiBusAgentProcessor(FrameProcessor):
         push_frame), so cancellation propagates quickly.
         """
         task = self._inference_task
-        if task is None or task.done():
+        if task is None:
             return
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        try:
+            await self.cancel_task(task, timeout=None)
+        finally:
+            if task.done() and self._inference_task is task:
+                # The task manager surfaces a physical failure to this caller,
+                # so the task no longer represents unobserved debt here.
+                self._inference_task = None
+                self._inference_state = None
+
+    async def _run_cleanup(self) -> None:
+        """Run every independent teardown, retaining successful progress."""
+        errors: list[BaseException] = []
+        try:
+            await self._cancel_inference_task()
+        except BaseException as error:  # noqa: BLE001 — continue independent teardown
+            errors.append(error)
+
+        try:
+            await self._response_streams.aclose()
+        except BaseException as error:  # noqa: BLE001 — base cleanup must still run
+            errors.append(error)
+
+        if not self._base_cleanup_complete:
+            try:
+                await super().cleanup()
+            except BaseException as error:  # noqa: BLE001 — preserve every cleanup failure
+                errors.append(error)
+            else:
+                self._base_cleanup_complete = True
+
+        if not errors:
+            self._cleanup_complete = True
+            return
+        if len(errors) == 1:
+            raise errors[0]
+        raise BaseExceptionGroup("Agent processor cleanup failed", errors)
 
     async def cleanup(self):
         """Cancel any in-flight inference before the base class tears us down.
@@ -124,20 +189,45 @@ class TaigiBusAgentProcessor(FrameProcessor):
         Ours is cancelled first, while the processor can still flush the frames
         its CancelledError handler pushes; `super().cleanup()` afterwards then
         cancels the machinery those frames travel through.
+
+        The first call permanently closes the processor's acquisition gate.
+        One physical cleanup task owns the complete sequence, so cancellation of
+        any caller cannot interrupt it. Failed pieces retain their ownership and
+        a later cleanup call retries only the pieces that did not finish.
         """
-        await self._cancel_inference_task()
-        self._inference_task = None
-        await super().cleanup()
+        if self._cleanup_complete:
+            return
+        self._closing = True
+        task = self._cleanup_task
+        if task is None:
+            task = create_lifecycle_task(
+                self._run_cleanup(),
+                name="agent-processor-cleanup",
+            )
+            self._cleanup_task = task
+
+        try:
+            await join_task(task)
+        finally:
+            if self._cleanup_task is task and task.done():
+                self._cleanup_task = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         """Process incoming frames, trigger agent on transcription."""
+        if self._closing:
+            return
+        await self._settle_completed_inference()
         await super().process_frame(frame, direction)
+        if self._closing:
+            return
+        await self._settle_completed_inference()
 
         if isinstance(frame, InterruptionFrame):
             if self._inference_task and not self._inference_task.done():
                 _log.info("Agent generation interrupted by user")
                 await self._cancel_inference_task()
-                self._inference_task = None
+            if self._closing:
+                return
             await self.push_frame(frame, direction)
 
         elif isinstance(frame, TranscriptionFrame):
@@ -163,39 +253,108 @@ class TaigiBusAgentProcessor(FrameProcessor):
                     _log.info("Cancelling in-flight response that already pushed frames; sending InterruptionFrame")
                     await self.push_frame(InterruptionFrame(), direction)
 
+            if self._closing:
+                return
             state = _ResponseState()
+            coroutine = self._run_agent_inference(text, direction, state)
+            try:
+                task = self.create_task(coroutine)
+            except BaseException:
+                coroutine.close()
+                raise
             self._inference_state = state
-            self._inference_task = self.create_task(self._run_agent_inference(text, direction, state))
+            self._inference_task = task
+            try:
+                task.add_done_callback(self._on_inference_done)
+            except BaseException as primary:
+                # Callback registration is part of task construction.  A task
+                # that the processor cannot retire must not survive a failed
+                # process_frame call or be overwritten by the next transcript.
+                try:
+                    await self.cancel_task(task, timeout=None)
+                except BaseException as cleanup_error:
+                    raise BaseExceptionGroup(
+                        "Agent inference task registration and rollback both failed",
+                        [primary, cleanup_error],
+                    ) from None
+                finally:
+                    if self._inference_task is task:
+                        self._inference_task = None
+                        self._inference_state = None
+                raise
         else:
             await self.push_frame(frame, direction)
 
-    async def _open_stream(self, text: str, stream_kwargs: dict[str, Any]):
-        """Open `respond_in_session_stream`, recreating the session once if it expired.
+    async def _open_stream(
+        self,
+        text: str,
+        stream_kwargs: dict[str, Any],
+    ) -> tuple[OwnedAsyncResource[Any], AsyncGenerator[str, None], str | None] | None:
+        """Open the stream and recover TTL expiry under the same session ID.
 
-        The chat session's TTL can expire while this long-lived WebRTC
-        connection stays open; without this retry every later utterance would
-        hit LookupError and the kiosk would go permanently silent. Returns
-        `(stream, first_chunk)` on success, or `None` if the session is still
-        gone after recreation — bounded to two attempts, since a second
-        LookupError means the store can't find its own freshly-created session.
+        A live WebRTC connection can outlast the durable row's TTL. Recovery is
+        bounded to one same-ID recreate plus one retry; an explicit DELETE
+        tombstone stops recovery so voice can never resurrect an ended session.
         """
-        from api.chat import get_store, respond_in_session_stream
+        from api.chat import chat_store_operation, respond_in_session_stream
 
+        await self._response_streams.retry_failed()
         for attempt in range(2):
-            stream = respond_in_session_stream(self.session_id, text, **stream_kwargs)
+            acquisition = self._response_streams.begin_acquisition()
+            try:
+                stream = respond_in_session_stream(self.session_id, text, **stream_kwargs)
+            except BaseException:
+                self._response_streams.abort_acquisition(acquisition)
+                raise
+            owned_stream = self._response_streams.finish_acquisition(
+                acquisition,
+                stream,
+                lambda candidate: candidate.aclose(),
+            )
             try:
                 # LookupError surfaces on the first pull, before any chunk.
                 first = await anext(stream, None)
-                return stream, first
-            except LookupError:
+                return owned_stream, stream, first
+            except BaseException as error:
+                # Ownership transfers to the caller only after the first pull
+                # succeeds. Every failure before that point must close the local
+                # generator, including cancellation and non-LookupError failures.
+                try:
+                    await self._response_streams.release(owned_stream)
+                except BaseException as close_error:
+                    if isinstance(close_error, asyncio.CancelledError) and not self._response_streams.owns(owned_stream):
+                        raise
+                    raise BaseExceptionGroup(
+                        "Agent response stream open and rollback both failed",
+                        [error, close_error],
+                    ) from None
+
+                if not isinstance(error, LookupError):
+                    raise
                 if attempt == 0:
-                    _log.warning("Chat session %s expired; recreating for live voice connection", self.session_id)
-                    self.session_id = await asyncio.to_thread(get_store().create)
+                    _log.warning(
+                        "Chat session %s expired; recreating the same ID for live voice connection",
+                        self.session_id,
+                    )
+                    try:
+                        with chat_store_operation() as store_runtime:
+                            await run_in_thread(
+                                store_runtime.store.create,
+                                self.session_id,
+                            )
+                    except SessionTombstonedError:
+                        _log.info("Voice session %s was explicitly deleted; recovery stopped", self.session_id)
+                        return None
                 else:
                     _log.error("Recreated chat session %s immediately missing", self.session_id)
         return None
 
-    async def _run_agent_inference(self, text: str, direction: FrameDirection, state: _ResponseState | None = None):
+    async def _run_agent_inference(
+        self,
+        text: str,
+        direction: FrameDirection,
+        state: _ResponseState | None = None,
+    ) -> None:
         """Run the agent logic in a background task so we don't block process_frame.
 
         Streams reply chunks straight into the pipeline so pipecat's TTS
@@ -217,48 +376,68 @@ class TaigiBusAgentProcessor(FrameProcessor):
             "extra_system_prompt": VOICE_END_CONVERSATION_GUIDANCE,
         }
 
+        owned_stream: OwnedAsyncResource[Any] | None = None
+        stream: AsyncGenerator[str, None] | None = None
         try:
-            if self._send_event:
-                self._send_event({"type": "transcript", "text": text, "role": "user"})
+            try:
+                if self._closing:
+                    return
+                if self._send_event:
+                    self._send_event({"type": "transcript", "text": text, "role": "user"})
 
-            opened = await self._open_stream(text, stream_kwargs)
-            if opened is None:
+                opened = await self._open_stream(text, stream_kwargs)
+                if opened is None:
+                    if self._send_event:
+                        self._send_event({"type": "agent_cancelled"})
+                    return
+                owned_stream, stream, first = opened
+
+                parts: list[str] = []
+                await self.push_frame(LLMFullResponseStartFrame(), direction)
+                state.started = True
+                if first is not None:
+                    parts.append(first)
+                    await self.push_frame(TextFrame(text=first), direction)
+                    async for chunk in stream:
+                        parts.append(chunk)
+                        await self.push_frame(TextFrame(text=chunk), direction)
+                await self.push_frame(LLMFullResponseEndFrame(), direction)
+
+                reply = "".join(parts)
+                _log.info("Agent reply: %s", reply)
+                if self._send_event:
+                    self._send_event({"type": "agent_reply", "text": reply, "role": "assistant"})
+
+            except asyncio.CancelledError:
+                _log.info("Agent inference task was cancelled due to interruption.")
                 if self._send_event:
                     self._send_event({"type": "agent_cancelled"})
-                return
-            stream, first = opened
-
-            parts: list[str] = []
-            await self.push_frame(LLMFullResponseStartFrame(), direction)
-            state.started = True
-            if first is not None:
-                parts.append(first)
-                await self.push_frame(TextFrame(text=first), direction)
-                async for chunk in stream:
-                    parts.append(chunk)
-                    await self.push_frame(TextFrame(text=chunk), direction)
-            await self.push_frame(LLMFullResponseEndFrame(), direction)
-
-            reply = "".join(parts)
-            _log.info("Agent reply: %s", reply)
-            if self._send_event:
-                self._send_event({"type": "agent_reply", "text": reply, "role": "assistant"})
-
-        except asyncio.CancelledError:
-            _log.info("Agent inference task was cancelled due to interruption.")
-            if self._send_event:
-                self._send_event({"type": "agent_cancelled"})
-            if state.started:
-                # LLMFullResponseStartFrame already went out — close the pair so
-                # downstream aggregators (TTS sentence aggregator, etc.) don't sit
-                # on a start with no matching end.
+                if state.started:
+                    # LLMFullResponseStartFrame already went out — close the pair so
+                    # downstream aggregators (TTS sentence aggregator, etc.) don't sit
+                    # on a start with no matching end.
+                    await self.push_frame(LLMFullResponseEndFrame(), direction)
+                raise
+            except Exception:
+                _log.exception("Agent processing error")
+                error_reply = "歹勢，我這馬頭腦有點仔打結，請你閣講一擺。"
+                await self.push_frame(LLMFullResponseStartFrame(), direction)
+                await self.push_frame(TextFrame(text=error_reply), direction)
                 await self.push_frame(LLMFullResponseEndFrame(), direction)
+                if self._send_event:
+                    self._send_event({"type": "agent_reply", "text": error_reply, "role": "assistant"})
+        except BaseException as inference_error:
+            if owned_stream is not None:
+                try:
+                    await self._response_streams.release(owned_stream)
+                except BaseException as close_error:
+                    if isinstance(close_error, asyncio.CancelledError) and not self._response_streams.owns(owned_stream):
+                        raise
+                    raise BaseExceptionGroup(
+                        "Agent inference and response stream close both failed",
+                        [inference_error, close_error],
+                    ) from None
             raise
-        except Exception:
-            _log.exception("Agent processing error")
-            error_reply = "歹勢，我這馬頭腦有點仔打結，請你閣講一擺。"
-            await self.push_frame(LLMFullResponseStartFrame(), direction)
-            await self.push_frame(TextFrame(text=error_reply), direction)
-            await self.push_frame(LLMFullResponseEndFrame(), direction)
-            if self._send_event:
-                self._send_event({"type": "agent_reply", "text": error_reply, "role": "assistant"})
+        else:
+            if owned_stream is not None:
+                await self._response_streams.release(owned_stream)

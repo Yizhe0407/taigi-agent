@@ -9,7 +9,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from contextlib import aclosing
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,6 +31,7 @@ from agent.tool_dispatch import (
     execute_tool_calls,
     function_tool_calls,
 )
+from async_lifecycle import AsyncResourceOwner
 from pipeline.normalize import StreamNormalizer, normalize_llm_output
 from telemetry import AgentTelemetry
 
@@ -82,6 +84,7 @@ class AgentSession:
         self,
         *,
         client: Any,
+        llm_http_owner: AsyncResourceOwner[Any],
         model: str,
         system_prompt: str,
         tool_schemas: list,
@@ -95,6 +98,7 @@ class AgentSession:
         router: IntentRouter | None = None,
     ) -> None:
         self.client = client
+        self.llm_http_owner = llm_http_owner
         self.model = model
         self.system_prompt = system_prompt
         self.tool_schemas = tool_schemas
@@ -179,7 +183,7 @@ class AgentSession:
         """完整回覆 = respond_stream 所有 chunk 串接（單一實作路徑，無分岔）。"""
         return "".join([chunk async for chunk in self.respond_stream(user_input)])
 
-    async def respond_stream(self, user_input: str) -> AsyncIterator[str]:
+    async def respond_stream(self, user_input: str) -> AsyncGenerator[str, None]:
         """串流回覆：yield 可直接播報/顯示的文字片段（已 normalize、句子級）。"""
         # Router gate: canned-response intents (Rules 1-3) short-circuit
         # before any LLM cost. Everything else goes to the LLM loop.
@@ -204,15 +208,16 @@ class AgentSession:
             yield decision.canned_response
             return
 
-        async for chunk in self._llm_respond_stream(user_input, intent=decision.intent):
-            yield chunk
+        async with aclosing(self._llm_respond_stream(user_input, intent=decision.intent)) as stream:
+            async for chunk in stream:
+                yield chunk
 
     async def _llm_respond_stream(
         self,
         user_input: str,
         *,
         intent: Intent = Intent.UNKNOWN,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncGenerator[str, None]:
         # Prefetch enrichment is best-effort: a failing enricher must not sink
         # the turn (an uncaught exception here would surface as a 500 with no
         # agent.turn metric recorded). Degrade to the raw user input instead.
@@ -237,12 +242,13 @@ class AgentSession:
 
             reply_parts: list[str] = []
             result: _LlmTurnResult | None = None
-            async for kind, value in self._run_llm_loop():
-                if kind == "chunk":
-                    reply_parts.append(value)
-                    yield value
-                else:
-                    result = value
+            async with aclosing(self._run_llm_loop()) as loop_events:
+                async for kind, value in loop_events:
+                    if kind == "chunk":
+                        reply_parts.append(value)
+                        yield value
+                    else:
+                        result = value
             # 唯一記錄點：loop 的每個出口（含錯誤）都以 _LlmTurnResult 收斂，
             # 新增出口路徑時型別上必須給 outcome，不可能漏記。
             if result is None:
@@ -257,7 +263,7 @@ class AgentSession:
                 raise result.error
             self.telemetry.set_content(span, "agent.reply.text", "".join(reply_parts))
 
-    async def _run_llm_loop(self) -> AsyncIterator[tuple[str, Any]]:
+    async def _run_llm_loop(self) -> AsyncGenerator[tuple[str, Any], None]:
         """LLM tool-call loop。以事件串流輸出：("chunk", 可播報文字片段)…
         ("result", `_LlmTurnResult`)。所有出口（含錯誤）都以 result 事件收斂，
         例外帶在 `error` 欄位由 `_llm_respond_stream` 統一記錄 metric 後重拋。
@@ -286,27 +292,31 @@ class AgentSession:
                             self.tool_schemas or None,
                             self.extra_body,
                             self.telemetry,
+                            http_owner=self.llm_http_owner,
                             operation="respond",
                             tool_choice="required",
                         )
                     else:
                         response = None
-                        async for kind, value in call_llm_stream(
+                        llm_events = call_llm_stream(
                             self.client,
                             self.model,
                             self._request_messages(),
                             self.tool_schemas or None,
                             self.extra_body,
                             self.telemetry,
+                            http_owner=self.llm_http_owner,
                             operation="respond",
                             tool_choice="auto",
-                        ):
-                            if kind == "delta":
-                                for piece in normalizer.feed(value):
-                                    round_pieces.append(piece)
-                                    yield ("chunk", piece)
-                            else:
-                                response = value
+                        )
+                        async with aclosing(llm_events):
+                            async for kind, value in llm_events:
+                                if kind == "delta":
+                                    for piece in normalizer.feed(value):
+                                        round_pieces.append(piece)
+                                        yield ("chunk", piece)
+                                else:
+                                    response = value
                 except ContextWindowExceeded:
                     # 已播出的內容不可重試——recovery 會整輪重生成、重講一次。
                     if round_pieces or context_retries >= _MAX_CONTEXT_RECOVERY_RETRIES:

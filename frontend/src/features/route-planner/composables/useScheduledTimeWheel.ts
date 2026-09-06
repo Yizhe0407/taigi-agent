@@ -1,4 +1,4 @@
-import { nextTick, ref, type Ref, type TemplateRef, watch } from "vue"
+import { ref, type Ref, type TemplateRef, watch } from "vue"
 
 import { todayTaipeiDateInputValue } from "@/lib/time"
 
@@ -95,9 +95,8 @@ export function useWheelScrollSync(
 ) {
   watch(
     () => [open.value, pendingHour.value, pendingMinute.value] as const,
-    async ([isOpen]) => {
+    ([isOpen]) => {
       if (!isOpen) return
-      await nextTick()
 
       if (hourScrollEl.value) {
         hourScrollEl.value.scrollTop = pendingHour.value * WHEEL_ITEM_HEIGHT
@@ -108,5 +107,6 @@ export function useWheelScrollSync(
           Math.max(0, minuteIndex) * WHEEL_ITEM_HEIGHT
       }
     },
+    { flush: "post" },
   )
 }

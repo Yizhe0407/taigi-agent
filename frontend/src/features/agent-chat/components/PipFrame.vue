@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue"
+import { computed, ref, watch } from "vue"
 import { LogOut, Settings } from "@lucide/vue"
 
 import type { TtsState } from "../composables/useTts"
@@ -34,10 +34,10 @@ const bubbleRef = ref<HTMLElement | null>(null)
 
 watch(
   () => props.lastAgentText,
-  async () => {
-    await nextTick()
+  () => {
     if (bubbleRef.value) bubbleRef.value.scrollTop = bubbleRef.value.scrollHeight
   },
+  { flush: "post" },
 )
 
 const emit = defineEmits<{

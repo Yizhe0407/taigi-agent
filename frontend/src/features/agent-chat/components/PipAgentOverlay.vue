@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onUnmounted } from "vue"
+import { computed, ref, watch } from "vue"
 
 import { useConversationState } from "@/features/agent-chat/composables/useConversationState"
 import { usePipChat } from "@/features/agent-chat/composables/usePipChat"
@@ -8,6 +8,7 @@ import { usePipIdleTimer } from "@/features/agent-chat/composables/usePipIdleTim
 import { useProcessingFuse, useThinkingFuse } from "@/features/agent-chat/composables/usePipTurnFuses"
 import { usePipVoiceReveal } from "@/features/agent-chat/composables/usePipVoiceReveal"
 import { useWebRTC } from "@/features/agent-chat/composables/useWebRTC"
+import { reportClientEvent } from "@/lib/report-client-event"
 
 import PipChatPanel from "./PipChatPanel.vue"
 import PipFrame from "./PipFrame.vue"
@@ -34,9 +35,7 @@ const {
   showIdleWarning,
   idleWarnSecondsLeft,
   resetIdleTimer,
-  clearIdleTimer,
-  clearIdleWarnInterval,
-  dismissIdleWarning,
+  pauseIdleTracking,
   markActivity,
 } = usePipIdleTimer(() => emit("close"))
 
@@ -59,10 +58,7 @@ const {
 } = usePipEndConfirm({
   isListening: () => conversation.state.value === "listening",
   close: () => emit("close"),
-  beforeShow: () => {
-    clearIdleTimer()
-    dismissIdleWarning()
-  },
+  beforeShow: pauseIdleTracking,
   onContinue: () => {
     conversation.setListening()
     resetIdleTimer()
@@ -70,8 +66,8 @@ const {
 })
 
 const {
-  sessionId,
   messages,
+  messageWriter,
   userInput,
   isSending,
   showChat,
@@ -82,7 +78,6 @@ const {
   ensureSession,
   sendMessage,
   handleKeydown,
-  abortStream,
   endSession,
 } = usePipChat(suppressTts, markActivity)
 
@@ -92,19 +87,16 @@ const lastUserText = ref("")
 // owner of the assistant voice bubble AND the avatar subtitle, char-by-char
 // reveal synced to playback, and the 4s TTS-dead fallback.
 const {
+  beginVoiceSession,
   beginVoiceTurn,
-  stopReveal,
   revealSegment,
-  applyParkedReply,
   resetVoiceReply,
-  startTtsWatchdog,
-  clearTtsWatchdog,
-  parkReply,
-  discardParkedReply,
+  receiveReply,
+  cancelVoiceReply,
   markAudioStarted,
-  hasAudioStarted,
+  finishVoiceReply,
 } = usePipVoiceReveal({
-  messages,
+  messages: messageWriter,
   displayedAgentText,
   onWatchdogExpire: () => {
     conversation.forceListening()
@@ -120,6 +112,7 @@ const {
 // rather than leaving the UI stuck in `thinking`.
 const { start: startThinkingFuse, clear: clearThinkingFuse } = useThinkingFuse(() => {
   lastUserText.value = ""
+  cancelVoiceReply()
   conversation.forceListening()
   // Same fallback as the TTS watchdog: a parked end_conversation must still
   // get its card even when the farewell turn silently died.
@@ -134,16 +127,6 @@ const { start: startThinkingFuse, clear: clearThinkingFuse } = useThinkingFuse((
 const { clear: clearProcessingFuse } = useProcessingFuse(conversation.state, () => {
   conversation.forceListening()
   resetIdleTimer()
-})
-
-onUnmounted(() => {
-  clearIdleTimer()
-  clearThinkingFuse()
-  clearProcessingFuse()
-  clearTtsWatchdog()
-  clearIdleWarnInterval()
-  dismissEndConfirm()
-  stopReveal()
 })
 
 const {
@@ -165,61 +148,48 @@ const {
       beginVoiceTurn(text)
     },
     onReply: (text) => {
-      // Full-text signal — timing relative to playback varies. Always just park
-      // it and arm the watchdog; subtitle/bot_speaking cancel the watchdog when
-      // audio is really playing, bot_silent (normal) or the watchdog (TTS-dead)
-      // applies it.
+      // Full-text signal — timing relative to playback varies. Ignore it unless
+      // the voice-turn owner still accepts events for this turn.
+      if (!receiveReply(text)) return
       clearThinkingFuse()
       lastUserText.value = ""
       markActivity()
-      parkReply(text)
-      startTtsWatchdog()
     },
     onCancelled: () => {
-      // agent_cancelled (barge-in): stop the reveal and clear the parked reply
-      // so the bubble stays at whatever was actually spoken — never flush the
-      // full text the user cut off.
+      // agent_cancelled (barge-in): only the active turn may consume it. Closing
+      // the turn first prevents any re-entrant/late event from reviving it.
+      if (!cancelVoiceReply()) return
       clearThinkingFuse()
       lastUserText.value = ""
       conversation.onAgentCancelled()
       markActivity()
-      clearTtsWatchdog()
-      stopReveal()
-      discardParkedReply()
     },
     onSubtitle: (text, durationMs) => {
       // Fires as each TTS segment starts playing — reveals over durationMs so
       // the bubble tracks playback pace. Audio is alive: the TTS-dead watchdog
       // no longer applies, and this turn is now flushable on bot_silent.
-      clearTtsWatchdog()
       // Audio is confirmed playing — same signal onBotSpeaking uses to disarm
       // the 30s thinking fuse. Without this, a reply whose onReply/onBotSpeaking
       // never fires (or fires >30s after the transcript) gets its playback cut
       // by the fuse forcing back to listening mid-speech.
+      if (!revealSegment(text, durationMs)) return
       clearThinkingFuse()
-      markAudioStarted()
       conversation.onSubtitle()
       markActivity()
-      revealSegment(text, durationMs)
     },
     onBotSpeaking: () => {
       // TTS audio is actively playing — pause the idle clock entirely (not
       // just reschedule) so long replies don't get killed mid-playback.
-      clearTtsWatchdog()
+      if (!markAudioStarted()) return
       clearThinkingFuse()
-      markAudioStarted()
       conversation.onBotSpeaking()
-      clearIdleTimer()
-      dismissIdleWarning()
+      pauseIdleTracking()
     },
     onBotSilent: () => {
-      clearTtsWatchdog()
       // Trailing bot_silent from a previous (e.g. barged-in) turn: the current
       // turn hasn't produced any audio yet, so this can't be ours — drop it
-      // instead of stopping our reveal / flushing / resetting the idle clock.
-      if (!hasAudioStarted()) return
-      stopReveal()
-      applyParkedReply()
+      // without touching its watchdog, reveal, or parked reply.
+      if (!finishVoiceReply()) return
       conversation.onBotSilent()
       if (!resolvePendingEndConversation()) resetIdleTimer()
     },
@@ -237,10 +207,7 @@ const {
     },
     onEndConversation: onEndConversationEvent,
   },
-  // Share the existing chat session so voice and text have the same conversation context.
-  sessionId,
 )
-
 
 // Use WebRTC audio amplitude when connected, otherwise TTS amplitude
 const activeMouthAmplitude = computed(() =>
@@ -265,7 +232,7 @@ watch(
       conversation.setError()
       clearThinkingFuse()
       clearProcessingFuse()
-      clearTtsWatchdog()
+      resetVoiceReply()
       dismissEndConfirm()
       resetIdleTimer()
     }
@@ -273,41 +240,137 @@ watch(
   { immediate: true }
 )
 
+let openEpoch = 0
+
+function lifecycleErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function throwOverlayFailures(failures: unknown[], message: string): void {
+  if (failures.length === 1) throw failures[0]
+  if (failures.length > 1) throw new AggregateError(failures, message)
+}
+
+function reportOverlayLifecycleFailure(error: unknown): unknown {
+  try {
+    reportClientEvent("pip_overlay_lifecycle_error", lifecycleErrorMessage(error))
+    return error
+  } catch (reportingFailure) {
+    return new AggregateError(
+      [error, reportingFailure],
+      "PiP overlay lifecycle and failure reporting both failed",
+    )
+  }
+}
+
+async function collectOverlayTeardownFailures(): Promise<unknown[]> {
+  // Enter each owner from its own microtask so a synchronous throw from one
+  // teardown cannot prevent the other owner from starting.
+  const results = await Promise.allSettled([
+    Promise.resolve().then(() => webrtcDisconnect()),
+    Promise.resolve().then(() => endSession()),
+  ])
+  return results.flatMap(result =>
+    result.status === "rejected" ? [result.reason] : [],
+  )
+}
+
+function resetClosedOverlayState(): unknown[] {
+  const failures: unknown[] = []
+  const actions = [
+    () => { moveMode.value = false },
+    () => { settingsMode.value = false },
+    () => { lastUserText.value = "" },
+    resetVoiceReply,
+    clearThinkingFuse,
+    clearProcessingFuse,
+    pauseIdleTracking,
+    dismissEndConfirm,
+    conversation.reset,
+  ]
+  for (const action of actions) {
+    try {
+      action()
+    } catch (error) {
+      failures.push(error)
+    }
+  }
+  return failures
+}
+
+function enterOverlayErrorState(): unknown[] {
+  const failures: unknown[] = []
+  const actions = [
+    conversation.setError,
+    clearThinkingFuse,
+    clearProcessingFuse,
+    resetVoiceReply,
+    dismissEndConfirm,
+    resetIdleTimer,
+  ]
+  for (const action of actions) {
+    try {
+      action()
+    } catch (error) {
+      failures.push(error)
+    }
+  }
+  return failures
+}
+
+async function closeOverlay(): Promise<void> {
+  // Publish both asynchronous terminal operations before any synchronous local
+  // cleanup can throw. The promise is always joined below, so no rejection is
+  // detached when a timer/resource release fails synchronously.
+  const teardownFailures = collectOverlayTeardownFailures()
+  const failures = resetClosedOverlayState()
+  failures.push(...await teardownFailures)
+  throwOverlayFailures(failures, "PiP overlay teardown failed")
+}
+
 watch(
   () => props.open,
   async (open) => {
-    if (open) {
-      conversation.reset()
-      if (webrtcState.value === "connecting") webrtcDisconnect()
-      if (webrtcState.value !== "connected") {
-        // Suppress REST TTS before ensureSession: the voice pipeline owns the
-        // welcome greeting. Without this the welcome is spoken twice (REST +
-        // WebRTC). The webrtcState watcher takes over after connect starts.
-        suppressTts.value = true
-        await ensureSession() // wait for session before sending offer (ensureSession never throws)
-        if (!props.open) return // closed while awaiting session
-        void webrtcConnect()
+    const epoch = ++openEpoch
+    try {
+      if (open) {
+        conversation.reset()
+        if (webrtcState.value === "connecting") {
+          await webrtcDisconnect()
+          if (epoch !== openEpoch || !props.open) return
+        }
+        if (webrtcState.value !== "connected") {
+          // Suppress REST TTS before ensureSession: the voice pipeline owns the
+          // welcome greeting. Without this the welcome is spoken twice (REST +
+          // WebRTC). The webrtcState watcher takes over after connect starts.
+          suppressTts.value = true
+          const session = await ensureSession()
+          if (epoch !== openEpoch || !props.open || session === null) return
+          if (!beginVoiceSession()) {
+            throw new Error("PiP voice turn could not open before WebRTC connect")
+          }
+          await webrtcConnect(session.id)
+        }
+        return
       }
-    } else {
-      // Single teardown, fixed order:
-      //   1. abort the in-flight text stream (backend discards the partial turn)
-      //   2. disconnect WebRTC → backend on_client_disconnected → pipeline task.cancel
-      //   3. DELETE the chat session (idempotent server-side) + clear local state
-      abortStream()
-      webrtcDisconnect()
-      endSession() // cancels TTS, clears messages + displayedAgentText, deletes session
 
-      moveMode.value = false
-      settingsMode.value = false
-      lastUserText.value = ""
-      resetVoiceReply()
-      clearThinkingFuse()
-      clearProcessingFuse()
-      clearTtsWatchdog()
-      clearIdleTimer()
-      dismissIdleWarning()
-      dismissEndConfirm()
-      conversation.reset()
+      // Invalidate every async open action before releasing its resources.
+      await closeOverlay()
+    } catch (error) {
+      const failures = [error]
+      if (epoch === openEpoch && props.open) {
+        failures.push(...enterOverlayErrorState())
+      }
+      let lifecycleFailure: unknown = error
+      try {
+        throwOverlayFailures(
+          failures,
+          "PiP overlay lifecycle and error-state cleanup failed",
+        )
+      } catch (combinedFailure) {
+        lifecycleFailure = combinedFailure
+      }
+      throw reportOverlayLifecycleFailure(lifecycleFailure)
     }
   },
 )
@@ -402,7 +465,7 @@ const dirClass = computed(() =>
         @cancel-move="moveMode = false"
         @confirm-end="confirmEndNow"
         @continue-conversation="continueConversation"
-        @dismiss-idle-warning="() => { dismissIdleWarning(); resetIdleTimer() }"
+        @dismiss-idle-warning="resetIdleTimer"
       />
     </div>
   </Transition>

@@ -31,6 +31,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+from async_lifecycle import ReclaimingAsyncLock, run_in_thread
 from providers.http import get_http_client
 from providers.ttl_cache import TtlCache
 
@@ -182,7 +183,7 @@ class EbusBusProvider:
         # cascade from returning. The hand-rolled lock stays.
         self._stop_route_cache: dict[str, tuple[float, dict[str, dict], bool]] = {}
         # A single scan builds every stop, so all misses share one lock.
-        self._route_index_lock = asyncio.Lock()
+        self._route_index_lock = ReclaimingAsyncLock("ebus route-index refresh")
         self._route_index_path = Path(route_index_path) if route_index_path is not None else None
         self._load_persisted_route_index()
 
@@ -315,7 +316,7 @@ class EbusBusProvider:
         if cached is not None and self._stop_route_fresh(cached):
             return cached[1]
 
-        async with self._route_index_lock:
+        async with self._route_index_lock.acquire():
             # Re-check after acquiring: the first caller builds every stop.
             cached = self._stop_route_cache.get(stop_name)
             if cached is not None and self._stop_route_fresh(cached):
@@ -334,7 +335,7 @@ class EbusBusProvider:
             self._stop_route_cache.setdefault(stop_name, (fetched_at, {}, had_failures))
             if not had_failures and route_index:
                 try:
-                    await asyncio.to_thread(self._write_persisted_route_index, route_index)
+                    await run_in_thread(self._write_persisted_route_index, route_index)
                 except OSError as error:
                     _log.warning("Unable to persist ebus route index: %s", error)
             return info
@@ -395,6 +396,3 @@ class EbusBusProvider:
             else:
                 _log.warning("ebus ETA failed for %s: %s", name, result)
         return rows
-
-    async def aclose(self) -> None:
-        pass  # shared http client; lifecycle managed by api lifespan

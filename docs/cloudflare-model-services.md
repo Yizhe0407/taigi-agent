@@ -500,6 +500,7 @@ uv run uvicorn api:app --host 127.0.0.1 --port 8080
 set -euo pipefail
 
 BACKEND_URL=http://127.0.0.1:8000
+session_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
 session_body=$(mktemp)
 chat_body=$(mktemp)
 backend_asr_body=$(mktemp)
@@ -507,10 +508,10 @@ backend_tts_headers=$(mktemp)
 trap 'rm -f "$session_body" "$chat_body" "$backend_asr_body" "$backend_tts_headers"' EXIT
 
 session_code=$(curl --connect-timeout 5 --max-time 30 -sS \
-  -X POST -o "$session_body" -w '%{http_code}' \
-  "$BACKEND_URL/api/chat/sessions")
+  -X PUT -o "$session_body" -w '%{http_code}' \
+  "$BACKEND_URL/api/chat/sessions/$session_id")
 test "$session_code" = 200
-session_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sessionId"])' "$session_body")
+test "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sessionId"])' "$session_body")" = "$session_id"
 
 curl --connect-timeout 5 --max-time 180 -N -sS \
   -H 'Content-Type: application/json' \

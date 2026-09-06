@@ -387,8 +387,6 @@ class TdxBusProvider(BusProvider):
             "back_dest": terminals.get(1, ""),
         }
 
-    async def aclose(self) -> None:
-        pass  # shared http client; lifecycle managed by api lifespan
 
     # ── ETA fetch helpers ──────────────────────────────────────────────────────
 

@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from config import Settings, make_agent_session  # noqa: E402
+from config import Settings, close_llm_clients, make_agent_session, startup_llm_clients  # noqa: E402
 
 TURNS = [
     # ── Canned response path (router, no LLM) ──────────────────────────
@@ -37,16 +37,20 @@ TURNS = [
 
 
 async def main() -> None:
+    llm_owner = startup_llm_clients()
     settings = Settings.from_env()
     print(f"LLM: {settings.llm_model} @ {settings.llm_base_url}\n")
     session = make_agent_session(settings)
 
-    for user_input, label in TURNS:
-        print(f"[{label}]")
-        print(f"  你: {user_input}")
-        reply = await session.respond(user_input)
-        print(f"  助理: {reply}")
-        print()
+    try:
+        for user_input, label in TURNS:
+            print(f"[{label}]")
+            print(f"  你: {user_input}")
+            reply = await session.respond(user_input)
+            print(f"  助理: {reply}")
+            print()
+    finally:
+        await close_llm_clients(llm_owner)
 
 
 if __name__ == "__main__":

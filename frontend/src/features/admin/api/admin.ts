@@ -1,4 +1,4 @@
-import { apiFetch, ApiError } from "@/lib/api"
+import { apiFetch, ApiError, readJsonResponse } from "@/lib/api"
 import { API_NETWORK_MESSAGES } from "@/lib/api-messages"
 
 export class AdminApiError extends ApiError {
@@ -23,12 +23,14 @@ export interface StopEntry {
   lng: number
 }
 
-export async function fetchAdminKiosk(): Promise<KioskConfig> {
+export async function fetchAdminKiosk(signal?: AbortSignal): Promise<KioskConfig> {
+  signal?.throwIfAborted()
   const res = await apiFetch("/api/admin/kiosk", {
+    signal,
     errorClass: AdminApiError,
     networkMessage: API_NETWORK_MESSAGES.admin,
   })
-  return (await res.json()) as KioskConfig
+  return readJsonResponse<KioskConfig>(res, signal)
 }
 
 const ADMIN_TOKEN_KEY = "admin_token"
@@ -45,40 +47,50 @@ function promptForAdminToken(): string | null {
   return token
 }
 
-export async function updateAdminKiosk(config: {
-  stop_name: string
-  direction: Direction
-}): Promise<KioskConfig> {
+export async function updateAdminKiosk(
+  config: {
+    stop_name: string
+    direction: Direction
+  },
+  signal?: AbortSignal,
+): Promise<KioskConfig> {
+  signal?.throwIfAborted()
   try {
     const res = await apiFetch("/api/admin/kiosk", {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...adminTokenHeaders() },
       body: JSON.stringify(config),
+      signal,
       errorClass: AdminApiError,
       networkMessage: API_NETWORK_MESSAGES.adminUpdate,
     })
-    return (await res.json()) as KioskConfig
+    return readJsonResponse<KioskConfig>(res, signal)
   } catch (error) {
     // 401 = ADMIN_TOKEN configured server-side but missing/wrong locally.
     // Prompt once and retry so a fresh deployment doesn't need a separate login page.
+    signal?.throwIfAborted()
     if (error instanceof AdminApiError && error.status === 401 && promptForAdminToken()) {
+      signal?.throwIfAborted()
       const res = await apiFetch("/api/admin/kiosk", {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...adminTokenHeaders() },
         body: JSON.stringify(config),
+        signal,
         errorClass: AdminApiError,
         networkMessage: API_NETWORK_MESSAGES.adminUpdate,
       })
-      return (await res.json()) as KioskConfig
+      return readJsonResponse<KioskConfig>(res, signal)
     }
     throw error
   }
 }
 
-export async function fetchAdminStops(): Promise<StopEntry[]> {
+export async function fetchAdminStops(signal?: AbortSignal): Promise<StopEntry[]> {
+  signal?.throwIfAborted()
   const res = await apiFetch("/api/admin/stops", {
+    signal,
     errorClass: AdminApiError,
     networkMessage: API_NETWORK_MESSAGES.adminStops,
   })
-  return (await res.json()) as StopEntry[]
+  return readJsonResponse<StopEntry[]>(res, signal)
 }

@@ -1,41 +1,58 @@
-import { VueQueryPlugin } from "@tanstack/vue-query";
-import { createApp } from "vue";
+import { VueQueryPlugin } from "@tanstack/vue-query"
+import { createApp } from "vue"
 
-import App from "./App.vue";
-import { reportClientEvent } from "./lib/report-client-event";
-import router from "./router";
-import "./style.css";
+import App from "./App.vue"
+import { createApplicationLifecycle } from "./lib/application-lifecycle"
+import {
+  reportClientEvent,
+  shutdownClientEventReporting,
+} from "./lib/report-client-event"
+import router from "./router"
+import "./style.css"
 
-const app = createApp(App);
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
 
-app.use(router);
+const app = createApp(App)
 
-app.use(VueQueryPlugin);
+app.use(router)
+app.use(VueQueryPlugin)
 
 // Kiosk runs unattended — surface otherwise-invisible browser failures to the backend.
 app.config.errorHandler = (err, _instance, info) => {
   reportClientEvent(
     "vue_error",
-    err instanceof Error ? err.message : String(err),
+    errorMessage(err),
     `${info}\n${err instanceof Error ? err.stack : ""}`,
-  );
-};
+  )
+}
 
-window.addEventListener("error", (event) => {
-  reportClientEvent(
-    "window_error",
-    event.message || String(event.error),
-    `${event.filename}:${event.lineno}:${event.colno}\n${event.error?.stack ?? ""}`,
-  );
-});
+const lifecycle = createApplicationLifecycle({
+  app,
+  mountTarget: "#app",
+  reportClientEvent,
+  shutdownClientEventReporting,
+})
 
-window.addEventListener("unhandledrejection", (event) => {
-  const reason = event.reason;
-  reportClientEvent(
-    "unhandled_rejection",
-    reason instanceof Error ? reason.message : String(reason),
-    reason instanceof Error ? reason.stack : undefined,
-  );
-});
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    lifecycle.requestObservedTeardown("application HMR teardown")
+  })
+}
 
-app.mount("#app");
+try {
+  await lifecycle.start()
+} catch (startError) {
+  let terminalError: unknown = startError
+  try {
+    await lifecycle.teardown()
+  } catch (retryError) {
+    terminalError = new AggregateError(
+      [startError, retryError],
+      "Application startup and retained rollback retry failed",
+    )
+  }
+  app.config.errorHandler?.(terminalError, null, "application bootstrap")
+  throw terminalError
+}

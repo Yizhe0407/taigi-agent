@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any
 
@@ -18,6 +19,7 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimi
 
 from agent.diagnostics import log_diagnostic
 from agent.error import summarize_error
+from async_lifecycle import AsyncResourceOwner
 from telemetry import AgentTelemetry
 
 _LLM_MAX_ATTEMPTS = 3
@@ -189,15 +191,21 @@ async def call_llm_stream(
     extra_body: dict,
     telemetry: AgentTelemetry,
     *,
+    http_owner: AsyncResourceOwner[Any],
     operation: str,
     tool_choice: str = "auto",
-):
+) -> AsyncGenerator[tuple[str, Any], None]:
     """`call_llm` 的串流版：yield ("delta", 文字增量) …("response", 組裝完整回應)。
 
     重試只在第一個 delta 之前——之後重試會讓已播出的內容重講一次。
     看到 tool_call delta 就停止對外 yield content（那是前導推理，不該進 TTS），
     但仍完整累積供歷史使用。
     """
+    # A failed HTTP-response close remains owned by the loop lifecycle.  Retry
+    # it before admitting another upstream request so failures cannot accumulate
+    # behind otherwise successful chat turns.
+    await http_owner.retry_failed()
+
     for attempt in range(_LLM_MAX_ATTEMPTS):
         retry_error: Exception | None = None
         started = time.perf_counter()
@@ -215,34 +223,72 @@ async def call_llm_stream(
             content_parts: list[str] = []
             tool_calls_acc: dict[int, dict] = {}
             try:
-                stream = await client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    tools=tools,
-                    tool_choice=tool_choice if tools else "none",
-                    extra_body=extra_body,
-                    stream=True,
+                acquisition = http_owner.begin_acquisition()
+                try:
+                    stream = await client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        tools=tools,
+                        tool_choice=tool_choice if tools else "none",
+                        extra_body=extra_body,
+                        stream=True,
+                    )
+                except BaseException:
+                    http_owner.abort_acquisition(acquisition)
+                    raise
+                owned_stream = http_owner.finish_acquisition(
+                    acquisition,
+                    stream,
+                    lambda candidate: candidate.close(),
                 )
-                async for chunk in stream:
-                    if not getattr(chunk, "choices", None):
-                        continue
-                    delta = chunk.choices[0].delta
-                    for call in delta.tool_calls or []:
-                        acc = tool_calls_acc.setdefault(call.index, {"id": None, "name": None, "arguments": []})
-                        if getattr(call, "id", None):
-                            acc["id"] = call.id
-                        function = getattr(call, "function", None)
-                        if function is not None:
-                            if getattr(function, "name", None):
-                                acc["name"] = function.name
-                            if getattr(function, "arguments", None):
-                                acc["arguments"].append(function.arguments)
-                    content = getattr(delta, "content", None)
-                    if content:
-                        content_parts.append(content)
-                        if not tool_calls_acc:
-                            delta_emitted = True
-                            yield ("delta", content)
+
+                if http_owner.closing:
+                    owner_closed = RuntimeError("LLM HTTP owner closed while the stream was being created")
+                    try:
+                        await http_owner.release(owned_stream)
+                    except BaseException as close_error:
+                        raise BaseExceptionGroup(
+                            "LLM stream acquisition and rollback both failed",
+                            [owner_closed, close_error],
+                        ) from None
+                    raise owner_closed
+
+                try:
+                    async for chunk in stream:
+                        if not getattr(chunk, "choices", None):
+                            continue
+                        delta = chunk.choices[0].delta
+                        for call in delta.tool_calls or []:
+                            acc = tool_calls_acc.setdefault(call.index, {"id": None, "name": None, "arguments": []})
+                            if getattr(call, "id", None):
+                                acc["id"] = call.id
+                            function = getattr(call, "function", None)
+                            if function is not None:
+                                if getattr(function, "name", None):
+                                    acc["name"] = function.name
+                                if getattr(function, "arguments", None):
+                                    acc["arguments"].append(function.arguments)
+                        content = getattr(delta, "content", None)
+                        if content:
+                            content_parts.append(content)
+                            if not tool_calls_acc:
+                                delta_emitted = True
+                                yield ("delta", content)
+                except BaseException as stream_error:
+                    try:
+                        await http_owner.release(owned_stream)
+                    except BaseException as close_error:
+                        if isinstance(close_error, asyncio.CancelledError) and not http_owner.owns(owned_stream):
+                            # The physical close succeeded and ``join_task`` is
+                            # only restoring cancellation of the outer aclose
+                            # waiter. GeneratorExit and that cancellation are
+                            # one control-flow outcome, not two failures.
+                            raise
+                        raise BaseExceptionGroup(
+                            "LLM stream iteration and close both failed",
+                            [stream_error, close_error],
+                        ) from None
+                    raise
             except Exception as e:
                 error_type = _handle_llm_attempt_error(
                     e,
@@ -258,6 +304,11 @@ async def call_llm_stream(
                     raise
                 retry_error = e
             else:
+                # Closing a successfully consumed response is lifecycle work, not
+                # an upstream request attempt.  Keep it outside the retry-catching
+                # suite so a retryable transport exception from ``close()`` is
+                # surfaced as cleanup debt instead of admitting a second stream.
+                await http_owner.release(owned_stream)
                 response = _assemble_stream_response(content_parts, tool_calls_acc)
                 _record_llm_success(telemetry, span, response, model=model, operation=operation, started=started)
                 yield ("response", response)
@@ -277,10 +328,16 @@ async def call_llm(
     extra_body: dict,
     telemetry: AgentTelemetry,
     *,
+    http_owner: AsyncResourceOwner[Any],
     operation: str,
     tool_choice: str = "required",
 ):
     """呼叫 LLM，暫時性錯誤退避重試，context overflow 交回 session 修復。"""
+    # Stream-close debt belongs to the same client generation. Resolve it before
+    # admitting any kind of new HTTP request so failures cannot accumulate behind
+    # successful non-streaming calls.
+    await http_owner.retry_failed()
+
     for attempt in range(_LLM_MAX_ATTEMPTS):
         retry_error: Exception | None = None
         started = time.perf_counter()
@@ -294,13 +351,20 @@ async def call_llm(
         ) as span:
             _record_llm_input(telemetry, span, messages)
             try:
-                response = await client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    tools=tools,
-                    tool_choice=tool_choice if tools else "none",
-                    extra_body=extra_body,
-                )
+                acquisition = http_owner.begin_acquisition()
+                try:
+                    response = await client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        tools=tools,
+                        tool_choice=tool_choice if tools else "none",
+                        extra_body=extra_body,
+                    )
+                finally:
+                    # A non-streaming response owns no child transport after the
+                    # request await settles. Release the borrower lease on every
+                    # success, error, and cancellation path.
+                    http_owner.abort_acquisition(acquisition)
             except Exception as e:
                 error_type = _handle_llm_attempt_error(
                     e,

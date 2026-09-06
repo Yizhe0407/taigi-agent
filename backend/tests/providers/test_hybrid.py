@@ -37,7 +37,6 @@ def _make_hybrid(
     ebus.find_routes_at_stop = AsyncMock(
         return_value=ebus_routes_at_stop if ebus_routes_at_stop is not None else {"Y01": {"id": "Y01"}, "7120": {"id": "7120"}}
     )
-    ebus.aclose = AsyncMock()
 
     tdx = MagicMock()
     tdx.fetch_route_estimate = AsyncMock(return_value=tdx_route_estimate or [])
@@ -45,7 +44,6 @@ def _make_hybrid(
     tdx.load_route_info = AsyncMock(return_value=tdx_route_info or {"Y01": {"id": "Y01"}, "7120": {"id": "7120"}})
     tdx.fetch_routes_at_stop = AsyncMock(return_value=tdx_routes_at_stop or [])
     tdx.load_route_terminals = AsyncMock(return_value={"go_dest": "", "back_dest": ""})
-    tdx.aclose = AsyncMock()
 
     return HybridBusProvider(ebus=ebus, tdx=tdx), ebus, tdx
 
@@ -221,13 +219,6 @@ def test_fetch_routes_at_stop_delegates_to_tdx():
     h, _, tdx = _make_hybrid(tdx_routes_at_stop=routes)
     result = asyncio.run(h.fetch_routes_at_stop("斗六火車站"))
     assert result == routes
-
-
-def test_aclose_closes_both():
-    h, ebus, tdx = _make_hybrid()
-    asyncio.run(h.aclose())
-    ebus.aclose.assert_awaited_once()
-    tdx.aclose.assert_awaited_once()
 
 
 # ── provider.fallback metric ────────────────────────────────────────────────────

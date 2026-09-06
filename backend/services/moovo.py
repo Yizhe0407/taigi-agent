@@ -7,7 +7,6 @@ high-level station lookup.
 
 from __future__ import annotations
 
-import asyncio
 import math
 import os
 import time
@@ -17,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from async_lifecycle import ReclaimingAsyncLock
 from providers.moovo import (
     BikeProvider,
     MoovoApiError,
@@ -70,7 +70,7 @@ class NearbyMoovoStation:
 
 _provider: BikeProvider = TdxBikeProvider()
 _stations_cache: tuple[float, tuple[MoovoStation, ...]] | None = None
-_stations_lock = asyncio.Lock()
+_stations_lock = ReclaimingAsyncLock("MOOVO station refresh")
 
 
 def get_provider() -> BikeProvider:
@@ -225,7 +225,7 @@ async def load_moovo_stations(*, force_refresh: bool = False) -> tuple[MoovoStat
             get_telemetry().record_cache_lookup(cache="moovo.stations", hit=True)
             return stations
 
-    async with _stations_lock:
+    async with _stations_lock.acquire():
         # Re-check after acquiring lock — another coroutine may have fetched
         # first. Re-read the clock: the wait for the lock spans the fetch.
         if not force_refresh and _stations_cache is not None:

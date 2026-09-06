@@ -9,7 +9,6 @@ import type {
 import MapLibreGL from "maplibre-gl"
 import {
   computed,
-  onBeforeUnmount,
   onMounted,
   provide,
   ref,
@@ -19,8 +18,16 @@ import {
   watch,
 } from "vue"
 
+import {
+  currentSynchronousScopeReleaseAttempt,
+  observeSynchronousScopeTeardown,
+} from "@/lib/component-lifecycle"
+import {
+  createResourceOwner,
+  type ResourceReleaseAttempt,
+} from "@/lib/resource-owner"
+import { createOwnedTimeout, type TimerLease } from "@/lib/timer-owner"
 import { cn } from "@/lib/utils"
-
 import { useResolvedTheme } from "./composables/use-resolved-theme"
 import { MapContextKey } from "./context"
 import type { MapViewport, Theme } from "./types"
@@ -63,7 +70,8 @@ const containerRef = useTemplateRef<HTMLDivElement>("container")
 const mapInstance = shallowRef<MapLibreGL.Map | null>(null)
 const isLoaded = ref(false)
 const isStyleLoaded = ref(false)
-const resolvedTheme = useResolvedTheme(() => props.theme)
+const mapOwner = createResourceOwner("MapLibre map")
+const resolvedTheme = useResolvedTheme(mapOwner, () => props.theme)
 const isControlled = computed(() => props.viewport !== undefined)
 const mapStyles = computed<Required<MapStyles>>(() => ({
   dark: props.styleOverride ?? props.styles?.dark ?? defaultStyles.dark,
@@ -71,14 +79,16 @@ const mapStyles = computed<Required<MapStyles>>(() => ({
 }))
 const containerClass = computed(() => cn("relative h-full w-full", props.class))
 
+let ownedMap: MapLibreGL.Map | null = null
 let currentStyle: MapStyleOption | null = null
-let styleTimeout: ReturnType<typeof setTimeout> | null = null
+let styleTimer: TimerLease | null = null
 let internalUpdate = false
 
-const clearStyleTimeout = () => {
-  if (!styleTimeout) return
-  clearTimeout(styleTimeout)
-  styleTimeout = null
+const cancelStyleTimer = (attempt?: ResourceReleaseAttempt) => {
+  const timer = styleTimer
+  if (!timer) return
+  timer.cancel(attempt)
+  if (styleTimer === timer) styleTimer = null
 }
 
 const isLoadedAndStyleLoaded = computed(
@@ -89,7 +99,6 @@ provide(MapContextKey, {
   map: mapInstance,
   isLoaded: isLoadedAndStyleLoaded,
 })
-defineExpose({ map: mapInstance })
 
 const reservedAttrs = new Set(["class", "style", "container"])
 
@@ -107,121 +116,289 @@ const collectMapOptions = (): Partial<MapOptions> => {
   return options as Partial<MapOptions>
 }
 
+function cleanupMap(
+  attempt: ResourceReleaseAttempt,
+  unresolvedFailureAlreadyRepresented = false,
+): boolean {
+  const failures: unknown[] = []
+
+  // Publish the permanent callback/acquisition gate before reactive state
+  // changes can synchronously unmount descendants or re-enter MapLibre.
+  let closeFailed = false
+  try {
+    mapOwner.close(undefined, attempt)
+  } catch (failure) {
+    closeFailed = true
+    failures.push(failure)
+  }
+
+  for (const clearState of [
+    () => { mapInstance.value = null },
+    () => { isLoaded.value = false },
+    () => { isStyleLoaded.value = false },
+  ]) {
+    try {
+      clearState()
+    } catch (failure) {
+      failures.push(failure)
+    }
+  }
+  currentStyle = null
+  internalUpdate = false
+
+  let disposeFailed = false
+  try {
+    mapOwner.dispose(attempt)
+  } catch (failure) {
+    disposeFailed = true
+    failures.push(failure)
+  } finally {
+    if (styleTimer && !styleTimer.active) styleTimer = null
+  }
+
+  if (mapOwner.settled) {
+    ownedMap = null
+    styleTimer = null
+  } else if (
+    !unresolvedFailureAlreadyRepresented
+    && !closeFailed
+    && !disposeFailed
+  ) {
+    failures.push(new Error("MapLibre map cleanup remains unresolved"))
+  }
+
+  if (failures.length === 1) throw failures[0]
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Failed to release MapLibre map")
+  }
+  return mapOwner.settled
+}
+
+function disposeMap(attempt: ResourceReleaseAttempt) {
+  cleanupMap(attempt)
+}
+
+function failMap(error: unknown, attempt: ResourceReleaseAttempt): never {
+  try {
+    cleanupMap(attempt, true)
+  } catch (cleanupError) {
+    throw new AggregateError(
+      [error, cleanupError],
+      "Map failed and could not be fully released",
+    )
+  }
+  throw error
+}
+
+function applyChineseLabels(map: MapLibreGL.Map) {
+  map.getStyle().layers.forEach((layer) => {
+    if (layer.type !== "symbol") return
+    const field = (layer.layout as Record<string, unknown>)?.["text-field"]
+    if (!field) return
+    map.setLayoutProperty(layer.id, "text-field", [
+      "coalesce",
+      ["get", "name:zh-Hant"],
+      ["get", "name:zh"],
+      ["get", "name"],
+    ])
+  })
+}
+
 onMounted(() => {
-  if (!containerRef.value) return
+  if (mapOwner.disposed || !containerRef.value) return
+  const setupAttempt = currentSynchronousScopeReleaseAttempt() ?? {}
 
   const initialStyle =
     resolvedTheme.value === "dark" ? mapStyles.value.dark : mapStyles.value.light
   currentStyle = initialStyle
 
-  const map = new MapLibreGL.Map({
-    container: containerRef.value,
-    style: initialStyle,
-    renderWorldCopies: false,
-    attributionControl: { compact: true },
-    ...collectMapOptions(),
-  })
+  try {
+    const acquiredMap = mapOwner.acquire(
+      () => new MapLibreGL.Map({
+        container: containerRef.value!,
+        style: initialStyle,
+        renderWorldCopies: false,
+        attributionControl: { compact: true },
+        ...collectMapOptions(),
+      }),
+      (map) => map?.remove(),
+      "MapLibre map instance",
+      setupAttempt,
+    ).value
+    ownedMap = acquiredMap
 
-  /**
-   * Apply Traditional Chinese labels to every symbol layer.
-   * CartoCDN OpenMapTiles tiles expose name:zh-Hant (Traditional) and name:zh
-   * (Simplified). OSM data for Taiwan is usually already in Traditional Chinese
-   * in the `name` field, but this coalesce ensures all other regions also show
-   * Chinese where available.
-   */
-  const applyChineseLabels = () => {
-    map.getStyle().layers.forEach((layer) => {
-      if (layer.type !== "symbol") return
-      const field = (layer.layout as Record<string, unknown>)?.["text-field"]
-      if (!field) return
-      map.setLayoutProperty(layer.id, "text-field", [
-        "coalesce",
-        ["get", "name:zh-Hant"],
-        ["get", "name:zh"],
-        ["get", "name"],
-      ])
-    })
-  }
+    const loadHandler = () => {
+      if (mapOwner.disposed || ownedMap !== acquiredMap) return
+      const attempt: ResourceReleaseAttempt = {}
+      try {
+        isLoaded.value = true
+        const attribution = acquiredMap
+          .getContainer()
+          .querySelector<HTMLElement>(".maplibregl-ctrl-attrib")
+        attribution?.classList.remove("maplibregl-compact-show")
+      } catch (error) {
+        if (mapOwner.disposed) throw error
+        failMap(error, attempt)
+      }
+    }
 
-  const styleDataHandler = () => {
-    clearStyleTimeout()
-    styleTimeout = setTimeout(() => {
-      isStyleLoaded.value = true
-      if (props.projection) map.setProjection(props.projection)
-      applyChineseLabels()
-    }, 100)
-  }
-  const moveHandler = () => {
-    if (!internalUpdate) emit("update:viewport", getViewport(map))
-  }
+    const styleDataHandler = () => {
+      if (mapOwner.disposed || ownedMap !== acquiredMap) return
+      const attempt: ResourceReleaseAttempt = {}
+      try {
+        cancelStyleTimer(attempt)
+        let timer!: TimerLease
+        timer = createOwnedTimeout(mapOwner, "MapLibre style stabilization", (timerAttempt) => {
+          if (styleTimer === timer) styleTimer = null
+          if (mapOwner.disposed || ownedMap !== acquiredMap) return
 
-  map.on("load", () => {
-    isLoaded.value = true
-    // MapLibre auto-expands the attribution on wide screens even with compact:true.
-    // Force it collapsed by removing the expanded class on initial load.
-    const attrib = map
-      .getContainer()
-      .querySelector<HTMLElement>(".maplibregl-ctrl-attrib")
-    attrib?.classList.remove("maplibregl-compact-show")
-  })
-  map.on("styledata", styleDataHandler)
-  map.on("move", moveHandler)
-  mapInstance.value = map
+          try {
+            if (props.projection) acquiredMap.setProjection(props.projection)
+            applyChineseLabels(acquiredMap)
+            if (
+              !mapOwner.disposed && ownedMap === acquiredMap
+            ) {
+              isStyleLoaded.value = true
+            }
+          } catch (error) {
+            if (mapOwner.disposed) throw error
+            failMap(error, timerAttempt)
+          }
+        }, 100, attempt)
+        if (timer.active && !mapOwner.disposed) styleTimer = timer
+      } catch (error) {
+        if (mapOwner.disposed) throw error
+        failMap(error, attempt)
+      }
+    }
+
+    const moveHandler = () => {
+      if (
+        mapOwner.disposed ||
+        ownedMap !== acquiredMap ||
+        internalUpdate
+      ) {
+        return
+      }
+      const attempt: ResourceReleaseAttempt = {}
+      try {
+        emit("update:viewport", getViewport(acquiredMap))
+      } catch (error) {
+        if (mapOwner.disposed) throw error
+        failMap(error, attempt)
+      }
+    }
+
+    mapOwner.acquire(
+      () => acquiredMap.on("load", loadHandler),
+      () => acquiredMap.off("load", loadHandler),
+      "MapLibre load listener",
+      setupAttempt,
+    )
+    mapOwner.acquire(
+      () => acquiredMap.on("styledata", styleDataHandler),
+      () => acquiredMap.off("styledata", styleDataHandler),
+      "MapLibre style listener",
+      setupAttempt,
+    )
+    mapOwner.acquire(
+      () => acquiredMap.on("move", moveHandler),
+      () => acquiredMap.off("move", moveHandler),
+      "MapLibre move listener",
+      setupAttempt,
+    )
+
+    mapInstance.value = acquiredMap
+  } catch (error) {
+    if (mapOwner.disposed) throw error
+    failMap(error, setupAttempt)
+  }
 })
 
-onBeforeUnmount(() => {
-  clearStyleTimeout()
-  mapInstance.value?.remove()
-  mapInstance.value = null
-  isLoaded.value = false
-  isStyleLoaded.value = false
-})
+const settleMapTeardown = observeSynchronousScopeTeardown(
+  "Map teardown",
+  disposeMap,
+)
+
+defineExpose({ map: mapInstance, settleMapTeardown })
 
 watch(
   () => props.viewport,
   (next) => {
     const map = mapInstance.value
-    if (!map || !isControlled.value || !next || map.isMoving()) return
-
-    const current = getViewport(map)
-    const target = {
-      center: next.center ?? current.center,
-      zoom: next.zoom ?? current.zoom,
-      bearing: next.bearing ?? current.bearing,
-      pitch: next.pitch ?? current.pitch,
-    }
     if (
-      target.center[0] === current.center[0] &&
-      target.center[1] === current.center[1] &&
-      target.zoom === current.zoom &&
-      target.bearing === current.bearing &&
-      target.pitch === current.pitch
+      mapOwner.disposed ||
+      !map ||
+      map !== ownedMap ||
+      !isControlled.value ||
+      !next ||
+      map.isMoving()
     ) {
       return
     }
-    internalUpdate = true
-    map.jumpTo(target)
-    internalUpdate = false
+    const attempt: ResourceReleaseAttempt = {}
+
+    try {
+      const current = getViewport(map)
+      const target = {
+        center: next.center ?? current.center,
+        zoom: next.zoom ?? current.zoom,
+        bearing: next.bearing ?? current.bearing,
+        pitch: next.pitch ?? current.pitch,
+      }
+      if (
+        target.center[0] === current.center[0] &&
+        target.center[1] === current.center[1] &&
+        target.zoom === current.zoom &&
+        target.bearing === current.bearing &&
+        target.pitch === current.pitch
+      ) {
+        return
+      }
+
+      internalUpdate = true
+      map.jumpTo(target)
+    } catch (error) {
+      if (mapOwner.disposed) throw error
+      failMap(error, attempt)
+    } finally {
+      internalUpdate = false
+    }
   },
   { deep: true },
 )
 
 watch([resolvedTheme, mapStyles], ([theme, styles]) => {
   const map = mapInstance.value
-  if (!map) return
+  if (mapOwner.disposed || !map || map !== ownedMap) return
 
   const nextStyle = theme === "dark" ? styles.dark : styles.light
   if (currentStyle === nextStyle) return
-  clearStyleTimeout()
-  currentStyle = nextStyle
-  isStyleLoaded.value = false
-  map.setStyle(nextStyle, { diff: true })
+  const attempt: ResourceReleaseAttempt = {}
+
+  try {
+    cancelStyleTimer(attempt)
+    currentStyle = nextStyle
+    isStyleLoaded.value = false
+    map.setStyle(nextStyle, { diff: true })
+  } catch (error) {
+    if (mapOwner.disposed) throw error
+    failMap(error, attempt)
+  }
 })
 
 watch(
   () => props.projection,
   (next) => {
-    if (next) mapInstance.value?.setProjection(next)
+    const map = mapInstance.value
+    if (mapOwner.disposed || !next || !map || map !== ownedMap) return
+    const attempt: ResourceReleaseAttempt = {}
+    try {
+      map.setProjection(next)
+    } catch (error) {
+      if (mapOwner.disposed) throw error
+      failMap(error, attempt)
+    }
   },
 )
 </script>

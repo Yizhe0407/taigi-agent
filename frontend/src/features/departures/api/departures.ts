@@ -1,5 +1,5 @@
 import { API_NETWORK_MESSAGES } from "@/lib/api-messages"
-import { apiFetch, ApiError } from "@/lib/api"
+import { apiFetch, ApiError, readJsonResponse } from "@/lib/api"
 
 import type { DepartureRouteDetail, StopDepartureSnapshot } from "../types"
 
@@ -18,7 +18,7 @@ export async function fetchDeparturesHere(
     errorClass: DeparturesApiError,
     networkMessage: API_NETWORK_MESSAGES.departures,
   })
-  return (await response.json()) as StopDepartureSnapshot
+  return readJsonResponse<StopDepartureSnapshot>(response, signal)
 }
 
 export async function fetchDepartureRouteDetail(
@@ -33,5 +33,5 @@ export async function fetchDepartureRouteDetail(
       networkMessage: API_NETWORK_MESSAGES.routeDetail,
     },
   )
-  return (await response.json()) as DepartureRouteDetail
+  return readJsonResponse<DepartureRouteDetail>(response, signal)
 }

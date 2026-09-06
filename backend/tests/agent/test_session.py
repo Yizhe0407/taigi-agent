@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from agent.error import summarize_error
 from agent.router import Intent
 from agent.session import AgentSession
+from async_lifecycle import AsyncResourceOwner
 
 
 def assistant_message(content="", tool_calls=None):
@@ -52,6 +53,20 @@ async def _as_chunk_stream(response):
         )
 
 
+class _FakeOpenAIStream:
+    def __init__(self, response):
+        self._iterator = _as_chunk_stream(response)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        return await anext(self._iterator)
+
+    async def close(self):
+        await self._iterator.aclose()
+
+
 class FakeCompletions:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -63,7 +78,7 @@ class FakeCompletions:
         if isinstance(response, Exception):
             raise response
         if kwargs.get("stream"):
-            return _as_chunk_stream(response)
+            return _FakeOpenAIStream(response)
         return response
 
 
@@ -132,6 +147,7 @@ class RecordingTelemetry:
 def make_session(responses, **kwargs):
     return AgentSession(
         client=FakeClient(responses),
+        llm_http_owner=AsyncResourceOwner("test LLM streams"),
         model="test-model",
         system_prompt="system",
         tool_schemas=[],

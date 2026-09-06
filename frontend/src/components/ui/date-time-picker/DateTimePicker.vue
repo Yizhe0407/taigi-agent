@@ -9,7 +9,7 @@
 import { CalendarDate } from "@internationalized/date"
 import { CalendarIcon } from "@lucide/vue"
 import type { DateValue } from "reka-ui"
-import { computed, nextTick, ref, watch } from "vue"
+import { computed, ref, watch } from "vue"
 
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
@@ -41,13 +41,16 @@ const emit = defineEmits<{
 const open = ref(false)
 
 // Scroll the active time button into view whenever the popover opens
-watch(open, async (isOpen) => {
-  if (!isOpen) return
-  await nextTick()
-  document
-    .querySelector("[data-time-active]")
-    ?.scrollIntoView({ block: "center" })
-})
+watch(
+  open,
+  (isOpen) => {
+    if (!isOpen) return
+    document
+      .querySelector("[data-time-active]")
+      ?.scrollIntoView({ block: "center" })
+  },
+  { flush: "post" },
+)
 
 // ---------------------------------------------------------------------------
 // Derived parts from modelValue

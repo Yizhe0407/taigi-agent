@@ -7,7 +7,6 @@ the class docstring below for exactly which TDX call backs up which method.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from providers.ebus import EbusBusProvider
@@ -114,10 +113,3 @@ class HybridBusProvider:
             _log.warning("TDX fallback also failed for %s: %s", stop_name, exc)
             get_telemetry().record_provider_fallback(operation="eta", outcome="both_empty")
             return []
-
-    async def aclose(self) -> None:
-        await asyncio.gather(
-            self._ebus.aclose(),
-            self._tdx.aclose(),
-            return_exceptions=True,
-        )

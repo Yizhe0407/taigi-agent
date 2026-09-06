@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import time
@@ -11,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException, Request
+
+from async_lifecycle import ReclaimingAsyncLock
 
 _DEFAULT_BODY_LIMIT = 64 * 1024
 _ASR_BODY_LIMIT = 26 * 1024 * 1024
@@ -108,7 +109,7 @@ class RateLimit:
         # under _prune() drops the least-recently-active client, not just
         # whichever one happened to be inserted first.
         self._buckets: OrderedDict[str, _Bucket] = OrderedDict()
-        self._lock = asyncio.Lock()
+        self._lock = ReclaimingAsyncLock("request rate-limit buckets")
 
     async def __call__(self, request: Request) -> None:
         if os.getenv("RATE_LIMIT_ENABLED", "true").strip().lower() in {"false", "0", "no"}:
@@ -116,7 +117,7 @@ class RateLimit:
 
         client = request.client.host if request.client else "unknown"
         now = time.monotonic()
-        async with self._lock:
+        async with self._lock.acquire():
             self._prune(now)
             bucket = self._buckets.get(client)
             if bucket is None:

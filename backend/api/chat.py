@@ -11,9 +11,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator
+from contextlib import aclosing, asynccontextmanager, contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -22,7 +24,8 @@ from pydantic import BaseModel, Field
 from agent.error import summarize_error
 from agent.session import AgentSession
 from agent.tool_dispatch import ToolHandler
-from api.session_store import ChatSessionStore
+from api.session_store import ChatSessionStore, SessionTombstonedError
+from async_lifecycle import create_lifecycle_task, join_task, run_in_thread
 from config import get_settings, make_agent_session
 
 from .request_limits import CHAT_MESSAGE_RATE_LIMIT, CHAT_SESSION_RATE_LIMIT
@@ -36,7 +39,7 @@ ExtraTool = tuple[dict, ToolHandler]
 router = APIRouter()
 _log = logging.getLogger(__name__)
 
-# How often the background loop reconciles _session_locks against expired
+# How often the background loop reconciles session lock states against expired
 # sessions. Independent of the store's own TTL — this only bounds how long a
 # dangling Lock can survive after its session expires.
 _LOCK_PURGE_INTERVAL_SECONDS = 300.0
@@ -47,46 +50,188 @@ _LOCK_PURGE_INTERVAL_SECONDS = 300.0
 # ---------------------------------------------------------------------------
 
 
-_store: ChatSessionStore | None = None
-_session_locks: dict[str, asyncio.Lock] = {}
-# Holders + waiters per session_id. A Lock with a non-zero count must never be
-# removed from `_session_locks` (see `_discard_session_lock`).
-_session_lock_users: dict[str, int] = {}
+@dataclass
+class _SessionLockState:
+    """One session lock and all lifecycle metadata owned with it."""
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+    retire_when_idle: bool = False
 
 
-def get_store() -> ChatSessionStore:
-    """Return the process-wide chat session store, creating it on first use.
+class _ChatStoreLease:
+    """One admitted operation owned by exactly one chat-store generation."""
 
-    Lazy so import-time side effects (mkdir, sqlite open) only fire when the
-    chat endpoints are actually hit — keeps imports cheap for non-chat tests.
+    __slots__ = ("_owner", "_released")
+
+    def __init__(self, owner: _ChatStoreRuntime) -> None:
+        self._owner = owner
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._owner._release_operation(self)
+
+
+class _ChatStoreRuntime:
+    """Authoritative owner for one SQLite store and its session locks.
+
+    The runtime is published before opening SQLite so partial construction always
+    has one reachable owner. Admission closes permanently before physical close,
+    shutdown waits for every admitted operation, and failed close retains this
+    exact store generation for a later retry. A successor may only be installed
+    by explicit startup after this runtime reports successful teardown.
     """
-    global _store
-    if _store is None:
+
+    def __init__(self, store: ChatSessionStore) -> None:
+        self.store = store
+        self.session_lock_states: dict[str, _SessionLockState] = {}
+        self._operations: set[_ChatStoreLease] = set()
+        self._operations_empty = asyncio.Event()
+        self._operations_empty.set()
+        self._ready = False
+        self._closing = False
+        self._closed = False
+        self._shutdown_task: asyncio.Task[None] | None = None
+
+    @property
+    def ready(self) -> bool:
+        return self._ready and not self._closing and not self._closed
+
+    @property
+    def closing(self) -> bool:
+        return self._closing
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def active_operation_count(self) -> int:
+        return len(self._operations)
+
+    @property
+    def shutdown_task(self) -> asyncio.Task[None] | None:
+        return self._shutdown_task
+
+    def require_accepting(self) -> None:
+        if not self.ready or not self.store.opened:
+            raise HTTPException(status_code=503, detail="Chat session store is unavailable")
+
+    def acquire_operation(self) -> _ChatStoreLease:
+        self.require_accepting()
+        lease = _ChatStoreLease(self)
+        self._operations.add(lease)
+        self._operations_empty.clear()
+        return lease
+
+    def _release_operation(self, lease: _ChatStoreLease) -> None:
+        self._operations.discard(lease)
+        if not self._operations:
+            self._operations_empty.set()
+
+    async def open(self) -> None:
+        if self._ready:
+            return
+        if self._closing or self._closed:
+            raise RuntimeError("Chat session store generation is closed")
+
+        try:
+            await run_in_thread(self.store.open)
+            if self._closing:
+                raise RuntimeError("Chat session store closed while opening")
+        except BaseException as primary:
+            try:
+                await self.aclose()
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup(
+                    "Chat session store initialization and rollback both failed",
+                    [primary, cleanup_error],
+                ) from None
+            raise
+        self._ready = True
+
+    async def _finalize(self) -> None:
+        await self._operations_empty.wait()
+        await run_in_thread(self.store.close)
+        self._ready = False
+        self.session_lock_states.clear()
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closing = True
+        task = self._shutdown_task
+        if task is None:
+            task = create_lifecycle_task(
+                self._finalize(),
+                name="chat-session-store-shutdown",
+            )
+            self._shutdown_task = task
+
+        try:
+            await join_task(task)
+        finally:
+            if self._shutdown_task is task and task.done():
+                if not task.cancelled() and task.exception() is None:
+                    self._closed = True
+                self._shutdown_task = None
+
+
+_chat_store_runtime: _ChatStoreRuntime | None = None
+
+
+async def startup_store(store: ChatSessionStore | None = None) -> None:
+    """Explicitly install and open one chat-store generation."""
+    global _chat_store_runtime
+    previous = _chat_store_runtime
+    if previous is not None and not previous.closed:
+        raise RuntimeError("Cannot replace chat session store before shutdown succeeds")
+
+    candidate = store
+    if candidate is None:
         path = Path(os.getenv("CHAT_SESSION_DB", ".agent_state/sessions.db"))
-        _store = ChatSessionStore(path)
-    return _store
+        candidate = ChatSessionStore(path)
+    runtime = _ChatStoreRuntime(candidate)
+    _chat_store_runtime = runtime
+    await runtime.open()
 
 
-def set_store(store: ChatSessionStore) -> None:
-    """Inject a store (tests, alternative backends)."""
-    global _store
-    _store = store
+def _require_chat_store_runtime() -> _ChatStoreRuntime:
+    runtime = _chat_store_runtime
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="Chat session store is not started")
+    runtime.require_accepting()
+    return runtime
 
 
-def close_store() -> None:
-    """Close the process-wide store's sqlite connection (lifespan shutdown).
+@contextmanager
+def chat_store_operation(
+    runtime: _ChatStoreRuntime | None = None,
+) -> Iterator[_ChatStoreRuntime]:
+    owner = runtime if runtime is not None else _require_chat_store_runtime()
+    lease = owner.acquire_operation()
+    try:
+        yield owner
+    finally:
+        lease.release()
 
-    No-op when no store was ever created, so shutting down a process that
-    never served chat doesn't materialise a sqlite file on the way out.
-    """
-    global _store
-    if _store is not None:
-        _store.close()
-        _store = None
+
+async def close_store() -> None:
+    """Close the installed generation without discarding failed ownership."""
+    runtime = _chat_store_runtime
+    if runtime is None:
+        return
+    await runtime.aclose()
 
 
 @asynccontextmanager
-async def _hold_session_lock(session_id: str) -> AsyncIterator[None]:
+async def _hold_session_lock(
+    runtime: _ChatStoreRuntime,
+    session_id: str,
+) -> AsyncIterator[None]:
     """Acquire (creating on demand) the per-session write lock.
 
     The user count is bumped *before* awaiting the Lock so that a purge pass
@@ -94,54 +239,59 @@ async def _hold_session_lock(session_id: str) -> AsyncIterator[None]:
     us — that would hand the next caller a second, unrelated Lock for the same
     session and quietly destroy mutual exclusion.
     """
-    lock = _session_locks.get(session_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _session_locks[session_id] = lock
-    _session_lock_users[session_id] = _session_lock_users.get(session_id, 0) + 1
+    states = runtime.session_lock_states
+    state = states.get(session_id)
+    if state is None:
+        state = _SessionLockState()
+        states[session_id] = state
+    state.users += 1
     try:
-        async with lock:
+        async with state.lock:
             yield
     finally:
-        remaining = _session_lock_users.get(session_id, 1) - 1
-        if remaining > 0:
-            _session_lock_users[session_id] = remaining
-        else:
-            _session_lock_users.pop(session_id, None)
+        state.users -= 1
+        if state.users == 0 and state.retire_when_idle and states.get(session_id) is state:
+            states.pop(session_id, None)
 
 
-def _discard_session_lock(session_id: str) -> None:
-    """Drop a session's Lock unless somebody is holding or waiting on it.
+def _retire_session_lock(runtime: _ChatStoreRuntime, session_id: str) -> None:
+    """Retire a dead session's lock immediately after its final user leaves.
 
-    An in-use Lock is left in place and reclaimed by a later purge pass; the
-    entry is bounded either way because the session's row is already gone.
+    The state remains the sole lock while holders or waiters exist, preventing a
+    rival lock from breaking mutual exclusion. The final user's ``finally`` owns
+    deterministic reclamation, so no periodic second pass is required.
     """
-    if _session_lock_users.get(session_id):
+    states = runtime.session_lock_states
+    state = states.get(session_id)
+    if state is None:
         return
-    _session_locks.pop(session_id, None)
+    state.retire_when_idle = True
+    if state.users == 0:
+        states.pop(session_id, None)
+
+
+def _mark_session_lock_live(runtime: _ChatStoreRuntime, session_id: str) -> None:
+    """Cancel retirement when the same client ID becomes a live session again."""
+    state = runtime.session_lock_states.get(session_id)
+    if state is not None:
+        state.retire_when_idle = False
 
 
 async def purge_expired_locks() -> None:
-    """Reconcile `_session_locks` against the session rows that still exist.
-
-    Must diff against the live id set rather than trust `purge_expired()`'s
-    return value: `load_messages()` also deletes an expired row in place
-    without reporting it (hit on every voice reconnect with a stale
-    session_id), which used to leak that session's Lock for the process's
-    whole uptime.
-    """
-    store = get_store()
-    await asyncio.to_thread(store.purge_expired)
-    live_ids = await asyncio.to_thread(store.session_ids)
-    # No awaits below: `_session_locks` and the id snapshot can't drift apart
-    # mid-iteration. A session created *after* the snapshot is safe too — its
-    # Lock is either absent or in use, and in-use locks are never dropped.
-    for session_id in [sid for sid in _session_locks if sid not in live_ids]:
-        _discard_session_lock(session_id)
+    """Reconcile this generation's lock states against its durable rows."""
+    with chat_store_operation() as runtime:
+        store = runtime.store
+        await run_in_thread(store.purge_expired)
+        live_ids = await run_in_thread(store.session_ids)
+        # No awaits below: the lock registry and id snapshot cannot drift during
+        # reconciliation, and in-use states retire only after their final user.
+        states = runtime.session_lock_states
+        for session_id in [sid for sid in states if sid not in live_ids]:
+            _retire_session_lock(runtime, session_id)
 
 
 async def run_lock_purge_loop() -> None:
-    """Background loop: periodically reconcile `_session_locks` with the store.
+    """Periodically reconcile the session-lock state registry with the store.
 
     Started alongside the ETA warmup loop in `api._lifespan`.
     """
@@ -203,44 +353,38 @@ def _rehydrate_session(
     return session
 
 
-async def respond_in_session_stream(
+def respond_in_session_stream(
     session_id: str,
     message: str,
     *,
     extra_tools: list[ExtraTool] | None = None,
     extra_system_prompt: str | None = None,
-):
-    """Load session, stream reply chunks, then save updated history.
+    runtime: _ChatStoreRuntime | None = None,
+) -> AsyncGenerator[str, None]:
+    """Capture one store generation, stream a reply, then persist its history."""
+    captured_runtime = runtime if runtime is not None else _require_chat_store_runtime()
 
-    Raises LookupError (before the first chunk) if the session does not exist.
-    Holds the session lock for the whole stream to serialize concurrent calls.
-    History saves only after the stream完整跑完——中途放棄（語音打斷、client
-    斷線）就丟棄該輪，與語音中斷語意一致。
+    async def _stream() -> AsyncGenerator[str, None]:
+        with chat_store_operation(captured_runtime) as active_runtime:
+            store = active_runtime.store
+            async with _hold_session_lock(active_runtime, session_id):
+                messages = await run_in_thread(store.load_messages, session_id)
+                if messages is None:
+                    _retire_session_lock(active_runtime, session_id)
+                    raise LookupError(session_id)
 
-    `extra_tools` / `extra_system_prompt` are the voice pipeline's injection
-    hooks (see `_rehydrate_session`). REST callers pass neither, so their
-    behaviour is unchanged.
-    """
-    store = get_store()
-    async with _hold_session_lock(session_id):
-        # SQLite I/O is synchronous — run it off the event loop
-        messages = await asyncio.to_thread(store.load_messages, session_id)
-        if messages is None:
-            # Session gone (expired/never existed). Deliberately *not* popping
-            # the Lock here: we still hold it, and another caller may already be
-            # queued on it — dropping it now would let that caller's successor
-            # build a rival Lock for the same session. purge_expired_locks()
-            # reclaims it once nobody is using it.
-            raise LookupError(session_id)
+                session = _rehydrate_session(
+                    messages,
+                    extra_tools=extra_tools,
+                    extra_system_prompt=extra_system_prompt,
+                )
+                response_stream = session.respond_stream(message)
+                async with aclosing(response_stream):
+                    async for chunk in response_stream:
+                        yield chunk
+                await run_in_thread(store.save_messages, session_id, session.messages)
 
-        session = _rehydrate_session(
-            messages,
-            extra_tools=extra_tools,
-            extra_system_prompt=extra_system_prompt,
-        )
-        async for chunk in session.respond_stream(message):
-            yield chunk
-        await asyncio.to_thread(store.save_messages, session_id, session.messages)
+    return _stream()
 
 
 # ---------------------------------------------------------------------------
@@ -248,48 +392,62 @@ async def respond_in_session_stream(
 # ---------------------------------------------------------------------------
 
 
-@router.post(
-    "/api/chat/sessions",
+@router.put(
+    "/api/chat/sessions/{session_id}",
     response_model=ChatSessionResponse,
     dependencies=[Depends(CHAT_SESSION_RATE_LIMIT)],
 )
-def create_chat_session() -> object:
-    """Create a new agent chat session and return its session_id."""
+async def create_chat_session(session_id: UUID) -> ChatSessionResponse:
+    """Idempotently materialise one client-owned chat session ID."""
     try:
         # Surface missing LLM config now rather than on first message.
         get_settings()
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
-    session_id = get_store().create()
-    return ChatSessionResponse(sessionId=session_id)
+    session_key = str(session_id)
+    try:
+        with chat_store_operation() as runtime:
+            await run_in_thread(runtime.store.create, session_key)
+            _mark_session_lock_live(runtime, session_key)
+    except SessionTombstonedError as error:
+        raise HTTPException(status_code=409, detail="對話階段已明確結束，請使用新的識別碼") from error
+    return ChatSessionResponse(sessionId=session_key)
 
 
 @router.post(
     "/api/chat/sessions/{session_id}/messages/stream",
     dependencies=[Depends(CHAT_MESSAGE_RATE_LIMIT)],
 )
-async def send_chat_message_stream(session_id: str, body: ChatMessageRequest) -> StreamingResponse:
+async def send_chat_message_stream(session_id: UUID, body: ChatMessageRequest) -> StreamingResponse:
     """SSE 逐 chunk 推回覆。
 
     事件格式：`{"delta": 文字}`… 結尾 `{"done": true}`；串流中的錯誤以
     `{"error": 訊息}` 事件收尾（HTTP status 已送出，無法改）。
     """
+    session_key = str(session_id)
     # SSE 開始後無法再改 status code，session 存在與否先查（與串流開始之間
     # 的過期 race 由 error 事件兜底）。輕量 exists() 只查 last_used，不重覆
     # 載入/解析 messages payload——權威讀在 respond_in_session_stream 的 lock 內。
-    if not await asyncio.to_thread(get_store().exists, session_id):
-        raise HTTPException(status_code=404, detail="對話階段不存在或已過期，請重新開始")
+    with chat_store_operation() as runtime:
+        if not await run_in_thread(runtime.store.exists, session_key):
+            raise HTTPException(status_code=404, detail="對話階段不存在或已過期，請重新開始")
 
-    async def events():
+    async def events() -> AsyncGenerator[str, None]:
+        response_stream = respond_in_session_stream(
+            session_key,
+            body.message,
+            runtime=runtime,
+        )
         try:
-            async for chunk in respond_in_session_stream(session_id, body.message):
-                yield sse_event({"delta": chunk})
+            async with aclosing(response_stream):
+                async for chunk in response_stream:
+                    yield sse_event({"delta": chunk})
             yield sse_event({"done": True})
         except LookupError:
             yield sse_event({"error": "對話階段不存在或已過期，請重新開始"})
         except Exception as error:  # noqa: BLE001 — must surface as an SSE event
-            _log.exception("Chat stream failed for session %s", session_id)
+            _log.exception("Chat stream failed for session %s", session_key)
             yield sse_event({"error": f"助理暫時無法回應：{summarize_error(error)}"})
 
     return StreamingResponse(
@@ -299,8 +457,17 @@ async def send_chat_message_stream(session_id: str, body: ChatMessageRequest) ->
     )
 
 
-@router.delete("/api/chat/sessions/{session_id}", status_code=204)
-def delete_chat_session(session_id: str) -> None:
-    """Explicitly end a chat session and free its row."""
-    get_store().delete(session_id)
-    _discard_session_lock(session_id)
+@router.delete(
+    "/api/chat/sessions/{session_id}",
+    status_code=204,
+    dependencies=[Depends(CHAT_SESSION_RATE_LIMIT)],
+)
+async def delete_chat_session(session_id: UUID) -> None:
+    """Explicitly end a chat session and durably prevent late recreation."""
+    session_key = str(session_id)
+    # The sqlite connection is thread-safe and all of its blocking operations
+    # run outside the event loop.  The asyncio Lock registry, however, is owned
+    # by this loop and must never be mutated from FastAPI's sync-handler pool.
+    with chat_store_operation() as runtime:
+        await run_in_thread(runtime.store.delete, session_key)
+        _retire_session_lock(runtime, session_key)

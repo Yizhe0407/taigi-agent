@@ -38,79 +38,138 @@ function stopsToGeoJSON(stops: StopEntry[]) {
   }
 }
 
-useMapLayer(map, isLoaded, (mapInstance) => {
-  mapInstance.addSource(SOURCE, {
-    type: "geojson",
-    data: stopsToGeoJSON(props.stops),
-  })
+const lifecycle = useMapLayer(
+  map,
+  isLoaded,
+  "admin stops map layer",
+  (mapInstance, owner, fail) => {
+    owner.acquire(
+      () =>
+        mapInstance.addSource(SOURCE, {
+          type: "geojson",
+          data: stopsToGeoJSON(props.stops),
+        }),
+      () => {
+        if (mapInstance.getSource(SOURCE)) mapInstance.removeSource(SOURCE)
+      },
+    )
 
-  // All stops — small blue dots
-  mapInstance.addLayer({
-    id: LAYER_ALL,
-    type: "circle",
-    source: SOURCE,
-    paint: {
-      "circle-radius": 5,
-      "circle-color": "#3b82f6",
-      "circle-stroke-width": 1.5,
-      "circle-stroke-color": "#ffffff",
-      "circle-opacity": 0.75,
-    },
-  })
+    owner.acquire(
+      () =>
+        mapInstance.addLayer({
+          id: LAYER_ALL,
+          type: "circle",
+          source: SOURCE,
+          paint: {
+            "circle-radius": 5,
+            "circle-color": "#3b82f6",
+            "circle-stroke-width": 1.5,
+            "circle-stroke-color": "#ffffff",
+            "circle-opacity": 0.75,
+          },
+        }),
+      () => {
+        if (mapInstance.getLayer(LAYER_ALL)) mapInstance.removeLayer(LAYER_ALL)
+      },
+    )
 
-  // Selected stop — larger amber ring on top
-  mapInstance.addLayer({
-    id: LAYER_SELECTED,
-    type: "circle",
-    source: SOURCE,
-    filter: props.selectedStopName ? ["==", ["get", "name"], props.selectedStopName] : ["literal", false],
-    paint: {
-      "circle-radius": 9,
-      "circle-color": "#f59e0b",
-      "circle-stroke-width": 2,
-      "circle-stroke-color": "#ffffff",
-      "circle-opacity": 1,
-    },
-  })
+    owner.acquire(
+      () =>
+        mapInstance.addLayer({
+          id: LAYER_SELECTED,
+          type: "circle",
+          source: SOURCE,
+          filter: props.selectedStopName
+            ? ["==", ["get", "name"], props.selectedStopName]
+            : ["literal", false],
+          paint: {
+            "circle-radius": 9,
+            "circle-color": "#f59e0b",
+            "circle-stroke-width": 2,
+            "circle-stroke-color": "#ffffff",
+            "circle-opacity": 1,
+          },
+        }),
+      () => {
+        if (mapInstance.getLayer(LAYER_SELECTED)) {
+          mapInstance.removeLayer(LAYER_SELECTED)
+        }
+      },
+    )
 
-  const enterHandler = () => {
-    mapInstance.getCanvas().style.cursor = "pointer"
-  }
-  const leaveHandler = () => {
-    mapInstance.getCanvas().style.cursor = ""
-  }
-  const clickHandler = (
-    e: MapMouseEvent & {
-      features?: import("maplibre-gl").MapGeoJSONFeature[]
-    },
-  ) => {
-    const feature = e.features?.[0]
-    if (!feature) return
-    const p = feature.properties as { name: string; lat: number; lng: number }
-    emit("select", { name: p.name, lat: p.lat, lng: p.lng })
-  }
+    const canvas = mapInstance.getCanvas()
+    owner.acquire(
+      () => canvas,
+      () => {
+        canvas.style.cursor = ""
+      },
+    )
 
-  mapInstance.on("mouseenter", LAYER_ALL, enterHandler)
-  mapInstance.on("mouseleave", LAYER_ALL, leaveHandler)
-  mapInstance.on("click", LAYER_ALL, clickHandler)
+    const enterHandler = () => {
+      if (owner.signal.aborted) return
+      try {
+        canvas.style.cursor = "pointer"
+      } catch (error) {
+        fail(error)
+      }
+    }
+    const leaveHandler = () => {
+      if (owner.signal.aborted) return
+      try {
+        canvas.style.cursor = ""
+      } catch (error) {
+        fail(error)
+      }
+    }
+    const clickHandler = (
+      event: MapMouseEvent & {
+        features?: import("maplibre-gl").MapGeoJSONFeature[]
+      },
+    ) => {
+      if (owner.signal.aborted) return
+      try {
+        const feature = event.features?.[0]
+        if (!feature) return
+        const properties = feature.properties as {
+          name: string
+          lat: number
+          lng: number
+        }
+        emit("select", properties)
+      } catch (error) {
+        fail(error)
+      }
+    }
 
-  return () => {
-    mapInstance.off("mouseenter", LAYER_ALL, enterHandler)
-    mapInstance.off("mouseleave", LAYER_ALL, leaveHandler)
-    mapInstance.off("click", LAYER_ALL, clickHandler)
-    if (mapInstance.getLayer(LAYER_SELECTED)) mapInstance.removeLayer(LAYER_SELECTED)
-    if (mapInstance.getLayer(LAYER_ALL)) mapInstance.removeLayer(LAYER_ALL)
-    if (mapInstance.getSource(SOURCE)) mapInstance.removeSource(SOURCE)
-  }
-})
+    owner.acquire(
+      () => mapInstance.on("mouseenter", LAYER_ALL, enterHandler),
+      () => mapInstance.off("mouseenter", LAYER_ALL, enterHandler),
+    )
+    owner.acquire(
+      () => mapInstance.on("mouseleave", LAYER_ALL, leaveHandler),
+      () => mapInstance.off("mouseleave", LAYER_ALL, leaveHandler),
+    )
+    owner.acquire(
+      () => mapInstance.on("click", LAYER_ALL, clickHandler),
+      () => mapInstance.off("click", LAYER_ALL, clickHandler),
+    )
+  },
+)
 
 watch(
   () => props.stops,
   (newStops) => {
     const mapInstance = map.value
-    if (!mapInstance || !isLoaded.value) return
-    const source = mapInstance.getSource(SOURCE) as GeoJSONSource | undefined
-    source?.setData(stopsToGeoJSON(newStops))
+    if (!mapInstance || !isLoaded.value || !lifecycle.isActive(mapInstance)) {
+      return
+    }
+
+    try {
+      const source = mapInstance.getSource(SOURCE) as GeoJSONSource | undefined
+      source?.setData(stopsToGeoJSON(newStops))
+    } catch (error) {
+      lifecycle.fail(error, mapInstance)
+    }
   },
 )
 
@@ -118,9 +177,19 @@ watch(
   () => props.selectedStopName,
   (name) => {
     const mapInstance = map.value
-    if (!mapInstance || !isLoaded.value) return
-    if (mapInstance.getLayer(LAYER_SELECTED)) {
-      mapInstance.setFilter(LAYER_SELECTED, name ? ["==", ["get", "name"], name] : ["literal", false])
+    if (!mapInstance || !isLoaded.value || !lifecycle.isActive(mapInstance)) {
+      return
+    }
+
+    try {
+      if (mapInstance.getLayer(LAYER_SELECTED)) {
+        mapInstance.setFilter(
+          LAYER_SELECTED,
+          name ? ["==", ["get", "name"], name] : ["literal", false],
+        )
+      }
+    } catch (error) {
+      lifecycle.fail(error, mapInstance)
     }
   },
 )

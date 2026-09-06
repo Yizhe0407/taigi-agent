@@ -1,9 +1,17 @@
 import { useQuery, useQueryClient } from "@tanstack/vue-query"
-import { computed, onUnmounted, ref } from "vue"
+import { computed, ref } from "vue"
 
 import { apiBaseUrl } from "@/lib/api"
 import { UI_FALLBACK_MESSAGES } from "@/lib/api-messages"
+import {
+  currentSynchronousScopeReleaseAttempt,
+  observeSynchronousScopeTeardown,
+} from "@/lib/component-lifecycle"
 import { reportClientEvent } from "@/lib/report-client-event"
+import {
+  createResourceOwner,
+  type ResourceReleaseAttempt,
+} from "@/lib/resource-owner"
 
 import { DeparturesApiError, fetchDeparturesHere } from "../api/departures"
 import type { StopDepartureSnapshot } from "../types"
@@ -17,6 +25,39 @@ export function useDepartureSnapshot() {
   const queryClient = useQueryClient()
   const sseConnected = ref(false)
   const ssePushError = ref("")
+  const sseOwner = createResourceOwner("departure snapshot EventSource")
+
+  observeSynchronousScopeTeardown("departure snapshot teardown", (attempt) => {
+    const failures: unknown[] = []
+
+    try {
+      sseConnected.value = false
+    } catch (failure) {
+      failures.push(failure)
+    }
+
+    let ownerDisposeFailed = false
+    try {
+      sseOwner.dispose(attempt)
+    } catch (failure) {
+      ownerDisposeFailed = true
+      failures.push(failure)
+    }
+
+    if (!ownerDisposeFailed && !sseOwner.settled) {
+      failures.push(
+        new Error("Departure snapshot EventSource cleanup remains unresolved"),
+      )
+    }
+
+    if (failures.length === 1) throw failures[0]
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures,
+        "Failed to tear down departure snapshot EventSource",
+      )
+    }
+  })
 
   const query = useQuery({
     queryKey: ["departures", "here"],
@@ -28,36 +69,85 @@ export function useDepartureSnapshot() {
 
   // Server push: the backend notifies right after each ETA cache refresh, so
   // the dashboard updates the moment fresh data exists instead of polling out
-  // of phase. EventSource reconnects on its own; while it's down the query
-  // above falls back to interval polling.
-  const source = new EventSource(`${apiBaseUrl}/api/departures/stream`)
-  source.onopen = () => { sseConnected.value = true }
-  source.onerror = () => { sseConnected.value = false }
-  source.onmessage = (event) => {
-    let payload: StopDepartureSnapshot | { error: string }
+  // of phase. EventSource reconnects on its own; while it is down the query
+  // above falls back to interval polling. Every callback and the connection
+  // itself are individually claimed before their imperative setup step.
+  const setupAttempt: ResourceReleaseAttempt =
+    currentSynchronousScopeReleaseAttempt() ?? {}
+  try {
+    const sourceAcquisition = sseOwner.acquire(
+      () => new EventSource(`${apiBaseUrl}/api/departures/stream`),
+      (ownedSource) => {
+        ownedSource?.close()
+      },
+      "connection",
+      setupAttempt,
+    )
+    const ownedSource = sourceAcquisition.value
+
+    const handleOpen = () => {
+      if (sseOwner.disposed) return
+      sseConnected.value = true
+    }
+    const handleError = () => {
+      if (sseOwner.disposed) return
+      sseConnected.value = false
+    }
+    const handleMessage = (event: MessageEvent) => {
+      if (sseOwner.disposed) return
+      let payload: StopDepartureSnapshot | { error: string }
+      try {
+        payload = JSON.parse(event.data) as StopDepartureSnapshot | { error: string }
+      } catch (error) {
+        ssePushError.value = UI_FALLBACK_MESSAGES.departuresUnavailable
+        reportClientEvent(
+          "departures_sse_invalid_json",
+          error instanceof Error ? error.message : String(error),
+        )
+        return
+      }
+      if (!payload || typeof payload !== "object") {
+        ssePushError.value = UI_FALLBACK_MESSAGES.departuresUnavailable
+        reportClientEvent("departures_sse_invalid_payload", "SSE payload is not an object")
+        return
+      }
+      if ("error" in payload) {
+        ssePushError.value = payload.error
+        return
+      }
+      ssePushError.value = ""
+      queryClient.setQueryData(["departures", "here"], payload)
+    }
+
+    sseOwner.acquire(
+      () => { ownedSource.onopen = handleOpen },
+      () => { ownedSource.onopen = null },
+      "open callback",
+      setupAttempt,
+    )
+    sseOwner.acquire(
+      () => { ownedSource.onerror = handleError },
+      () => { ownedSource.onerror = null },
+      "error callback",
+      setupAttempt,
+    )
+    sseOwner.acquire(
+      () => { ownedSource.onmessage = handleMessage },
+      () => { ownedSource.onmessage = null },
+      "message callback",
+      setupAttempt,
+    )
+  } catch (setupError) {
     try {
-      payload = JSON.parse(event.data) as StopDepartureSnapshot | { error: string }
-    } catch (error) {
-      ssePushError.value = UI_FALLBACK_MESSAGES.departuresUnavailable
-      reportClientEvent(
-        "departures_sse_invalid_json",
-        error instanceof Error ? error.message : String(error),
+      sseOwner.dispose(setupAttempt)
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [setupError, cleanupError],
+        "Failed to initialize and roll back departure snapshot EventSource",
       )
-      return
     }
-    if (!payload || typeof payload !== "object") {
-      ssePushError.value = UI_FALLBACK_MESSAGES.departuresUnavailable
-      reportClientEvent("departures_sse_invalid_payload", "SSE payload is not an object")
-      return
-    }
-    if ("error" in payload) {
-      ssePushError.value = payload.error
-      return
-    }
-    ssePushError.value = ""
-    queryClient.setQueryData(["departures", "here"], payload)
+    throw setupError
   }
-  onUnmounted(() => source.close())
 
   // Countdown-to-refresh is only ever displayed by a small badge; the ticker
   // that drives it lives there (RouteRefreshCountdown.vue), not here, so a

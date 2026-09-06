@@ -42,47 +42,78 @@ const buildFeature = (coordinates: [number, number][]) =>
     geometry: { type: "LineString", coordinates },
   }) as const
 
-useMapLayer(map, isLoaded, (mapInstance) => {
-  mapInstance.addSource(sourceId, {
-    type: "geojson",
-    data: buildFeature(props.coordinates),
-  })
-  mapInstance.addLayer({
-    id: layerId,
-    type: "line",
-    source: sourceId,
-    layout: {
-      "line-join": props.lineJoin,
-      "line-cap": props.lineCap,
-    },
-    paint: {
-      "line-color": props.color,
-      "line-width": props.width,
-      "line-opacity": props.opacity,
-      ...(props.dashArray && { "line-dasharray": props.dashArray }),
-    },
-  })
-
-  const onClick = () => emit("click")
-  if (props.interactive) mapInstance.on("click", layerId, onClick)
-
-  return () => {
-    if (props.interactive) mapInstance.off("click", layerId, onClick)
-    try {
-      if (mapInstance.getLayer(layerId)) mapInstance.removeLayer(layerId)
-      if (mapInstance.getSource(sourceId)) mapInstance.removeSource(sourceId)
-    } catch {
-      // MapLibre removes custom layers when a basemap style changes.
+const lifecycle = useMapLayer(
+  map,
+  isLoaded,
+  `map route ${baseId}`,
+  (mapInstance, owner, fail) => {
+    const onClick = () => {
+      if (owner.signal.aborted) return
+      try {
+        emit("click")
+      } catch (error) {
+        fail(error)
+      }
     }
-  }
-})
+    const interactive = props.interactive
+
+    owner.acquire(
+      () =>
+        mapInstance.addSource(sourceId, {
+          type: "geojson",
+          data: buildFeature(props.coordinates),
+        }),
+      () => {
+        if (mapInstance.getSource(sourceId)) mapInstance.removeSource(sourceId)
+      },
+    )
+
+    owner.acquire(
+      () =>
+        mapInstance.addLayer({
+          id: layerId,
+          type: "line",
+          source: sourceId,
+          layout: {
+            "line-join": props.lineJoin,
+            "line-cap": props.lineCap,
+          },
+          paint: {
+            "line-color": props.color,
+            "line-width": props.width,
+            "line-opacity": props.opacity,
+            ...(props.dashArray && { "line-dasharray": props.dashArray }),
+          },
+        }),
+      () => {
+        if (mapInstance.getLayer(layerId)) mapInstance.removeLayer(layerId)
+      },
+    )
+
+    if (interactive) {
+      owner.acquire(
+        () => mapInstance.on("click", layerId, onClick),
+        () => mapInstance.off("click", layerId, onClick),
+      )
+    }
+  },
+)
 
 watch(
   () => props.coordinates,
   (coordinates) => {
     if (coordinates.length < 2) return
-    const source = map.value?.getSource(sourceId) as GeoJSONSource | undefined
-    source?.setData(buildFeature(coordinates))
+    const mapInstance = map.value
+    if (!mapInstance || !isLoaded.value || !lifecycle.isActive(mapInstance)) {
+      return
+    }
+
+    try {
+      const source = mapInstance.getSource(sourceId) as GeoJSONSource | undefined
+      source?.setData(buildFeature(coordinates))
+    } catch (error) {
+      lifecycle.fail(error, mapInstance)
+    }
   },
   { deep: true },
 )

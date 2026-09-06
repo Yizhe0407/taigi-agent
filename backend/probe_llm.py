@@ -127,13 +127,12 @@ async def main() -> None:
         print("Missing env vars. Set LLM_BASE_URL/LLM_MODEL, or use --nvidia (NVIDIA_BASE_URL/NVIDIA_MODEL).")
         sys.exit(1)
 
-    client = AsyncOpenAI(base_url=base_url, api_key=api_key)
-
-    for label, user_msg in CASES:
-        print(f"[{label}]")
-        print(f"  user: {user_msg}")
-        await probe_one(client, model, user_msg, extra_body)
-        print()
+    async with AsyncOpenAI(base_url=base_url, api_key=api_key) as client:
+        for label, user_msg in CASES:
+            print(f"[{label}]")
+            print(f"  user: {user_msg}")
+            await probe_one(client, model, user_msg, extra_body)
+            print()
 
 
 if __name__ == "__main__":

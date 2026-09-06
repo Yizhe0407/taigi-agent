@@ -1,4 +1,4 @@
-import { apiFetch, ApiError } from "@/lib/api"
+import { apiFetch, ApiError, readJsonResponse } from "@/lib/api"
 import { API_NETWORK_MESSAGES } from "@/lib/api-messages"
 
 import type { KioskPlace, LngLat } from "../types"
@@ -17,12 +17,13 @@ type KioskResponse = { name: string; lat: number; lng: number; direction: string
  * The backend derives coordinates from the stop catalog (same source OTP uses),
  * so the marker and route origin stay in sync.
  */
-export async function fetchKiosk(): Promise<KioskPlace> {
+export async function fetchKiosk(signal?: AbortSignal): Promise<KioskPlace> {
   const response = await apiFetch("/api/kiosk", {
+    signal,
     errorClass: KioskApiError,
     networkMessage: API_NETWORK_MESSAGES.kiosk,
   })
-  const body = (await response.json()) as KioskResponse
+  const body = await readJsonResponse<KioskResponse>(response, signal)
   const VALID_DIRECTIONS = new Set<string>(["去程", "回程"])
   const direction: KioskPlace["direction"] =
     body.direction !== null && VALID_DIRECTIONS.has(body.direction)

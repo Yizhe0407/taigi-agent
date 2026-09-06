@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, MutableMapping
 from contextlib import asynccontextmanager
 
@@ -29,11 +30,12 @@ _MIN_SWEEP_THRESHOLD = 32
 
 
 class _LockEntry:
-    """An `asyncio.Lock` plus the number of tasks holding or queued for it."""
+    """One event-loop generation's lock and every holder/waiter using it."""
 
-    __slots__ = ("lock", "users")
+    __slots__ = ("loop", "lock", "users")
 
-    def __init__(self) -> None:
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.loop = loop
         self.lock = asyncio.Lock()
         self.users = 0
 
@@ -58,29 +60,38 @@ class KeyedLocks[K]:
 
     def __init__(self) -> None:
         self._entries: dict[K, _LockEntry] = {}
+        self._entries_guard = threading.Lock()
 
     def __len__(self) -> int:
-        return len(self._entries)
+        with self._entries_guard:
+            return len(self._entries)
 
     def __contains__(self, key: object) -> bool:
-        return key in self._entries
+        with self._entries_guard:
+            return key in self._entries
 
     @asynccontextmanager
     async def acquire(self, key: K) -> AsyncIterator[None]:
-        entry = self._entries.get(key)
-        if entry is None:
-            entry = _LockEntry()
-            self._entries[key] = entry
-        entry.users += 1
+        loop = asyncio.get_running_loop()
+        with self._entries_guard:
+            entry = self._entries.get(key)
+            if entry is None:
+                entry = _LockEntry(loop)
+                self._entries[key] = entry
+            elif entry.loop is not loop:
+                raise RuntimeError(f"TTL cache key {key!r} is still owned by a different event loop")
+            entry.users += 1
+
         try:
             async with entry.lock:
                 yield
         finally:
-            entry.users -= 1
-            # Identity check: a previous holder may already have dropped this key
-            # and a later arrival re-created it under a fresh entry.
-            if entry.users == 0 and self._entries.get(key) is entry:
-                del self._entries[key]
+            with self._entries_guard:
+                entry.users -= 1
+                # Identity check: a previous generation may have retired this key
+                # and a later generation re-created it under a fresh entry.
+                if entry.users == 0 and self._entries.get(key) is entry:
+                    del self._entries[key]
 
 
 class TtlCache[K, V]:

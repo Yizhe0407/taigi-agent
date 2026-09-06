@@ -2473,7 +2473,7 @@ requires-dist = [
     { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.50b0" },
     { name = "opentelemetry-instrumentation-httpx", specifier = ">=0.50b0" },
     { name = "opentelemetry-sdk", specifier = ">=1.38.0" },
-    { name = "pipecat-ai", extras = ["silero", "webrtc"], specifier = ">=1.4.0,<2.0.0" },
+    { name = "pipecat-ai", extras = ["silero", "webrtc"], specifier = ">=1.4.0,<1.5.0" },
     { name = "polyline", specifier = ">=2.0.4" },
     { name = "pypinyin", specifier = ">=0.55.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { MapMouseEvent } from "maplibre-gl"
-import { watch } from "vue"
 
 import { useMap } from "@/components/ui/map"
+import { useMapLayer } from "@/components/ui/map/composables/use-map-layer"
 
 import { isInYunlinCounty } from "../geo/yunlin-service-area"
 import type { LngLat } from "../types"
@@ -12,26 +12,32 @@ const emit = defineEmits<{
   reject: [coordinates: LngLat]
 }>()
 
-const { map } = useMap()
+const { map, isLoaded } = useMap()
 
-watch(
+useMapLayer(
   map,
-  (mapInstance, _, onCleanup) => {
-    if (!mapInstance) return
-
+  isLoaded,
+  "map click picker",
+  (mapInstance, owner, fail) => {
     const handleClick = (event: MapMouseEvent) => {
-      const coordinates: LngLat = [event.lngLat.lng, event.lngLat.lat]
-      if (!isInYunlinCounty(coordinates)) {
-        emit("reject", coordinates)
-        return
+      if (owner.signal.aborted) return
+      try {
+        const coordinates: LngLat = [event.lngLat.lng, event.lngLat.lat]
+        if (!isInYunlinCounty(coordinates)) {
+          emit("reject", coordinates)
+          return
+        }
+        emit("select", coordinates)
+      } catch (error) {
+        fail(error)
       }
-      emit("select", coordinates)
     }
 
-    mapInstance.on("click", handleClick)
-    onCleanup(() => mapInstance.off("click", handleClick))
+    owner.acquire(
+      () => mapInstance.on("click", handleClick),
+      () => mapInstance.off("click", handleClick),
+    )
   },
-  { immediate: true },
 )
 </script>
 

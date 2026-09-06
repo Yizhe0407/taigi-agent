@@ -15,6 +15,9 @@ scheduling yields (a yield to the event loop, not a timed wait).
 from __future__ import annotations
 
 import asyncio
+import threading
+
+import pytest
 
 from providers.ttl_cache import KeyedLocks, TtlCache
 
@@ -109,6 +112,65 @@ def test_lock_entry_survives_while_a_waiter_is_queued():
     assert newcomer_shares_lock, "a task arriving after a release must receive the same lock"
     assert order == ["enter:A", "exit:A", "enter:B", "exit:B", "enter:C", "exit:C"], "critical sections must not overlap"
     assert len(locks) == 0, "registry must be empty once every user has left"
+
+
+def test_keyed_locks_can_be_reused_by_sequential_event_loop_generations():
+    locks: KeyedLocks[str] = KeyedLocks()
+
+    async def use_once() -> None:
+        async with locks.acquire("k"):
+            assert "k" in locks
+
+    asyncio.run(use_once())
+    assert len(locks) == 0
+    asyncio.run(use_once())
+    assert len(locks) == 0
+
+
+def test_keyed_locks_reject_a_rival_loop_while_the_key_is_active():
+    locks: KeyedLocks[str] = KeyedLocks()
+    holder_ready = threading.Event()
+    holder_state: dict[str, object] = {}
+    holder_errors: list[BaseException] = []
+
+    async def hold_key() -> None:
+        release = asyncio.Event()
+        holder_state["loop"] = asyncio.get_running_loop()
+        holder_state["release"] = release
+        async with locks.acquire("k"):
+            holder_ready.set()
+            await release.wait()
+
+    def run_holder() -> None:
+        try:
+            asyncio.run(hold_key())
+        except BaseException as error:  # pragma: no cover - surfaced below
+            holder_errors.append(error)
+            holder_ready.set()
+
+    holder = threading.Thread(target=run_holder, name="ttl-cache-lock-owner")
+    holder.start()
+    assert holder_ready.wait(timeout=5), "holder loop did not acquire the key"
+
+    try:
+        assert not holder_errors
+
+        async def rival() -> None:
+            with pytest.raises(RuntimeError, match="different event loop"):
+                async with locks.acquire("k"):
+                    raise AssertionError("rival loop entered the critical section")
+
+        asyncio.run(rival())
+    finally:
+        loop = holder_state.get("loop")
+        release = holder_state.get("release")
+        if isinstance(loop, asyncio.AbstractEventLoop) and isinstance(release, asyncio.Event):
+            loop.call_soon_threadsafe(release.set)
+        holder.join(timeout=5)
+
+    assert not holder.is_alive(), "holder loop did not retire"
+    assert not holder_errors
+    assert len(locks) == 0
 
 
 def test_locks_do_not_accumulate_across_many_distinct_keys():

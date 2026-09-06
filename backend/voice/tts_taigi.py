@@ -85,6 +85,10 @@ _DecodedSegment = tuple[bytes, int, int, int, int]
 # dozen distinct fixed replies while keeping the worst case in the low tens
 # of MB regardless of how many dynamic (non-repeating) replies pass through.
 _DECODED_CACHE_MAX_BYTES = 12 * 1024 * 1024
+# Secondary metadata bound.  The byte budget alone cannot evict zero-byte or
+# extremely short decoded WAVs, so unique keys could otherwise grow the
+# OrderedDict without limit while `_decoded_cache_bytes` stayed near zero.
+_DECODED_CACHE_MAX_ENTRIES = 256
 
 # entry value: (decoded segments, total display duration ms, entry size in PCM bytes)
 _CacheEntry = tuple[list[_DecodedSegment], int, int]
@@ -123,7 +127,10 @@ def _decoded_cache_put(key: str, value: tuple[list[_DecodedSegment], int]) -> No
     _decoded_cache.move_to_end(key)
     _decoded_cache_bytes += size
 
-    while _decoded_cache_bytes > _DECODED_CACHE_MAX_BYTES:
+    while (
+        _decoded_cache_bytes > _DECODED_CACHE_MAX_BYTES
+        or len(_decoded_cache) > _DECODED_CACHE_MAX_ENTRIES
+    ):
         _, evicted = _decoded_cache.popitem(last=False)
         _decoded_cache_bytes -= evicted[2]
 
@@ -189,6 +196,29 @@ class TaigiTTSService(TTSService):
         """Clean up after an audio context cut short by barge-in."""
         await super().on_audio_context_interrupted(context_id=context_id)
         self._discard_tts_context(context_id)
+
+    async def on_turn_context_completed(self) -> None:
+        """Close zero-audio HTTP contexts without the base timeout fallback.
+
+        Pipecat creates an audio context for the trailing ``TTSTextFrame`` even
+        when ``run_tts`` yields no audio.  Its HTTP completion hook only closes
+        contexts whose generator yielded ``TTSAudioRawFrame``, leaving every
+        zero-audio path to the audio worker's timeout.  Preserve the context ID
+        across the base hook (which resets it), then explicitly transfer the
+        existing context to the serialization worker exactly when the base hook
+        did not already do so.
+        """
+        context_id = self._turn_context_id
+        yielded_audio = self._is_yielding_frames_synchronously
+
+        await super().on_turn_context_completed()
+
+        if (
+            not yielded_audio
+            and context_id is not None
+            and self.audio_context_available(context_id)
+        ):
+            await self.remove_audio_context(context_id)
 
     async def run_tts(  # pyright: ignore[reportIncompatibleMethodOverride]
         self,
@@ -313,8 +343,17 @@ class TaigiTTSService(TTSService):
                         )
 
             outcome = "ok"
-        except asyncio.CancelledError:
-            outcome = "cancelled"
+        except BaseException as error:
+            # Pipecat registers `_tts_contexts[context_id]` before it starts
+            # iterating this generator.  If synthesis is cancelled, closed, or
+            # fails before the first yielded frame, no audio context exists yet
+            # and neither completion hook can retire that entry.  Abnormal
+            # generator exit owns this pre-transfer rollback; normal exhaustion
+            # deliberately leaves the entry for Pipecat's post-run bookkeeping
+            # and the audio-context completion hook above.
+            self._discard_tts_context(context_id)
+            if isinstance(error, asyncio.CancelledError):
+                outcome = "cancelled"
             raise
         finally:
             get_telemetry().record_pipeline_stage(time.perf_counter() - t0, stage="voice.tts", outcome=outcome)

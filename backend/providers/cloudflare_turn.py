@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import os
 import time
@@ -11,6 +10,8 @@ from typing import Any, TypedDict
 
 import httpx
 from aiortc import RTCIceServer
+
+from async_lifecycle import ReclaimingAsyncLock
 
 from .http import get_http_client
 
@@ -44,7 +45,7 @@ class TurnIceServers:
     aiortc: tuple[RTCIceServer, ...]
 
 
-_cache_lock = asyncio.Lock()
+_cache_lock = ReclaimingAsyncLock("Cloudflare TURN credential refresh")
 _cache_key: tuple[str, bytes, int] | None = None
 _cache_until = 0.0
 _cache_value: TurnIceServers | None = None
@@ -130,7 +131,7 @@ async def get_turn_ice_servers() -> TurnIceServers:
     if _cache_key == current_key and _cache_value is not None and now < _cache_until:
         return _cache_value
 
-    async with _cache_lock:
+    async with _cache_lock.acquire():
         now = time.monotonic()
         if _cache_key == current_key and _cache_value is not None and now < _cache_until:
             return _cache_value

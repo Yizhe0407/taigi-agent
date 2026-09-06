@@ -1,5 +1,5 @@
 import { API_NETWORK_MESSAGES } from "@/lib/api-messages"
-import { apiFetch, ApiError } from "@/lib/api"
+import { apiFetch, ApiError, readJsonResponse } from "@/lib/api"
 
 import type { LngLat, RoutePlan } from "../types"
 
@@ -26,5 +26,5 @@ export async function createRoutePlan(
     errorClass: RoutePlanApiError,
     networkMessage: API_NETWORK_MESSAGES.routePlans,
   })
-  return (await response.json()) as RoutePlan
+  return readJsonResponse<RoutePlan>(response, signal)
 }
