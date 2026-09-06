@@ -6,6 +6,8 @@ import {
 } from "@/lib/resource-owner"
 import { createOwnedAnimationFrame } from "@/lib/timer-owner"
 
+import { EXPRESSION_STATES, type ExpressionState } from "./expressionStates"
+
 declare global {
   interface Window {
     Live2DCubismCore?: unknown
@@ -16,6 +18,8 @@ const CUBISM_CORE_SRC = "/vendor/live2dcubismcore.min.js"
 const CUBISM_SHADER_PATH = "/vendor/live2d/shaders/webgl/"
 const AVATAR_VISIBLE_HEIGHT = 2.1
 const AVATAR_TOP_Y = 0.85
+const EXPRESSION_TRANSITION_MS = 450
+const DEFAULT_EYE_OPEN_BASELINE = 0.8
 
 type CubismRuntime = {
   framework: any
@@ -83,6 +87,23 @@ export class OfficialCubismAvatar {
   private eyeCurrentY = 0
   private nextEyeMoveAt = performance.now() + 1500 + Math.random() * 2000
 
+  // Expression state (see expressionStates.ts) — pose/gesture targets driven
+  // by the conversation phase, layered on top of the ambient motion above.
+  private expressionState: ExpressionState = "idle"
+  private expressionInitialized = false
+  private readonly expressionCurrent = new Map<string, number>()
+  private readonly expressionTransitions = new Map<string, {
+    start: number
+    target: number
+    kind: "smooth" | "delayed"
+    startedAt: number
+  }>()
+  // "EyeOpen" is withheld from the generic per-frame setParameter sweep below
+  // and stored here instead — computeBlink() multiplies against it, so a
+  // state's eyelid target (e.g. "thinking" squints to 0.8) is the resting
+  // position the blink still dips down from and returns to.
+  private eyeOpenBaseline = DEFAULT_EYE_OPEN_BASELINE
+
   constructor(
     host: HTMLElement,
     modelSrc: string,
@@ -147,12 +168,46 @@ export class OfficialCubismAvatar {
     await this.loadTextures(setting, modelRootUrl, loadSignal)
     this.throwIfLoadCancelled(loadSignal)
     this.lifecycle = "ready"
+    this.setExpressionState("idle")
     this.start()
   }
 
   setMouthAmplitude(value: number) {
     if (this.lifecycle === "disposed") return
     this.mouthTarget = value
+  }
+
+  /**
+   * Switch the avatar's pose/expression. Safe to call before load() finishes —
+   * it only queues target values into expressionCurrent/expressionTransitions;
+   * the actual setParameter() calls happen every frame from updateParameters().
+   */
+  setExpressionState(next: ExpressionState) {
+    if (this.lifecycle === "disposed") return
+    if (this.expressionInitialized && this.expressionState === next) return
+    this.expressionState = next
+
+    const now = performance.now()
+    for (const [id, target] of Object.entries(EXPRESSION_STATES[next])) {
+      // Before the first pose is applied there's nothing to ease from — snap
+      // straight to the target instead of animating in from an undefined
+      // (or raw model-default) current value.
+      if (!this.expressionInitialized || target.transition === "instant") {
+        this.expressionCurrent.set(id, target.value)
+        this.expressionTransitions.delete(id)
+        continue
+      }
+
+      const start = this.expressionCurrent.get(id) ?? target.value
+      this.expressionTransitions.set(id, {
+        start,
+        target: target.value,
+        kind: target.transition,
+        startedAt: now,
+      })
+    }
+
+    this.expressionInitialized = true
   }
 
   resize() {
@@ -184,6 +239,8 @@ export class OfficialCubismAvatar {
       errors.push(error)
     }
     this.parameterIds.clear()
+    this.expressionCurrent.clear()
+    this.expressionTransitions.clear()
 
     for (const operation of [...this.imageLoadOperations]) {
       try {
@@ -430,6 +487,10 @@ export class OfficialCubismAvatar {
     const now = performance.now()
     const t = now / 1000
 
+    // Expression pose (eyebrows, mouth shape, arm/hand gestures, eyelid
+    // baseline) — layered underneath the ambient motion below.
+    this.updateExpressionTransitions(now)
+
     // Compound sine waves at incommensurate frequencies → aperiodic, organic drift
     const angleX = Math.sin(t * 0.53 + this.phaseX) * 3.5 + Math.sin(t * 1.21 + this.phaseX * 1.3) * 1.2
     const angleY = Math.sin(t * 0.67 + this.phaseY) * 1.5 + Math.sin(t * 1.47 + this.phaseY * 1.7) * 0.6
@@ -445,10 +506,13 @@ export class OfficialCubismAvatar {
     const breath = 0.5 + 0.5 * Math.sin(t * 0.84 + this.phaseBreath)
     this.setParameter("ParamBreath", breath)
 
-    // Random-interval blink with smooth eyelid curve
+    // Random-interval blink with smooth eyelid curve. computeBlink() returns
+    // a 0–1 "how open" fraction relative to fully open; multiplying it by the
+    // expression state's eyeOpenBaseline (e.g. "thinking" squints to 0.8)
+    // keeps the blink dipping to fully closed and back to that pose's resting
+    // openness, instead of always resting at 1.
     const blink = this.computeBlink(now)
-    this.setParameter("ParamEyeLOpen", blink)
-    this.setParameter("ParamEyeROpen", blink)
+    this.setParameter("EyeOpen", this.eyeOpenBaseline * blink)
 
     // Eye ball — random glances every 2–6 s, 30% chance to return to center
     if (now >= this.nextEyeMoveAt) {
@@ -470,6 +534,43 @@ export class OfficialCubismAvatar {
     // Lerp toward target amplitude for smooth response
     this.mouthCurrent += (this.mouthTarget - this.mouthCurrent) * 0.4
     this.setParameter("ParamMouthOpenY", this.mouthCurrent)
+  }
+
+  /**
+   * Advance and apply the pose/gesture transitions queued by
+   * setExpressionState(). "EyeOpen" is redirected into eyeOpenBaseline
+   * instead of being written directly — see the comment at its field
+   * declaration.
+   */
+  private updateExpressionTransitions(now: number) {
+    for (const [id, transition] of this.expressionTransitions) {
+      const progress = Math.min((now - transition.startedAt) / EXPRESSION_TRANSITION_MS, 1)
+
+      if (transition.kind === "delayed") {
+        if (progress < 1) continue
+        this.expressionCurrent.set(id, transition.target)
+        this.expressionTransitions.delete(id)
+        continue
+      }
+
+      const eased = this.easeInOut(progress)
+      const value = transition.start + (transition.target - transition.start) * eased
+      this.expressionCurrent.set(id, value)
+      if (progress >= 1) this.expressionTransitions.delete(id)
+    }
+
+    for (const [id, value] of this.expressionCurrent) {
+      if (id === "EyeOpen") {
+        this.eyeOpenBaseline = value
+        continue
+      }
+      this.setParameter(id, value)
+    }
+  }
+
+  private easeInOut(progress: number): number {
+    if (progress < 0.5) return 2 * progress * progress
+    return 1 - Math.pow(-2 * progress + 2, 2) / 2
   }
 
   /**

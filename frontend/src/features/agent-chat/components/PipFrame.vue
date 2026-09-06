@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue"
 import { LogOut, Settings } from "@lucide/vue"
 
 import type { TtsState } from "../composables/useTts"
+import { mapConversationStateToExpression } from "../live2d/expressionStates"
 import type { ConversationState, PipCorner, PipSize } from "../types"
 import Live2DAvatar from "./Live2DAvatar.vue"
 import PipEndConfirmOverlay from "./PipEndConfirmOverlay.vue"
@@ -31,6 +32,8 @@ const props = defineProps<{
 }>()
 
 const bubbleRef = ref<HTMLElement | null>(null)
+
+const expressionState = computed(() => mapConversationStateToExpression(props.conversationState))
 
 watch(
   () => props.lastAgentText,
@@ -121,6 +124,7 @@ const statusChipText = computed(() => {
         model-src="/live2d/ai-station/AI站長.model3.json"
         fallback-src="/avatar.png"
         :mouth-amplitude="mouthAmplitude"
+        :expression-state="expressionState"
       />
     </div>
 

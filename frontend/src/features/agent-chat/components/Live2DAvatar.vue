@@ -8,12 +8,14 @@ import {
   type ResourceReleaseAttempt,
 } from "@/lib/resource-owner"
 
+import type { ExpressionState } from "../live2d/expressionStates"
 import { OfficialCubismAvatar } from "../live2d/officialCubismAvatar"
 
 const props = defineProps<{
   modelSrc: string
   fallbackSrc: string
   mouthAmplitude: number
+  expressionState: ExpressionState
 }>()
 
 const host = ref<HTMLDivElement | null>(null)
@@ -56,6 +58,21 @@ watch(
     if (resources.disposed || !avatar) return
     try {
       avatar.setMouthAmplitude(value)
+    } catch (error) {
+      failLive2D(error)
+    }
+  },
+)
+
+// No { immediate: true } — the avatar instance doesn't exist until onMounted
+// creates it, so an immediate first call would just no-op anyway. load()
+// applies the initial "idle" pose itself once the model is ready.
+watch(
+  () => props.expressionState,
+  (value) => {
+    if (resources.disposed || !avatar) return
+    try {
+      avatar.setExpressionState(value)
     } catch (error) {
       failLive2D(error)
     }
