@@ -17,7 +17,7 @@
 			"Name": "角度 Z"
 		},
 		{
-			"Id": "ParamEyeLOpen",
+			"Id": "EyeOpen",
 			"GroupId": "",
 			"Name": "眼 开闭"
 		},
@@ -72,6 +72,11 @@
 			"Name": "嘴 开闭"
 		},
 		{
+			"Id": "MouthSmile",
+			"GroupId": "",
+			"Name": "嘴 微笑"
+		},
+		{
 			"Id": "ParamBodyAngleX",
 			"GroupId": "",
 			"Name": "身体旋转 X"
@@ -80,9 +85,80 @@
 			"Id": "ParamBodyAngleZ",
 			"GroupId": "",
 			"Name": "身体旋转 Z"
+		},
+		{
+			"Id": "Ponytail1",
+			"GroupId": "",
+			"Name": "ponytail 1"
+		},
+		{
+			"Id": "Ponytail2",
+			"GroupId": "",
+			"Name": "ponytail 2"
+		},
+		{
+			"Id": "Prayer",
+			"GroupId": "",
+			"Name": "prayer"
+		},
+		{
+			"Id": "JointShoulderR",
+			"GroupId": "ParamGroup",
+			"Name": "JointShoulderR"
+		},
+		{
+			"Id": "JointArmR",
+			"GroupId": "ParamGroup",
+			"Name": "JointArmR"
+		},
+		{
+			"Id": "JointHandR",
+			"GroupId": "ParamGroup",
+			"Name": "JointHandR"
+		},
+		{
+			"Id": "GestureR",
+			"GroupId": "ParamGroup",
+			"Name": "GestureR"
+		},
+		{
+			"Id": "IsFrontR",
+			"GroupId": "ParamGroup",
+			"Name": "IsFrontR"
+		},
+		{
+			"Id": "JointShoulderL",
+			"GroupId": "ParamGroup2",
+			"Name": "JointShoulderL"
+		},
+		{
+			"Id": "JointArmL",
+			"GroupId": "ParamGroup2",
+			"Name": "JointArmL"
+		},
+		{
+			"Id": "JointHandL",
+			"GroupId": "ParamGroup2",
+			"Name": "JointHandL"
+		},
+		{
+			"Id": "GestureL",
+			"GroupId": "ParamGroup2",
+			"Name": "GestureL"
 		}
 	],
-	"ParameterGroups": [],
+	"ParameterGroups": [
+		{
+			"Id": "ParamGroup",
+			"GroupId": "",
+			"Name": "Folder 1"
+		},
+		{
+			"Id": "ParamGroup2",
+			"GroupId": "",
+			"Name": "Folder 2"
+		}
+	],
 	"Parts": [
 		{
 			"Id": "body",
@@ -131,10 +207,6 @@
 	],
 	"CombinedParameters": [
 		[
-			"ParamAngleX",
-			"ParamAngleY"
-		],
-		[
 			"ParamEyeBallX",
 			"ParamEyeBallY"
 		],
@@ -147,8 +219,8 @@
 			"ParamBrowRForm"
 		],
 		[
-			"ParamMouthForm",
-			"ParamMouthOpenY"
+			"ParamBodyAngleX",
+			"ParamBodyAngleZ"
 		]
 	]
 }
