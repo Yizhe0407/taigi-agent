@@ -167,8 +167,8 @@ function selectStyle(id: MapStyleId) {
           : moovoStationsError
             ? 'cursor-default border-kiosk-err/30 bg-kiosk-err-soft text-kiosk-err'
             : showMoovoStations
-              ? 'border-kiosk-ok bg-kiosk-ok text-white hover:brightness-110'
-              : 'border-kiosk-line bg-white/90 text-kiosk-faded hover:border-kiosk-line2 hover:text-kiosk-muted'
+              ? 'cursor-pointer border-kiosk-ok bg-kiosk-ok text-white hover:brightness-110'
+              : 'cursor-pointer border-kiosk-line bg-white/90 text-kiosk-faded hover:border-kiosk-line2 hover:text-kiosk-muted'
       "
       :title="
         isLoadingMoovoStations ? 'MOOVO 載入中'
@@ -197,7 +197,7 @@ function selectStyle(id: MapStyleId) {
       <span v-else>MOOVO</span>
       <RefreshCw
         v-if="moovoStationsError"
-        class="size-3.5 transition hover:opacity-70"
+        class="size-3.5 cursor-pointer transition hover:opacity-70"
         @click.stop="$emit('refresh-moovo-stations')"
       />
     </button>
@@ -208,7 +208,7 @@ function selectStyle(id: MapStyleId) {
         v-for="style in MAP_STYLES"
         :key="style.id"
         type="button"
-        class="rounded-full px-3 py-1 text-xs font-bold transition-all duration-150 font-[inherit]"
+        class="cursor-pointer rounded-full px-3 py-1 text-xs font-bold transition-all duration-150 font-[inherit]"
         :class="
           activeStyleId === style.id
             ? 'bg-kiosk-ink text-white'
