@@ -17,5 +17,6 @@ export const UI_FALLBACK_MESSAGES = {
   agentNoReply: "目前無法取得助理回覆",
   departuresUnavailable: "公車資訊暫時無法載入",
   routeDetailUnavailable: "路線詳情暫時無法載入",
+  routePlanUnavailable: "路線規劃服務暫時無法使用，請稍後再試",
   moovoUnavailable: "MOOVO 站點暫時無法載入",
 } as const

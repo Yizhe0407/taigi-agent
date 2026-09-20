@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,7 +23,11 @@ from .request_limits import ROUTE_PLAN_RATE_LIMIT
 
 router = APIRouter()
 
+_log = logging.getLogger(__name__)
+
 LngLat = tuple[float, float]
+
+_KIOSK_UNAVAILABLE = "站牌資料暫時無法載入，請稍後再試"
 
 
 # ---------------------------------------------------------------------------
@@ -112,15 +117,11 @@ def get_kiosk() -> object:
     try:
         place = kiosk_place()
     except StopCatalogError as error:
-        raise HTTPException(
-            status_code=503,
-            detail=f"雲林站牌索引讀取失敗：{error}",
-        ) from error
+        _log.warning("Yunlin stop catalog unavailable: %s", error)
+        raise HTTPException(status_code=503, detail=_KIOSK_UNAVAILABLE) from error
     if place is None:
-        raise HTTPException(
-            status_code=503,
-            detail=f"找不到站牌「{cfg.stop_name}」的座標資料",
-        )
+        _log.warning("No catalog coordinate for kiosk stop %r", cfg.stop_name)
+        raise HTTPException(status_code=503, detail=_KIOSK_UNAVAILABLE)
     return KioskResponse(
         name=place.name,
         lat=place.coordinate.latitude,

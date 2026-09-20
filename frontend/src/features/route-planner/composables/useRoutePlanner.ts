@@ -413,7 +413,10 @@ export function useRoutePlanner() {
 
         if (failure instanceof RoutePlanApiError) {
           routePlanErrorKind.value = failure.status === 404 ? "no-service" : "generic"
-          routePlanError.value = failure.message
+          routePlanError.value =
+            failure.status !== null && failure.status >= 500
+              ? UI_FALLBACK_MESSAGES.routePlanUnavailable
+              : failure.message
         } else {
           routePlanErrorKind.value = "generic"
           routePlanError.value = "路線規劃失敗，請稍後再試"

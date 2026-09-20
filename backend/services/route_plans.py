@@ -54,6 +54,9 @@ class RoutePlanningUnavailable(RoutePlanningError):
     """Raised when Kiosk planner dependencies cannot provide route options."""
 
 
+_PLANNER_UNAVAILABLE = "路線規劃服務暫時無法使用，請稍後再試"
+
+
 class PlaceViewModel(TypedDict):
     name: str
     lat: float
@@ -180,10 +183,12 @@ async def plan_route_to_coordinate(
     try:
         origin = kiosk_place()
     except StopCatalogError as error:
-        raise RoutePlanningUnavailable(f"雲林站牌索引讀取失敗：{error}") from error
+        _log.warning("Yunlin stop catalog unavailable: %s", error)
+        raise RoutePlanningUnavailable(_PLANNER_UNAVAILABLE) from error
 
     if origin is None:
-        raise RoutePlanningUnavailable(f"目前無法解析本站「{get_kiosk_config().stop_name}」的路線規劃起點")
+        _log.warning("Kiosk origin unresolved for stop %r", get_kiosk_config().stop_name)
+        raise RoutePlanningUnavailable(_PLANNER_UNAVAILABLE)
 
     destination_place = _destination_place(latitude, longitude)
     if destination_place is None:
@@ -202,7 +207,7 @@ async def plan_route_to_coordinate(
         )
     except otp.OtpError as error:
         _log.warning("OTP route planning failed: %s", error)
-        raise RoutePlanningUnavailable("路線規劃服務暫時無法使用，請稍後再試") from error
+        raise RoutePlanningUnavailable(_PLANNER_UNAVAILABLE) from error
 
     bus_itineraries = [plan for plan in itineraries if plan.bus_legs][:3]
     if not bus_itineraries:
