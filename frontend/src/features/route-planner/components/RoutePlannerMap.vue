@@ -16,24 +16,24 @@ import { MAP_STYLES, type MapStyleId } from "@/lib/map-styles"
 
 import { isInYunlinCounty } from "../geo/yunlin-service-area"
 import MapClickPicker from "../map/MapClickPicker.vue"
-import MoovoStationMarkers from "../map/MoovoStationMarkers.vue"
+import BikeStationMarkers from "../map/BikeStationMarkers.vue"
 import RouteViewportFit from "../map/RouteViewportFit.vue"
-import type { KioskPlace, LngLat, MoovoStation, RouteOption } from "../types"
+import type { KioskPlace, LngLat, BikeStation, RouteOption } from "../types"
 import { legDisplayCoordinates } from "../utils/route-display"
 
 const props = defineProps<{
   kiosk: KioskPlace
   destination: LngLat | null
   route: RouteOption | null
-  moovoStations: MoovoStation[]
-  isLoadingMoovoStations: boolean
-  moovoStationsError: string
+  bikeStations: BikeStation[]
+  isLoadingBikeStations: boolean
+  bikeStationsError: string
 }>()
 
 const emit = defineEmits<{
   "select-destination": [coordinates: LngLat]
   "reject-destination": [coordinates: LngLat]
-  "refresh-moovo-stations": []
+  "refresh-bike-stations": []
 }>()
 
 const viewportCenter = computed(() => props.kiosk.coordinates)
@@ -60,7 +60,7 @@ const updateDestination = (coordinates: { lng: number; lat: number }) => {
 // ---------------------------------------------------------------------------
 
 const activeStyleId = ref<MapStyleId>("voyager")
-const showMoovoStations = ref(true)
+const showBikeStations = ref(true)
 
 const activeStyle = () =>
   MAP_STYLES.find((s) => s.id === activeStyleId.value)?.url ??
@@ -133,9 +133,9 @@ function selectStyle(id: MapStyleId) {
         </MarkerContent>
       </MapMarker>
 
-      <MoovoStationMarkers
-        v-if="showMoovoStations"
-        :stations="moovoStations"
+      <BikeStationMarkers
+        v-if="showBikeStations"
+        :stations="bikeStations"
       />
 
       <MapMarker
@@ -162,43 +162,43 @@ function selectStyle(id: MapStyleId) {
       type="button"
       class="absolute left-3 top-3 z-10 flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold shadow-sm backdrop-blur transition-all duration-200 font-[inherit]"
       :class="
-        isLoadingMoovoStations
+        isLoadingBikeStations
           ? 'cursor-default border-kiosk-line bg-white/90 text-kiosk-faded'
-          : moovoStationsError
+          : bikeStationsError
             ? 'cursor-default border-kiosk-err/30 bg-kiosk-err-soft text-kiosk-err'
-            : showMoovoStations
+            : showBikeStations
               ? 'cursor-pointer border-kiosk-ok bg-kiosk-ok text-white hover:brightness-110'
               : 'cursor-pointer border-kiosk-line bg-white/90 text-kiosk-faded hover:border-kiosk-line2 hover:text-kiosk-muted'
       "
       :title="
-        isLoadingMoovoStations ? 'MOOVO 載入中'
-        : moovoStationsError ? moovoStationsError
-        : showMoovoStations ? '隱藏 MOOVO 站點'
+        isLoadingBikeStations ? 'MOOVO 載入中'
+        : bikeStationsError ? bikeStationsError
+        : showBikeStations ? '隱藏 MOOVO 站點'
         : '顯示 MOOVO 站點'
       "
-      :disabled="isLoadingMoovoStations"
-      @click="!isLoadingMoovoStations && !moovoStationsError && (showMoovoStations = !showMoovoStations)"
+      :disabled="isLoadingBikeStations"
+      @click="!isLoadingBikeStations && !bikeStationsError && (showBikeStations = !showBikeStations)"
     >
       <LoaderCircle
-        v-if="isLoadingMoovoStations"
+        v-if="isLoadingBikeStations"
         class="size-3.5 animate-spin"
       />
       <TriangleAlert
-        v-else-if="moovoStationsError"
+        v-else-if="bikeStationsError"
         class="size-3.5"
       />
       <Bike
         v-else
         class="size-3.5 transition-transform duration-200"
-        :class="showMoovoStations ? 'scale-110' : ''"
+        :class="showBikeStations ? 'scale-110' : ''"
       />
-      <span v-if="isLoadingMoovoStations">MOOVO 載入中</span>
-      <span v-else-if="moovoStationsError">{{ moovoStationsError }}</span>
+      <span v-if="isLoadingBikeStations">MOOVO 載入中</span>
+      <span v-else-if="bikeStationsError">{{ bikeStationsError }}</span>
       <span v-else>MOOVO</span>
       <RefreshCw
-        v-if="moovoStationsError"
+        v-if="bikeStationsError"
         class="size-3.5 cursor-pointer transition hover:opacity-70"
-        @click.stop="$emit('refresh-moovo-stations')"
+        @click.stop="$emit('refresh-bike-stations')"
       />
     </button>
 

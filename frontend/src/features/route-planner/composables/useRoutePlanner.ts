@@ -16,14 +16,14 @@ import { formatTaipeiHourMinute, parseTaipeiDateTimeInput } from "@/lib/time"
 import { useNow } from "@/lib/useNow"
 
 import { fetchKiosk } from "../api/kiosk"
-import { fetchMoovoStations } from "../api/moovo"
+import { fetchBikeStations } from "../api/bike"
 import { createRoutePlan, RoutePlanApiError } from "../api/route-plans"
 import { isInYunlinCounty } from "../geo/yunlin-service-area"
-import type { KioskPlace, LngLat, MoovoStation, RoutePlan } from "../types"
+import type { KioskPlace, LngLat, BikeStation, RoutePlan } from "../types"
 import type { DepartureMode } from "./useScheduledTimeWheel"
 
 const KIOSK_QUERY_KEY = ["route-planner", "kiosk"] as const
-const MOOVO_QUERY_KEY = ["route-planner", "moovo-stations"] as const
+const BIKE_QUERY_KEY = ["route-planner", "bike-stations"] as const
 
 const FALLBACK_KIOSK: KioskPlace = {
   name: "雲林科技大學",
@@ -33,7 +33,7 @@ const FALLBACK_KIOSK: KioskPlace = {
 
 let nextPlannerGeneration = 0
 
-type QueryRequestKind = "kiosk" | "moovo"
+type QueryRequestKind = "kiosk" | "bike"
 
 type OwnedQueryRequest = {
   readonly kind: QueryRequestKind
@@ -74,7 +74,7 @@ export function useRoutePlanner() {
   const queryClient = useQueryClient()
   const plannerGeneration = ++nextPlannerGeneration
   const kioskQueryKey = [...KIOSK_QUERY_KEY, plannerGeneration] as const
-  const moovoQueryKey = [...MOOVO_QUERY_KEY, plannerGeneration] as const
+  const bikeQueryKey = [...BIKE_QUERY_KEY, plannerGeneration] as const
   const releases = createAsyncReleaseOwner("route planner resources")
   const queryRequests = new Set<OwnedQueryRequest>()
   const plannerOperations = new Set<OwnedPlannerOperation>()
@@ -92,12 +92,12 @@ export function useRoutePlanner() {
 
   let activeRoutePlan: RoutePlanOperation | null = null
   let routePlanGeneration = 0
-  let moovoRefreshTask: Promise<void> | null = null
+  let bikeRefreshTask: Promise<void> | null = null
   let disposed = false
   let disposedKiosk: KioskPlace = { ...FALLBACK_KIOSK }
-  let disposedMoovoStations: MoovoStation[] = []
-  let disposedMoovoLoading = false
-  let disposedMoovoError = ""
+  let disposedBikeStations: BikeStation[] = []
+  let disposedBikeLoading = false
+  let disposedBikeError = ""
 
   const ownQueryRequest = <T>(
     kind: QueryRequestKind,
@@ -148,39 +148,39 @@ export function useRoutePlanner() {
     () => queryClient.cancelQueries({ queryKey: kioskQueryKey, exact: true }),
   )
   releases.claim(
-    "MOOVO query cancellation",
-    () => queryClient.cancelQueries({ queryKey: moovoQueryKey, exact: true }),
+    "bike query cancellation",
+    () => queryClient.cancelQueries({ queryKey: bikeQueryKey, exact: true }),
   )
   const kioskCacheRemoval = releases.claim(
     "kiosk query cache",
     () => queryClient.removeQueries({ queryKey: kioskQueryKey, exact: true }),
   )
-  const moovoCacheRemoval = releases.claim(
-    "MOOVO query cache",
-    () => queryClient.removeQueries({ queryKey: moovoQueryKey, exact: true }),
+  const bikeCacheRemoval = releases.claim(
+    "bike query cache",
+    () => queryClient.removeQueries({ queryKey: bikeQueryKey, exact: true }),
   )
 
-  const queryCacheActions = [kioskCacheRemoval, moovoCacheRemoval] as const
+  const queryCacheActions = [kioskCacheRemoval, bikeCacheRemoval] as const
 
   let kioskQuery!: ReturnType<typeof useQuery<KioskPlace>>
-  let moovoQuery!: ReturnType<typeof useQuery<MoovoStation[]>>
+  let bikeQuery!: ReturnType<typeof useQuery<BikeStation[]>>
 
   const kiosk = computed<KioskPlace>(() =>
     disposed
       ? disposedKiosk
       : kioskQuery?.data.value ?? FALLBACK_KIOSK,
   )
-  const moovoStations = computed<MoovoStation[]>(() =>
+  const bikeStations = computed<BikeStation[]>(() =>
     disposed
-      ? disposedMoovoStations
-      : moovoQuery?.data.value ?? [],
+      ? disposedBikeStations
+      : bikeQuery?.data.value ?? [],
   )
-  const isLoadingMoovoStations = computed(() =>
-    disposed ? disposedMoovoLoading : moovoQuery?.isLoading.value ?? false,
+  const isLoadingBikeStations = computed(() =>
+    disposed ? disposedBikeLoading : bikeQuery?.isLoading.value ?? false,
   )
-  const moovoStationsError = computed(() => {
-    if (disposed) return disposedMoovoError
-    return moovoQuery?.error.value ? UI_FALLBACK_MESSAGES.moovoUnavailable : ""
+  const bikeStationsError = computed(() => {
+    if (disposed) return disposedBikeError
+    return bikeQuery?.error.value ? UI_FALLBACK_MESSAGES.bikeUnavailable : ""
   })
 
   const releaseRouteOperation = (
@@ -211,9 +211,9 @@ export function useRoutePlanner() {
   ): Promise<void> => {
     if (!disposed) {
       disposedKiosk = kiosk.value
-      disposedMoovoStations = [...moovoStations.value]
-      disposedMoovoLoading = isLoadingMoovoStations.value
-      disposedMoovoError = moovoStationsError.value
+      disposedBikeStations = [...bikeStations.value]
+      disposedBikeLoading = isLoadingBikeStations.value
+      disposedBikeError = bikeStationsError.value
       disposed = true
     }
 
@@ -268,9 +268,9 @@ export function useRoutePlanner() {
     initialData: { ...FALLBACK_KIOSK },
     retry: 1,
   })
-  moovoQuery = useQuery<MoovoStation[]>({
-    queryKey: moovoQueryKey,
-    queryFn: ({ signal }) => ownQueryRequest("moovo", signal, fetchMoovoStations),
+  bikeQuery = useQuery<BikeStation[]>({
+    queryKey: bikeQueryKey,
+    queryFn: ({ signal }) => ownQueryRequest("bike", signal, fetchBikeStations),
     retry: false,
   })
 
@@ -466,18 +466,18 @@ export function useRoutePlanner() {
     selectedRouteId.value = routeId
   }
 
-  function loadMoovoStations(): Promise<void> {
+  function loadBikeStations(): Promise<void> {
     if (disposed) return settleScopeTeardown()
-    if (moovoRefreshTask) return moovoRefreshTask
+    if (bikeRefreshTask) return bikeRefreshTask
 
     const owned: OwnedPlannerOperation = {
       completion: Promise.resolve(),
     }
     const physical = Promise.resolve().then(async () => {
       if (!disposed) {
-        await moovoQuery.refetch({ cancelRefetch: false })
+        await bikeQuery.refetch({ cancelRefetch: false })
       }
-      await joinQueryRequests("moovo")
+      await joinQueryRequests("bike")
     })
     let task!: Promise<void>
     task = physical
@@ -487,11 +487,11 @@ export function useRoutePlanner() {
       )
       .finally(() => {
         plannerOperations.delete(owned)
-        if (moovoRefreshTask === task) moovoRefreshTask = null
+        if (bikeRefreshTask === task) bikeRefreshTask = null
       })
     owned.completion = task
     plannerOperations.add(owned)
-    moovoRefreshTask = task
+    bikeRefreshTask = task
     return task
   }
 
@@ -504,13 +504,13 @@ export function useRoutePlanner() {
     routePlanError,
     routePlanErrorKind,
     selectedRoute,
-    moovoStations,
-    isLoadingMoovoStations,
-    moovoStationsError,
+    bikeStations,
+    isLoadingBikeStations,
+    bikeStationsError,
     departureMode,
     scheduledDateTime,
     nowLabel,
-    loadMoovoStations,
+    loadBikeStations,
     selectDestination,
     rejectOutOfServiceArea,
     confirmDestination,

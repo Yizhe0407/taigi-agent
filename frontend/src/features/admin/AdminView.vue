@@ -595,7 +595,7 @@ defineExpose({ settleAdminViewTeardown })
         </div>
       </div>
 
-      <!-- Map — same voyager style as route planner, no Moovo -->
+      <!-- Map — same voyager style as route planner, no bike stations -->
       <Map
         ref="mapRef"
         class="rounded-[28px] border-2 border-kiosk-line overflow-hidden min-h-0"

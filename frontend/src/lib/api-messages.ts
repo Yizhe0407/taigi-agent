@@ -5,7 +5,7 @@ export const API_NETWORK_MESSAGES = {
   departures: "目前無法連到公車資訊服務",
   routeDetail: "目前無法連到路線詳情服務",
   routePlans: "目前無法連到路線規劃服務",
-  moovo: "目前無法連到 MOOVO 站點服務",
+  bike: "目前無法連到 MOOVO 站點服務",
   kiosk: "目前無法連到站牌服務",
   admin: "無法連接後台",
   adminUpdate: "無法更新站牌設定",
@@ -18,5 +18,5 @@ export const UI_FALLBACK_MESSAGES = {
   departuresUnavailable: "公車資訊暫時無法載入",
   routeDetailUnavailable: "路線詳情暫時無法載入",
   routePlanUnavailable: "路線規劃服務暫時無法使用，請稍後再試",
-  moovoUnavailable: "MOOVO 站點暫時無法載入",
+  bikeUnavailable: "MOOVO 站點暫時無法載入",
 } as const

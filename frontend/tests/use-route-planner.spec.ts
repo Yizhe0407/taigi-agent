@@ -4,7 +4,7 @@ import { defineComponent } from "vue"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { fetchKiosk } from "@/features/route-planner/api/kiosk"
-import { fetchMoovoStations } from "@/features/route-planner/api/moovo"
+import { fetchBikeStations } from "@/features/route-planner/api/bike"
 import { createRoutePlan } from "@/features/route-planner/api/route-plans"
 import { useRoutePlanner } from "@/features/route-planner/composables/useRoutePlanner"
 import type { RoutePlan } from "@/features/route-planner/types"
@@ -16,11 +16,11 @@ vi.mock("@/features/route-planner/api/kiosk", async (importOriginal) => {
   >()
   return { ...actual, fetchKiosk: vi.fn() }
 })
-vi.mock("@/features/route-planner/api/moovo", async (importOriginal) => {
+vi.mock("@/features/route-planner/api/bike", async (importOriginal) => {
   const actual = await importOriginal<
-    typeof import("@/features/route-planner/api/moovo")
+    typeof import("@/features/route-planner/api/bike")
   >()
-  return { ...actual, fetchMoovoStations: vi.fn() }
+  return { ...actual, fetchBikeStations: vi.fn() }
 })
 vi.mock("@/features/route-planner/api/route-plans", async (importOriginal) => {
   const actual = await importOriginal<
@@ -115,7 +115,7 @@ describe("useRoutePlanner lifecycle", () => {
       coordinates: [120.53, 23.69],
       direction: "回程",
     })
-    vi.mocked(fetchMoovoStations).mockResolvedValue([])
+    vi.mocked(fetchBikeStations).mockResolvedValue([])
     vi.mocked(createRoutePlan).mockReset()
   })
 
@@ -167,7 +167,7 @@ describe("useRoutePlanner lifecycle", () => {
     vi.mocked(createRoutePlan).mockResolvedValue(routePlan)
     const { planner, queryClient, wrapper } = mountPlanner()
     await flushPromises()
-    const moovoCalls = vi.mocked(fetchMoovoStations).mock.calls.length
+    const bikeCalls = vi.mocked(fetchBikeStations).mock.calls.length
 
     planner.selectDestination([120.55, 23.71])
     const destinationBeforeDispose = planner.destination.value
@@ -177,29 +177,29 @@ describe("useRoutePlanner lifecycle", () => {
     planner.rejectOutOfServiceArea()
     planner.resetDestination()
     planner.selectRoute("late")
-    planner.loadMoovoStations()
+    planner.loadBikeStations()
     await planner.confirmDestination()
     await flushPromises()
 
     expect(planner.destination.value).toEqual(destinationBeforeDispose)
     expect(planner.routePlanError.value).toBe("")
     expect(createRoutePlan).not.toHaveBeenCalled()
-    expect(fetchMoovoStations).toHaveBeenCalledTimes(moovoCalls)
+    expect(fetchBikeStations).toHaveBeenCalledTimes(bikeCalls)
     queryClient.clear()
   })
 
-  it("joins concurrent MOOVO refresh callers and physical teardown after disposal", async () => {
-    const request = deferred<Awaited<ReturnType<typeof fetchMoovoStations>>>()
+  it("joins concurrent bike-station refresh callers and physical teardown after disposal", async () => {
+    const request = deferred<Awaited<ReturnType<typeof fetchBikeStations>>>()
     let ownedSignal: AbortSignal | undefined
-    vi.mocked(fetchMoovoStations).mockImplementation((signal) => {
+    vi.mocked(fetchBikeStations).mockImplementation((signal) => {
       ownedSignal = signal
       return request.promise
     })
     const { planner, queryClient, wrapper } = mountPlanner()
     await vi.waitFor(() => expect(ownedSignal).toBeDefined())
 
-    const firstRefresh = planner.loadMoovoStations()
-    const secondRefresh = planner.loadMoovoStations()
+    const firstRefresh = planner.loadBikeStations()
+    const secondRefresh = planner.loadBikeStations()
     expect(secondRefresh).toBe(firstRefresh)
     expect(ownedSignal?.aborted).toBe(false)
 
@@ -217,9 +217,9 @@ describe("useRoutePlanner lifecycle", () => {
     await firstRefresh
     expect(refreshSettled).toBe(true)
 
-    await planner.loadMoovoStations()
-    expect(fetchMoovoStations).toHaveBeenCalledOnce()
-    expect(planner.moovoStationsError.value).toBe("")
+    await planner.loadBikeStations()
+    expect(fetchBikeStations).toHaveBeenCalledOnce()
+    expect(planner.bikeStationsError.value).toBe("")
     queryClient.clear()
   })
 
@@ -391,7 +391,7 @@ describe("useRoutePlanner lifecycle", () => {
   })
 
   it("retries only the failed exact query cancellation action", async () => {
-    const cleanupError = new Error("MOOVO cancellation failed")
+    const cleanupError = new Error("bike-station cancellation failed")
     const handledErrors: unknown[] = []
     const { planner, queryClient, wrapper } = mountPlanner({
       errorHandler: error => handledErrors.push(error),
@@ -403,8 +403,8 @@ describe("useRoutePlanner lifecycle", () => {
     vi.spyOn(queryClient, "cancelQueries").mockImplementation((filters) => {
       const resource = String(filters.queryKey?.[1])
       cancellationCalls.push(resource)
-      if (resource === "moovo-stations" && cancellationCalls.filter(
-        value => value === "moovo-stations",
+      if (resource === "bike-stations" && cancellationCalls.filter(
+        value => value === "bike-stations",
       ).length === 1) {
         return Promise.reject(cleanupError)
       }
@@ -414,11 +414,11 @@ describe("useRoutePlanner lifecycle", () => {
     wrapper.unmount()
     await vi.waitFor(() => expect(handledErrors).toHaveLength(1))
     expect(cancellationCalls.filter(value => value === "kiosk")).toHaveLength(1)
-    expect(cancellationCalls.filter(value => value === "moovo-stations")).toHaveLength(1)
+    expect(cancellationCalls.filter(value => value === "bike-stations")).toHaveLength(1)
 
     await planner.confirmDestination()
     expect(cancellationCalls.filter(value => value === "kiosk")).toHaveLength(1)
-    expect(cancellationCalls.filter(value => value === "moovo-stations")).toHaveLength(2)
+    expect(cancellationCalls.filter(value => value === "bike-stations")).toHaveLength(2)
     queryClient.clear()
   })
 

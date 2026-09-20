@@ -5,10 +5,10 @@ import { computed, ref } from "vue"
 import { MapMarker, MarkerContent, useMap } from "@/components/ui/map"
 import { useMapLayer } from "@/components/ui/map/composables/use-map-layer"
 
-import type { MoovoStation } from "../types"
+import type { BikeStation } from "../types"
 
 const props = defineProps<{
-  stations: MoovoStation[]
+  stations: BikeStation[]
 }>()
 
 const { map, isLoaded } = useMap()
@@ -34,7 +34,7 @@ const MAJOR_STATION_KEYWORDS = [
 useMapLayer(
   map,
   isLoaded,
-  "Moovo station map listeners",
+  "Bike station map listeners",
   (nextMap, owner, fail) => {
     const updateZoom = () => {
       if (owner.signal.aborted) return
@@ -57,18 +57,23 @@ useMapLayer(
   },
 )
 
-const serviceStatusLabel = (status: number) => {
+const serviceStatusLabel = (status: number | null) => {
   if (status === 1) return "正常"
   if (status === 0) return "停止營運"
-  return "暫停服務"
+  return "狀態未知"
 }
 
-const stationHasRentBikes = (station: MoovoStation) =>
-  station.serviceStatus === 1 && station.availableRentBikes > 0
+const stationHasRentBikes = (station: BikeStation) =>
+  station.serviceStatus !== 0 &&
+  station.availableRentBikes !== null &&
+  station.availableRentBikes > 0
 
-const stationMarkerClass = (station: MoovoStation) => {
-  if (station.serviceStatus !== 1) {
+const stationMarkerClass = (station: BikeStation) => {
+  if (station.serviceStatus === 0) {
     return "border-white bg-slate-500 text-white shadow-slate-950/20"
+  }
+  if (station.availableRentBikes === null) {
+    return "border-white bg-amber-500 text-white shadow-amber-950/20"
   }
   if (station.availableRentBikes > 0) {
     return "border-white bg-emerald-600 text-white shadow-emerald-950/25"
@@ -76,18 +81,32 @@ const stationMarkerClass = (station: MoovoStation) => {
   return "border-white bg-zinc-400 text-white shadow-zinc-950/20"
 }
 
-const stationUpdateLabel = (value: string | null) => {
-  if (!value) return "未提供更新時間"
-  return new Intl.DateTimeFormat("zh-TW", {
+// Each feed reports a different kind of timestamp, so the popup has to say
+// which one it is showing: TDX carries the operator's own update time, while
+// the MOOVO website only tells us when we read the page.
+const PROVIDER_LABELS: Record<string, string> = {
+  tdx: "TDX 即時資料",
+  moovo_web: "MOOVO 官網",
+}
+
+const providerLabel = (provider: string) =>
+  PROVIDER_LABELS[provider] ?? "未知來源"
+
+const stationUpdateLabel = (station: BikeStation) => {
+  if (!station.updateTime) return "未提供更新時間"
+  const formatted = new Intl.DateTimeFormat("zh-TW", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
-  }).format(new Date(value))
+  }).format(new Date(station.updateTime))
+  return station.provider === "moovo_web"
+    ? `${formatted} 讀取`
+    : `${formatted} 更新`
 }
 
-const stationImportanceScore = (station: MoovoStation) => {
+const stationImportanceScore = (station: BikeStation) => {
   const keywordBoost = MAJOR_STATION_KEYWORDS.some((keyword) =>
     station.name.includes(keyword),
   )
@@ -96,8 +115,8 @@ const stationImportanceScore = (station: MoovoStation) => {
   const serviceBoost = station.serviceStatus === 1 ? 12 : 0
 
   return (
-    station.bikeCapacity * 4 +
-    station.availableRentBikes * 2 +
+    (station.bikeCapacity ?? 0) * 4 +
+    (station.availableRentBikes ?? 0) * 2 +
     keywordBoost +
     serviceBoost
   )
@@ -145,7 +164,7 @@ const visibleStations = computed(() =>
         <div
           class="grid size-7 place-items-center rounded-full border-2 text-white shadow-lg transition group-hover:scale-110"
           :class="stationMarkerClass(station)"
-          :title="`${station.name}：可借 ${station.availableRentBikes} 輛`"
+          :title="`${station.name}：${station.availableRentBikes === null ? '可借數未知' : `可借 ${station.availableRentBikes} 輛`}`"
         >
           <Bike class="size-3.5" />
         </div>
@@ -154,18 +173,22 @@ const visibleStations = computed(() =>
         >
           <p class="truncate font-semibold">{{ station.name }}</p>
           <p class="mt-1 text-muted-foreground">
-            可借 {{ station.availableRentBikes }} 輛
+            <template v-if="station.availableRentBikes === null">可借數未知</template>
+            <template v-else>可借 {{ station.availableRentBikes }} 輛</template>
           </p>
           <p class="mt-0.5 text-muted-foreground">
             {{ serviceStatusLabel(station.serviceStatus) }} ·
-            {{ stationUpdateLabel(station.updateTime) }}
+            {{ stationUpdateLabel(station) }}
+          </p>
+          <p class="mt-0.5 text-muted-foreground">
+            資料來源：{{ providerLabel(station.provider) }}
           </p>
         </div>
         <span
           v-if="stationHasRentBikes(station)"
           class="absolute -right-1 -top-1 grid min-w-4 place-items-center rounded-full bg-background px-1 text-[10px] font-semibold leading-4 text-emerald-700 shadow-sm ring-1 ring-emerald-600/30"
         >
-          {{ Math.min(station.availableRentBikes, 99) }}
+          {{ Math.min(station.availableRentBikes ?? 0, 99) }}
         </span>
       </div>
     </MarkerContent>

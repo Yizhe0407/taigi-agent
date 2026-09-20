@@ -16,13 +16,13 @@ const {
   routePlanError,
   routePlanErrorKind,
   selectedRoute,
-  moovoStations,
-  isLoadingMoovoStations,
-  moovoStationsError,
+  bikeStations,
+  isLoadingBikeStations,
+  bikeStationsError,
   departureMode,
   scheduledDateTime,
   nowLabel,
-  loadMoovoStations,
+  loadBikeStations,
   selectDestination,
   rejectOutOfServiceArea,
   confirmDestination,
@@ -61,12 +61,12 @@ const {
         :kiosk="kiosk"
         :destination="destination"
         :route="selectedRoute"
-        :moovo-stations="moovoStations"
-        :is-loading-moovo-stations="isLoadingMoovoStations"
-        :moovo-stations-error="moovoStationsError"
+        :bike-stations="bikeStations"
+        :is-loading-bike-stations="isLoadingBikeStations"
+        :bike-stations-error="bikeStationsError"
         @select-destination="selectDestination"
         @reject-destination="rejectOutOfServiceArea"
-        @refresh-moovo-stations="loadMoovoStations"
+        @refresh-bike-stations="loadBikeStations"
       />
       <RoutePlannerPanel
         v-model:departure-mode="departureMode"
