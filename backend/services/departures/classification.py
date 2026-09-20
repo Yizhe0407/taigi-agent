@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
+from providers.bus import RouteStopEstimate, StopArrival, StopStatus
 from services.departures.normalize import _mins_zh
 
 
@@ -30,7 +31,7 @@ class StopClassification:
     status_text: str
     decision_text: str
     minutes: int | None
-    scheduled_time: str | None  # HH:MM of next scheduled departure (ebus ComeTime); None for TDX
+    scheduled_time: str | None  # HH:MM of the next scheduled departure; None when the source has no timetable
     sort_priority: int
     sort_minutes: int
 
@@ -63,21 +64,12 @@ def _unknown() -> StopClassification:
     )
 
 
-def _classify_stop(stop: dict, now: datetime) -> StopClassification:
-    """Classify a TDX ETA row into a user-facing departure decision.
+def _classify_stop(stop: StopArrival | RouteStopEstimate, now: datetime) -> StopClassification:
+    """Classify a provider-neutral arrival row for rider-facing output."""
+    status = stop.status
+    eta_seconds = stop.eta_seconds
 
-    TDX StopStatus values:
-      0 = 正常（有預估到站時間）
-      1 = 尚未發車
-      2 = 交管不停靠  (caller must skip via `rows._is_traffic_controlled`
-          before calling here — every facade in renderers.py/snapshot.py does)
-      3 = 末班車已過
-      4 = 今日未營運
-    """
-    stop_status = stop.get("stop_status")
-    estimate_seconds = stop.get("estimate_seconds")
-
-    if stop_status == 3:
+    if status is StopStatus.LAST_DEPARTED:
         return StopClassification(
             section=DepartureSection.LAST_DEPARTED,
             decision=DepartureDecision.LAST_DEPARTED,
@@ -89,7 +81,7 @@ def _classify_stop(stop: dict, now: datetime) -> StopClassification:
             sort_minutes=9999,
         )
 
-    if stop_status == 4:
+    if status is StopStatus.NOT_OPERATING:
         return StopClassification(
             section=DepartureSection.UNKNOWN,
             decision=DepartureDecision.UNKNOWN,
@@ -101,8 +93,8 @@ def _classify_stop(stop: dict, now: datetime) -> StopClassification:
             sort_minutes=9999,
         )
 
-    if stop_status == 1:
-        scheduled_time = stop.get("scheduled_time")
+    if status is StopStatus.NOT_DEPARTED:
+        scheduled_time = stop.scheduled_time
         sched_minutes: int | None = None
         sort_mins = 9999
         if scheduled_time:
@@ -110,10 +102,6 @@ def _classify_stop(stop: dict, now: datetime) -> StopClassification:
                 h, m = map(int, scheduled_time.split(":"))
                 target = now.replace(hour=h, minute=m, second=0, microsecond=0)
                 diff = round((target - now).total_seconds() / 60)
-                # diff < 0 near midnight (now=23:50, scheduled=00:10) is
-                # ambiguous with stale same-day data (now=08:00, scheduled=07:00)
-                # without knowing the service day boundary — silently drop the
-                # minute count rather than guess; decision_text still shows 未發車.
                 if diff >= 0:
                     sched_minutes = diff
                     sort_mins = diff
@@ -130,8 +118,8 @@ def _classify_stop(stop: dict, now: datetime) -> StopClassification:
             sort_minutes=sort_mins,
         )
 
-    if stop_status == 0 and estimate_seconds is not None:
-        minutes = estimate_seconds // 60
+    if status is StopStatus.AVAILABLE and eta_seconds is not None:
+        minutes = eta_seconds // 60
         if minutes <= _ARRIVING_SOON_MAX_MIN:
             return StopClassification(
                 section=DepartureSection.AVAILABLE,

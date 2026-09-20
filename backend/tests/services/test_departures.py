@@ -4,7 +4,15 @@ from unittest.mock import patch
 
 import pytest
 
-from providers.bus import BusProvider
+from providers.bus import (
+    BusProvider,
+    Direction,
+    RouteAtStop,
+    RouteInfo,
+    RouteStopEstimate,
+    StopArrival,
+    StopStatus,
+)
 from services import departures
 from services.departures import provider as _departures_provider
 from services.departures.rows import _is_terminal_direction
@@ -14,14 +22,64 @@ def _updated_at() -> datetime:
     return datetime.fromisoformat("2026-05-24T12:00:00+08:00")
 
 
+_STATUS_BY_CODE = {
+    0: StopStatus.AVAILABLE,
+    1: StopStatus.NOT_DEPARTED,
+    2: StopStatus.NOT_STOPPING,
+    3: StopStatus.LAST_DEPARTED,
+    4: StopStatus.NOT_OPERATING,
+}
+
+
+def _status(code: object) -> StopStatus:
+    return _STATUS_BY_CODE.get(code, StopStatus.UNKNOWN)
+
+
+def _info(route_name: str, go_dest: str = "", back_dest: str = "") -> RouteInfo:
+    return RouteInfo(route_name=route_name, outbound_destination=go_dest, inbound_destination=back_dest)
+
+
+def _info_map(rows: dict[str, dict]) -> dict[str, RouteInfo]:
+    return {name: _info(name, row.get("go_dest", ""), row.get("back_dest", "")) for name, row in rows.items()}
+
+
+def _arrival(row: dict) -> StopArrival:
+    return StopArrival(
+        route_name=row["sub_route_name"],
+        direction=Direction(row.get("direction", 0)),
+        status=_status(row.get("stop_status")),
+        eta_seconds=row.get("estimate_seconds"),
+        sequence=row.get("stop_sequence"),
+        scheduled_time=row.get("scheduled_time"),
+        vehicle_id=row.get("car_id"),
+    )
+
+
+def _estimate(row: dict, route_name: str) -> RouteStopEstimate:
+    return RouteStopEstimate(
+        stop_name=row.get("stop_name", ""),
+        sequence=row.get("stop_sequence"),
+        direction=Direction(row.get("direction", 0)),
+        status=_status(row.get("stop_status")),
+        eta_seconds=row.get("estimate_seconds"),
+        scheduled_time=row.get("scheduled_time"),
+        vehicle_id=row.get("car_id"),
+        route_name=route_name,
+    )
+
+
 class FakeBusProvider(BusProvider):
     """In-memory BusProvider used to drive `services.departures` from tests.
 
-    TDX field schema:
-      fetch_eta_at_stop rows:    sub_route_name, direction (0/1), stop_status (0-4), estimate_seconds
-      fetch_route_estimate rows: stop_name, stop_sequence, direction (0/1), stop_status, estimate_seconds
-      fetch_routes_at_stop rows: sub_route_name, direction
-      load_route_info values:    {id: str, go_dest: str, back_dest: str}
+    Fixtures are written in the upstream TDX row shape and translated into the
+    provider-neutral models at this boundary, exactly as a real adapter does —
+    `services.departures` only ever sees typed rows.
+
+    Fixture schema:
+      eta_at_stop rows:    sub_route_name, direction (0/1), stop_status (0-4), estimate_seconds
+      route_estimate rows: stop_name, stop_sequence, direction (0/1), stop_status, estimate_seconds
+      routes_at_stop rows: sub_route_name, direction
+      route_info values:   {go_dest: str, back_dest: str}
     """
 
     def __init__(
@@ -46,23 +104,22 @@ class FakeBusProvider(BusProvider):
         self._eta_error = eta_error
         self._route_estimate_error = route_estimate_error
 
-    async def fetch_routes_at_stop(self, stop_name: str) -> list[dict]:
-        return self._routes_at_stop
+    async def fetch_routes_at_stop(self, stop_name: str) -> list[RouteAtStop]:
+        return [RouteAtStop(route_name=row["sub_route_name"], direction=Direction(row.get("direction", 0))) for row in self._routes_at_stop]
 
-    async def fetch_eta_at_stop(self, stop_name: str) -> list[dict]:
+    async def fetch_eta_at_stop(self, stop_name: str) -> list[StopArrival]:
         if self._eta_error is not None:
             raise self._eta_error
-        return self._eta_at_stop
+        return [_arrival(row) for row in self._eta_at_stop]
 
-    async def fetch_route_estimate(self, sub_route_name: str) -> list[dict]:
+    async def fetch_route_estimate(self, sub_route_name: str) -> list[RouteStopEstimate]:
         if self._route_estimate_error is not None:
             raise self._route_estimate_error
-        if sub_route_name in self._route_estimate_by_id:
-            return self._route_estimate_by_id[sub_route_name]
-        return self._route_estimate
+        rows = self._route_estimate_by_id.get(sub_route_name, self._route_estimate)
+        return [_estimate(row, sub_route_name) for row in rows]
 
-    async def load_route_info(self, stop_name: str) -> dict[str, dict]:
-        return self._route_info
+    async def load_route_info(self, stop_name: str) -> dict[str, RouteInfo]:
+        return _info_map(self._route_info)
 
 
 @pytest.fixture
@@ -768,33 +825,27 @@ def test_is_terminal_direction_empty_go_dest_not_circular():
     a substring of everything), causing is_circular=True and skipping the
     terminal filter for direction=1 even when back_dest matched the kiosk.
     """
-    route_info = {
-        "201A": {"id": "201A", "go_dest": "", "back_dest": "斗六火車站"},
-    }
+    route_info = {"201A": _info("201A", "", "斗六火車站")}
     # Direction 1 ends at the kiosk → should be treated as terminal
     assert _is_terminal_direction("斗六火車站", route_info, "201A", 1) is True
 
 
 def test_is_terminal_direction_empty_go_dest_direction0_not_filtered():
     """Direction 0 with empty go_dest should NOT be filtered (unknown terminus)."""
-    route_info = {
-        "201A": {"id": "201A", "go_dest": "", "back_dest": "斗六火車站"},
-    }
+    route_info = {"201A": _info("201A", "", "斗六火車站")}
     assert _is_terminal_direction("斗六火車站", route_info, "201A", 0) is False
 
 
 def test_is_terminal_direction_both_empty_not_filtered():
     """Both termini empty → neither direction filtered (safe fallback)."""
-    route_info = {"X": {"id": "X", "go_dest": "", "back_dest": ""}}
+    route_info = {"X": _info("X")}
     assert _is_terminal_direction("斗六火車站", route_info, "X", 0) is False
     assert _is_terminal_direction("斗六火車站", route_info, "X", 1) is False
 
 
 def test_is_terminal_direction_circular_both_match():
     """Genuine circular route (kiosk matches both termini) → not filtered."""
-    route_info = {
-        "Y01": {"id": "Y01", "go_dest": "斗六火車站", "back_dest": "斗六火車站"},
-    }
+    route_info = {"Y01": _info("Y01", "斗六火車站", "斗六火車站")}
     assert _is_terminal_direction("斗六火車站", route_info, "Y01", 0) is False
     assert _is_terminal_direction("斗六火車站", route_info, "Y01", 1) is False
 

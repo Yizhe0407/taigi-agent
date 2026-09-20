@@ -6,6 +6,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 
+from providers.bus import Direction, RouteStopEstimate
 from services.departures.classification import (
     DepartureDecision,
     DepartureSection,
@@ -113,9 +114,9 @@ def _sort_key(route: DepartureRouteStatus) -> tuple[int, int, str, int]:
     return (route.sort_minutes, route.sort_priority, route.route, route.go_back)
 
 
-def _stop_detail_from_row(stop: dict, kiosk_stop_name: str, now: datetime) -> RouteStopDetail | None:
-    seq = stop.get("stop_sequence")
-    name = str(stop.get("stop_name") or "").strip()
+def _stop_detail_from_row(stop: RouteStopEstimate, kiosk_stop_name: str, now: datetime) -> RouteStopDetail | None:
+    seq = stop.sequence
+    name = stop.stop_name.strip()
     if seq is None or not name:
         return None
 
@@ -152,6 +153,9 @@ async def build_departure_snapshot(
     routes: list[DepartureRouteStatus] = []
     seen: set[tuple[str, int, str]] = set()
 
+    if eta_data is None:
+        raise DepartureSnapshotUnavailable("公車資訊暫時無法取得，請稍後再試")
+
     for stop, route, route_id, stop_direction in iter_scoped_stop_etas(eta_data, route_info, stop_name, go_back):
         c = _classify_stop(stop, now)
         get_telemetry().record_departure_decision(decision=c.decision.value)
@@ -167,7 +171,7 @@ async def build_departure_snapshot(
                 route=route,
                 route_id=route_id,
                 direction=direction,
-                go_back=stop_direction,
+                go_back=int(stop_direction),
                 section=c.section,
                 decision=c.decision,
                 status_text=c.status_text,
@@ -176,7 +180,7 @@ async def build_departure_snapshot(
                 scheduled_time=c.scheduled_time,
                 sort_priority=c.sort_priority,
                 sort_minutes=c.sort_minutes,
-                car_id=stop.get("car_id") or None,
+                car_id=stop.vehicle_id or None,
             )
         )
 
@@ -206,22 +210,22 @@ async def build_route_detail(
     info = route_info.get(route)
     if info is None:
         raise RouteDetailNotFound(f"在 {stop_name} 找不到停靠路線 {route}")
-
-    route_id = info.get("id")
-    if not route_id:
-        raise RouteDetailUnavailable(f"路線 {route} 的 route id 格式異常")
+    route_id = route
 
     try:
-        estimate_data = await provider.fetch_route_estimate(route_id)
+        estimate_data = await provider.fetch_route_estimate(route)
     except Exception as error:
         _log.warning("Route detail fetch (fetch_route_estimate) failed: %s", error)
         raise RouteDetailUnavailable(_ROUTE_DETAIL_UNAVAILABLE) from error
 
+    if estimate_data is None:
+        raise RouteDetailUnavailable(_ROUTE_DETAIL_UNAVAILABLE)
+
     now = datetime.now(TAIPEI_TZ)
-    by_direction: dict[int, list[RouteStopDetail]] = {}
+    by_direction: dict[Direction, list[RouteStopDetail]] = {}
     for row in estimate_data:
-        row_direction = row.get("direction", 0)
-        if go_back is not None and row_direction != go_back:
+        row_direction = row.direction
+        if go_back is not None and row_direction != Direction(go_back):
             continue
         if _is_traffic_controlled(row):
             continue
@@ -233,7 +237,7 @@ async def build_route_detail(
 
     directions = tuple(
         RouteDirectionDetail(
-            go_back=row_direction,
+            go_back=int(row_direction),
             label=_direction_label_from_info(route_info, route, row_direction),
             stops=tuple(sorted(stops, key=lambda s: s.seq)),
         )

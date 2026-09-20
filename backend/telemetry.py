@@ -186,9 +186,9 @@ class AgentTelemetry:
             "provider.fallback",
             unit="{call}",
             description=(
-                "HybridBusProvider ebus→TDX fallback outcomes. Attributes: "
-                "provider.operation (eta/route_estimate), provider.outcome "
-                "(ebus_hit/tdx_fallback/both_empty)."
+                "Primary/fallback provider outcomes. Attributes: "
+                "provider.operation (routes/route_info/eta/route_estimate), "
+                "provider.outcome (primary_hit/fallback_hit/both_empty)."
             ),
         )
 
@@ -390,12 +390,7 @@ class AgentTelemetry:
         )
 
     def record_provider_fallback(self, *, operation: str, outcome: str) -> None:
-        """Record a HybridBusProvider ebus→TDX fallback decision.
-
-        `operation` identifies the call site (eta/route_estimate); `outcome`
-        is ebus_hit/tdx_fallback/both_empty. A silent ebus outage shows up as
-        a rising tdx_fallback (and eventually both_empty) rate here.
-        """
+        """Record a provider-neutral primary/fallback decision."""
         self._provider_fallbacks.add(
             1,
             {

@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from providers.bus import BusProvider
+from providers.bus import BusProvider, Direction, RouteInfo, RouteStopEstimate
 from services.departures.classification import DepartureSection, StopClassification, _classify_stop
 from services.departures.fuzzy_match import (
     _fuzzy_candidates,
@@ -94,7 +94,7 @@ async def _resolve_route_estimate(
     stop_name: str,
     *,
     fuzzy: bool = False,
-) -> tuple[dict, list[dict]] | _RouteMiss | str:
+) -> tuple[dict[str, RouteInfo], list[RouteStopEstimate]] | _RouteMiss | str:
     """Shared prologue for single-route renderers.
 
     Returns (route_info, estimate_data) on success, `_RouteMiss` when the route
@@ -111,11 +111,11 @@ async def _resolve_route_estimate(
         return _QUERY_FAILED
 
     info = _lookup_route(route_info, route) if fuzzy else route_info.get(route)
-    route_id = info.get("id") if info is not None else None
-    if not route_id:
+    if info is None:
         return _RouteMiss(route, _route_candidates(route, route_info))
+    route_name = info.route_name if isinstance(info, RouteInfo) else route
 
-    data = await _safe_provider_call(provider.fetch_route_estimate(route_id))
+    data = await _safe_provider_call(provider.fetch_route_estimate(route_name))
     if data is None:
         return _QUERY_FAILED
     return route_info, data
@@ -159,7 +159,7 @@ async def _render_with_rescue(
     fuzzy: bool,
     rescue: bool,
     retry: Callable[[str], Awaitable[str]],
-    body: Callable[[dict, list[dict]], str],
+    body: Callable[[dict[str, RouteInfo], list[RouteStopEstimate]], str],
 ) -> str:
     """Shared prologue for single-route renderers.
 
@@ -191,7 +191,7 @@ async def render_arrivals(
     prefix (see `_rescue_or`). `_rescue=False` guards the one-hop recursion.
     """
 
-    def _body(route_info: dict, data: list[dict]) -> str:
+    def _body(route_info: dict[str, RouteInfo], data: list[RouteStopEstimate]) -> str:
         matches = _rows_for_stop(data, stop_name, go_back)
         if not matches:
             return f"路線 {route} 不停 {stop_name}。"
@@ -203,7 +203,7 @@ async def render_arrivals(
             # Single-direction query: direction is already implied by kiosk config;
             # label only adds noise for TTS and short-response constraints.
             if go_back is None:
-                label = _direction_label_from_info(route_info, route, stop.get("direction", 0))
+                label = _direction_label_from_info(route_info, route, stop.direction)
                 results.append(f"{label}：{status_text}")
             else:
                 results.append(status_text)
@@ -264,7 +264,7 @@ async def render_route_stops(route: str, stop_name: str, *, _rescue: bool = True
     one-hop recursion.
     """
 
-    def _body(route_info: dict, data: list[dict]) -> str:
+    def _body(route_info: dict[str, RouteInfo], data: list[RouteStopEstimate]) -> str:
         by_direction = _stops_by_direction_with_seq(data)
         if not by_direction:
             return f"查無路線 {route} 的站牌。"
@@ -306,7 +306,7 @@ async def render_stop_on_route(
     guards the one-hop recursion.
     """
 
-    def _body(route_info: dict, data: list[dict]) -> str:
+    def _body(route_info: dict[str, RouteInfo], data: list[RouteStopEstimate]) -> str:
         matched = [
             _direction_label_from_info(route_info, route, direction)
             for direction, downstream in sorted(_iter_downstream_directions(data, kiosk_stop), key=lambda item: item[0])
@@ -327,8 +327,8 @@ async def render_stop_on_route(
 
 
 def _dest_arrival_text(
-    dest_rows: list[dict],
-    kiosk_row: dict,
+    dest_rows: list[RouteStopEstimate],
+    kiosk_row: RouteStopEstimate,
     destination: str,
     now: datetime,
 ) -> str:
@@ -345,8 +345,8 @@ def _dest_arrival_text(
     or mis-heard form back at the rider instead of the real stop name.
     """
     if dest_rows:
-        dest_est = dest_rows[0].get("estimate_seconds")
-        kiosk_est = kiosk_row.get("estimate_seconds")
+        dest_est = dest_rows[0].eta_seconds
+        kiosk_est = kiosk_row.eta_seconds
         if dest_est is not None and kiosk_est is not None and dest_est > kiosk_est:
             dest_arrival = now + timedelta(seconds=dest_est)
             travel_min = round((dest_est - kiosk_est) / 60)
@@ -356,9 +356,9 @@ def _dest_arrival_text(
 
 
 def _boarding_status(
-    data: list[dict],
+    data: list[RouteStopEstimate],
     kiosk_stop: str,
-    direction: int,
+    direction: int | Direction,
     canonical_dest: str,
     now: datetime,
 ) -> tuple[str, int, DepartureSection]:
@@ -373,12 +373,12 @@ def _boarding_status(
     # Keep only destination occurrences downstream of the boarding point —
     # circular routes repeat stop names, and an upstream occurrence would
     # report a shorter/negative travel time.
-    boarding_seq = boarding.get("stop_sequence") or 0
+    boarding_seq = boarding.sequence or 0
     dest_rows = _dedup_stop_rows_by_direction(
         [
             row
             for row in data
-            if _name_matches(canonical_dest, row.get("stop_name", "")) and row.get("direction") == direction and (row.get("stop_sequence") or 0) >= boarding_seq
+            if _name_matches(canonical_dest, row.stop_name) and row.direction == Direction(direction) and (row.sequence or 0) >= boarding_seq
         ]
     )
     dest_suffix = _dest_arrival_text(dest_rows, boarding, canonical_dest, now)
@@ -392,7 +392,7 @@ async def _check_route_arrivals(
     kiosk_stop: str,
     go_back: int | None,
     destination: str,
-    route_info: dict,
+    route_info: dict[str, RouteInfo],
     now: datetime,
 ) -> tuple[list[tuple[str, int, DepartureSection]], set[str], str | None]:
     """Fetch estimate for one route; return (hits, all_downstream_stop_names, canonical_dest).
@@ -405,8 +405,10 @@ async def _check_route_arrivals(
     string when building rider-facing text. [eval E3/E4/E8]
     """
     try:
-        data = await provider.fetch_route_estimate(route_id)
+        data = await provider.fetch_route_estimate(route_name)
     except Exception:
+        return [], set(), None
+    if data is None:
         return [], set(), None
 
     hits: list[tuple[str, int, DepartureSection]] = []
@@ -501,7 +503,7 @@ async def render_arrivals_to_destination(
         async with sem:
             return await _check_route_arrivals(name, route_id, provider, kiosk_stop, go_back, destination, route_info, now)
 
-    results = await asyncio.gather(*(_guarded(name, info["id"]) for name, info in route_info.items() if info.get("id")))
+    results = await asyncio.gather(*(_guarded(name, name) for name in route_info))
     raw = [item for hits, _, _ in results for item in hits]
     all_stops = {name for _, stops, _ in results for name in stops}
     canonical = _pick_canonical_destination(results, destination)
@@ -535,5 +537,5 @@ async def render_routes_at_stop(stop_name: str) -> str:
         return f"查無 {stop_name} 站牌。"
 
     # One line per route: the same route appears once per direction upstream.
-    routes = dict.fromkeys(r.get("sub_route_name", "?") for r in data)
+    routes = dict.fromkeys(row.route_name for row in data if row.route_name)
     return f"{stop_name} 停靠路線：\n" + "\n".join(routes)

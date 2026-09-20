@@ -11,6 +11,7 @@ import asyncio
 import pytest
 
 from providers import tdx_bus
+from providers.bus import Direction, RouteInfo, StopArrival, StopStatus
 from providers.tdx_bus import TdxBusProvider
 
 
@@ -86,10 +87,7 @@ def test_load_route_info_builds_terminals(monkeypatch):
     _patch_http(monkeypatch, _TOKEN, _STOP_OF_ROUTE)
     provider = TdxBusProvider("id", "secret")
     info = asyncio.run(provider.load_route_info("雲林科技大學"))
-    assert "201" in info
-    assert info["201"]["id"] == "201"
-    assert info["201"]["go_dest"] == "雲林科技大學"
-    assert info["201"]["back_dest"] == "高鐵雲林站"
+    assert info["201"] == RouteInfo("201", "雲林科技大學", "高鐵雲林站")
 
 
 def test_load_route_info_collects_boarding_uids(monkeypatch):
@@ -155,10 +153,10 @@ def test_fetch_eta_at_stop_fallback_deduplicates_circular(monkeypatch):
     # No UIDs cached → fallback path
     rows = asyncio.run(provider.fetch_eta_at_stop("斗六火車站"))
 
-    y02 = [r for r in rows if r["sub_route_name"] == "Y02"]
+    y02 = [r for r in rows if r.route_name == "Y02"]
     assert len(y02) == 1
-    assert y02[0]["stop_status"] == 3
-    assert y02[0]["stop_sequence"] == 1
+    assert y02[0].status is StopStatus.LAST_DEPARTED
+    assert y02[0].sequence == 1
 
 
 def test_load_route_info_caches_per_stop(monkeypatch):
@@ -209,10 +207,10 @@ def test_fetch_eta_at_stop_normalises_fields(monkeypatch):
     rows = asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))
     # No UIDs cached → fallback; City + InterCity both return same 2 rows → dedup → 2 unique rows
     assert len(rows) == 2
-    r = next(r for r in rows if r["direction"] == 0)
-    assert r["sub_route_name"] == "201"
-    assert r["stop_status"] == 0
-    assert r["estimate_seconds"] == 300
+    r = next(r for r in rows if r.direction is Direction.OUTBOUND)
+    assert r.route_name == "201"
+    assert r.status is StopStatus.AVAILABLE
+    assert r.eta_seconds == 300
 
 
 def test_fetch_eta_at_stop_caches_within_ttl(monkeypatch):
@@ -337,7 +335,7 @@ def test_fetch_routes_at_stop_deduplicates(monkeypatch):
     _patch_http(monkeypatch, _TOKEN, _STOP_OF_ROUTE)
     provider = TdxBusProvider("id", "secret")
     routes = asyncio.run(provider.fetch_routes_at_stop("雲林科技大學"))
-    names = [r["sub_route_name"] for r in routes]
+    names = [r.route_name for r in routes]
     assert names.count("201") == 1
 
 
@@ -441,7 +439,7 @@ def test_get_retries_on_429_then_succeeds(monkeypatch):
     # 1 sleep (backoff before attempt 2); data from successful call
     assert len(sleeps) == 1
     assert sleeps == [1.0]  # 1<<0
-    assert any(r["sub_route_name"] == "201" for r in rows)
+    assert any(r.route_name == "201" for r in rows)
 
 
 def test_get_raises_after_max_retries(monkeypatch):
@@ -603,7 +601,7 @@ def test_fetch_eta_at_stop_returns_stale_on_error(monkeypatch):
     provider._kiosk_uids["A"] = {"UID1"}
 
     # Seed stale cache manually (expired)
-    stale_rows = [{"sub_route_name": "201", "direction": 0, "stop_status": 0, "estimate_seconds": 120, "stop_sequence": 1}]
+    stale_rows = [StopArrival(route_name="201", direction=Direction.OUTBOUND, status=StopStatus.AVAILABLE, eta_seconds=120, sequence=1)]
     provider._eta_cache["A"] = (0.0, stale_rows)
     fake_now[0] = 60.0  # TTL expired
 

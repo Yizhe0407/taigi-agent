@@ -36,7 +36,7 @@ _ETA_WARMUP_INTERVAL = 25.0  # slightly under ETA cache TTL (30 s)
 
 
 async def _eta_warmup_loop() -> None:
-    """Keep fetch_eta_at_stop cache warm so user requests never trigger TDX calls.
+    """Keep fetch_eta_at_stop cache warm so user requests never trigger cold upstream calls.
 
     Re-reads kiosk_stop_name() every iteration (not just once at lifespan
     start) so an admin-triggered stop change is picked up on the next tick
@@ -48,7 +48,7 @@ async def _eta_warmup_loop() -> None:
         provider = get_provider()
         stop_name = kiosk_stop_name()
         try:
-            await provider.load_route_info(stop_name)  # warms _kiosk_uids (TTL 600 s)
+            await provider.load_route_info(stop_name)  # warms the provider route/ETA caches
             await provider.fetch_eta_at_stop(stop_name)
         except Exception as exc:
             _log.warning("ETA cache warmup failed for %s: %s", stop_name, exc)

@@ -22,7 +22,7 @@ backend/
   agent/           # Agent harness、LLM client、tool dispatch、prompt、context、telemetry
   voice/           # Pipecat WebRTC 語音全雙工 pipeline（VAD, STT, TTS, Agent Processor）
   pipeline/        # Mandarin -> HanloFlow -> Taibun 等文字處理 pipeline
-  providers/       # 外部資料來源 adapter：ebus、TDX bus、OTP、TDX Moovo、HybridBusProvider
+  providers/       # 外部資料來源 adapter：provider-neutral bus、OTP、TDX Moovo
   services/        # 領域模型、分類、決策、provider facade
   tools/           # Agent 可見的 str facade
   scripts/         # GTFS / stop metadata 更新流程
@@ -75,17 +75,19 @@ backend/
 
 ### 領域層
 
-- `providers/bus.py`：`BusProvider` Protocol（TDX-native flat dict schema；`sub_route_name`/`direction`/`stop_status`/`estimate_seconds` 等欄位）。
-- `providers/http.py`：process-wide 共用 `httpx.AsyncClient`（連線池重用）；TTS/ASR/OTP/TDX/ebus 都透過它發請求，各呼叫點自帶 per-request timeout，app shutdown 時由 lifespan 關閉。
-- `providers/ebus.py`：ebus.yunlin.gov.tw `BusProvider` 實作。首次 miss 以 20 個並行 request 掃描路線，一次建立所有精確站名的 route index；完整索引原子寫入 `.agent_state/ebus-route-index.json` 並保留 24 小時，重新啟動不必重掃。route estimate 結果快取 30 s，並發 miss 以 per-key lock 合流。`fetch_eta_rows_for_stop` 回傳 `list | None`：`None` = 全部查詢失敗（供 hybrid fallback 判斷），`[]` = 成功但無資料。
-- `providers/tdx_bus.py`：TDX `BusProvider` 實作。同時查 `City/YunlinCounty`（市區公車）與 `InterCity`（公路客運）兩個 endpoint 並合併。OAuth2 token 自動快取，route estimate 採 256-entry LRU；ETA 與 route estimate 的並發 miss 皆以 per-key lock 合流避免 429 cascade。StopOfRoute 單邊 endpoint 失敗時結果以 60 s partial TTL 快取（正常 600 s）。route_id 以 SubRouteName string 為主鍵。
-- `providers/hybrid.py`：`HybridBusProvider`，線上唯一 `BusProvider` runtime 實例。`load_route_info`、ETA 與 route estimate 以 ebus 為主、TDX 為備援；ETA 與 route estimate 都以 ebus 的 `None`-vs-`[]` sentinel 區分「查詢失敗才 fallback TDX」與「成功但無資料不 fallback」。`fetch_routes_at_stop` 直接使用 TDX，ebus 站名缺字時也由 TDX 補終點名稱。
+- `providers/bus.py`：provider-neutral `BusProvider` Protocol 與 `RouteInfo`、`RouteAtStop`、`StopArrival`、`RouteStopEstimate` model，以及 `BusProviderConfigError`。契約裡沒有任何上游欄位名或 status code，adapter 必須回傳完整 typed row（不再有 dict 相容層或 `as_*` coercion）。
+- `providers/http.py`：process-wide 共用 `httpx.AsyncClient`（連線池重用）；TTS/ASR/OTP/TaiwanBus/TDX/ebus 都透過它發請求，各呼叫點自帶 per-request timeout，app shutdown 時由 lifespan 關閉。
+- `providers/taiwan_bus.py`：TaiwanBus eBUS provider-neutral adapter；解析路線搜尋、route key 與即時資料，所有 native payload 在 adapter 內轉成 `providers.bus` model。
+- `providers/ebus.py`：ebus.yunlin.gov.tw 的 provider-neutral adapter；保留 route index 與 upstream cache，所有 native payload 在 adapter 內轉成 `providers.bus` model。預設鏈不含它，用 `BUS_PROVIDER_ORDER` 選入即可啟用；`.agent_state/ebus-route-index.json` 路徑由 `EBUS_ROUTE_INDEX_PATH` 覆寫（schema v2 存 provider-neutral 欄位名）。
+- `providers/tdx_bus.py`：TDX 的 provider-neutral adapter；整合 City/InterCity endpoint，OAuth2、TTL、LRU 與 retry 都封裝在 adapter 內。
+- `providers/fallback.py`：provider-neutral `FallbackBusProvider`，接受任意長度的有序 provider 清單。只依賴 `BusProvider` Protocol，不知道 TaiwanBus、Ebus、TDX 或其他具體供應商。各操作的「這個來源沒東西」訊號不同：`fetch_routes_at_stop` 空清單代表不認得這站會續查下一個；ETA 與 route estimate 的 `None` 代表不可用、`[]` 是真答案並結束查詢；`load_route_info` 則沿鏈合併直到每條路線的去回終點都補齊（前面的來源優先）。結果以中立的 fallback metrics 記錄。
+- `services/departures/provider.py`：composition root 與 registry。`BUS_PROVIDER_ORDER`（逗號分隔，預設 `taiwanbus,tdx`；內建名稱 `taiwanbus` / `tdx` / `ebus`）決定鏈的順序，`register_provider()` 可在組裝前加入新來源，`configure_providers()` / `provider_override()` / `reset_provider()` 供測試與 runtime 切換；其他層不需要知道具體供應商。
 - `providers/otp.py`：OpenTripPlanner GraphQL provider。
 - `providers/moovo.py`：TDX bike provider。
 - `providers/asr.py`：ASR upstream provider（config 讀取 + multipart 上傳），供 `api/asr.py` 與 `voice/stt_breeze.py` 共用，兩邊都不再互相 import 私有符號。
 - `services/taigi_tts.py`：TTS config、Tailo 切段、`synthesize_segments` 有界並發派送；`prepare_tailo()` 收斂 normalize 後→text-process→split 的共用序列（回傳解碼前的 hanlo/tailo/segments），`api/tts.py` 與 `voice/tts_taigi.py` 各自接手 `synthesize_segments` 的錯誤轉換與音訊解碼（WAV vs PCM）。`make_silence_pcm()` 是兩邊共用的靜音位元組運算。
 - `services/kiosk_config.py`：Runtime kiosk 設定 singleton（stop_name、direction、lat/lon）；先原子落盤再發布記憶體狀態，並用 mtime 觀察其他 worker 的更新。持久化至 `.agent_state/kiosk_config.json`，預設雲林科技大學／回程。
-- `services/departures/`：離站決策唯一分類來源，支援 provider override。方向過濾分兩層：admin 設定「去程」或「回程」時直接照設定過濾（不做 auto-detect）；設定「去回程都有」（go_back=None）時啟動 `_is_terminal_direction()` 自動過濾「本站是該方向終點（即抵達非出發）」的方向，循環路線（go_dest == back_dest == 本站）不過濾。`_classify_stop` 讀 TDX `stop_status` / `estimate_seconds`，回傳 `StopClassification` dataclass，所有 render 函式共用同一分類規則。方向編碼 0=去程、1=回程（TDX Direction）。`route_id` 全層為 str（SubRouteName）。查無路線/目的地時，renderer 回傳候選清單（路線用 `route_info` 站牌路線表；目的地用 `fuzzy_match._fuzzy_candidates`），交給 LLM 挑音近者重查（ASR 聽錯救援，見 `agent/prompt.py`【聽錯救援】）。套件內部分三層：`normalize.py` 共用正規化原語（`TAIPEI_TZ`、`_strip_paren`、`_name_matches` 等）、`fuzzy_match.py` ASR 聽錯救援比對、`rows.py` TDX row 整形（scope 過濾、去重、下游站推導）；後兩者只依賴 `normalize.py`，彼此不互相 import。
+- `services/departures/`：離站決策唯一分類來源，只讀 provider-neutral `StopStatus`、`eta_seconds` 與 `RouteInfo`；不依賴任何上游名稱或 status code。
 - `services/route_plans.py`：OTP 路線規劃 facade、Kiosk 起點、雲林邊界、view model。
 - `services/moovo.py`：公共自行車站 dataclass、解析、cache、距離查詢。
 - `services/stop_catalog.py`：TDX / GTFS 更新流程產生的雲林 stop index。
@@ -114,7 +116,7 @@ frontend/
 
 ## 已知技術債
 
-- TDX API 與 ebus API 都是外部契約；TDX 欄位或 endpoint 改版修 `providers/tdx_bus.py`，ebus 改版修 `providers/ebus.py`，路由邏輯改版修 `providers/hybrid.py`。
+- TaiwanBus、TDX、ebus 三個 API 都是外部契約，各自的欄位或 endpoint 改版只修自己的 adapter（`providers/taiwan_bus.py`、`providers/tdx_bus.py`、`providers/ebus.py`）；鏈的順序改設定，fallback 語意改 `providers/fallback.py`。三個來源能填的欄位不同（TDX 沒有 `scheduled_time` 與 `vehicle_id`、只有 TDX 產得出 `NOT_STOPPING` / `NOT_OPERATING`、TaiwanBus 的方向是從站序分組推導而非上游宣告），所以切換來源時畫面上的「尚未發車」預計時刻、車號與方向標籤可能跟著變。
 - Chat session 持久化在 `.agent_state/sessions.db`，目前仍綁單機檔案；scale out 需改外部 KV / Redis。
 - API rate limit 是單 worker、最多 2048 client bucket 的 in-process token bucket；多 worker 或多機部署必須在 gateway 另設全域限流。
 - Backend runtime 採 async 單一路徑；HTTP-facing providers、services、AgentSession tool dispatch 與 LLM client 都是 async。GTFS 更新腳本可用同步 requests，不屬於線上 API 路徑。

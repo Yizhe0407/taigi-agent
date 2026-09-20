@@ -30,9 +30,11 @@ IntentRouter（Python regex，deterministic）
 `backend/.agent_state/kiosk_config.json`；寫入必須提供 `ADMIN_TOKEN`。系統只回答
 目前 Kiosk 站牌可查到的到站與路線資訊。
 
-資料來源使用雲林公車動態系統後端資料介面。這能覆蓋專題需要的站牌查詢，
-但該介面不是本專題可控制的公開契約；若介面變更，調整點集中在
-`backend/providers/ebus.py`。
+公車資料來源走 provider-neutral 契約（`backend/providers/bus.py`），線上是一條
+有序 fallback 鏈：預設 `taiwanbus` 為主、`tdx` 為備援，可用 `BUS_PROVIDER_ORDER`
+切換或加入 `ebus`（雲林公車動態系統）。這些介面都不是本專題可控制的公開契約；
+若某個介面變更，調整點集中在該來源自己的 adapter（`providers/taiwan_bus.py`、
+`providers/tdx_bus.py`、`providers/ebus.py`），service 層不需要改。
 
 ## 使用者分眾
 
@@ -210,14 +212,19 @@ prompt 或 tool result 放進 span attributes。
 
 | 問法 | 工具 | 資料來源 |
 |------|------|----------|
-| 「201 幾分鐘到」 | `get_arrivals_here` | ebus.yunlin.gov.tw |
-| 「目前還有哪些車」 | `get_stop_arrival_statuses_here` | ebus.yunlin.gov.tw |
-| 「7126 下一班幾分鐘到」 | `get_arrivals_here` | ebus.yunlin.gov.tw |
-| 「201 停哪些站」 | `get_route_stops` | ebus（從到站資料重組） |
-| 「7126 停哪些站」 | `get_route_stops` | ebus（限本站停靠路線） |
-| 「這站有哪些路線」 | `get_routes_at_stop_here` | ebus.yunlin.gov.tw |
-| 「我要去虎尾」 | `get_arrivals_to_destination` | ebus（geo-aware 路線篩選 + 到站時間） |
-| 「201 有沒有停斗六火車站」 | `check_stop_on_route` | ebus |
+資料來源一律是當時 `BUS_PROVIDER_ORDER` 鏈上第一個給得出答案的 provider
+（預設 taiwanbus → tdx），工具本身不綁定任何來源。
+
+| 問法 | 工具 | 資料 |
+|------|------|------|
+| 「201 幾分鐘到」 | `get_arrivals_here` | 本站即時到站 |
+| 「目前還有哪些車」 | `get_stop_arrival_statuses_here` | 本站全部路線狀態 |
+| 「7126 下一班幾分鐘到」 | `get_arrivals_here` | 本站即時到站 |
+| 「201 停哪些站」 | `get_route_stops` | 從路線到站資料重組站序 |
+| 「7126 停哪些站」 | `get_route_stops` | 限本站停靠路線 |
+| 「這站有哪些路線」 | `get_routes_at_stop_here` | 本站停靠路線表 |
+| 「我要去虎尾」 | `get_arrivals_to_destination` | geo-aware 路線篩選 + 到站時間 |
+| 「201 有沒有停斗六火車站」 | `check_stop_on_route` | 路線站序比對 |
 
 路線規劃不是聊天文字 tool。產品主流程是前端地圖讓使用者選目的地座標，
 後端 `plan_route_to_coordinate(latitude, longitude)` 從 Kiosk 起點做 OTP

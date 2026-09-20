@@ -45,12 +45,12 @@
 ## 已完成基礎
 
 - Agent harness：`AgentSession`、`IntentRouter`（Python regex 意圖分類）、`ConvState`（顯式對話狀態）、LLM client、tool dispatcher、prompt grounding、context cap（MAX_EXCHANGES=5）、tool round limit、telemetry。
-- ebus 工具：本站到站狀態、停靠路線、路線站序、stop-scoped route lookup、站名縮寫。
+- 公車工具：本站到站狀態、停靠路線、路線站序、stop-scoped route lookup、站名縮寫。
 - 離站決策：資料模型、決策分類、`/api/departures/here`、route detail API、首頁 dashboard。
 - 前端基礎：Vue、Tailwind、shadcn-vue、Lucide、Kiosk shell、PIP overlay、route planner full-page flow。
 - 路線規劃：OTP graph、TDX stop index、coordinate planner、MapCN route view model、`POST /api/route-plans`；無班次錯誤顯示、地圖自動定位、站牌方向標示。
 - 後台管理：`/admin` 站牌切換 UI；runtime `KioskConfig` singleton；`/api/admin/kiosk` GET/PUT、`/api/admin/stops`；不需重啟即可切換站牌與方向。
-- **公車資料來源雙 provider 架構**：`providers/hybrid.py` 為唯一線上 `BusProvider` runtime；路線目錄（`load_route_info`、`fetch_routes_at_stop`）由 TDX 提供，ETA（`fetch_eta_at_stop`、`fetch_route_estimate`）由 ebus.yunlin.gov.tw 主力，ebus 空值時 fallback 至 TDX intercity。TDX Direction 0/1，`route_id` 全層為 SubRouteName string，`_classify_stop` 讀 `stop_status`/`estimate_seconds`。
+- **公車資料來源解耦**：`providers/bus.py` 定義 provider-neutral 契約（`Direction`、`StopStatus`、`RouteInfo`、`RouteAtStop`、`StopArrival`、`RouteStopEstimate`），上游欄位只在各 adapter 內轉換，service / tool / API 層不再出現任何上游欄位名或 status code。`providers/fallback.py` 是只認 Protocol 的 N 級有序 fallback 鏈；`services/departures/provider.py` 是 composition root + registry，用 `BUS_PROVIDER_ORDER` 選鏈（預設 `taiwanbus,tdx`，另可選 `ebus`），`register_provider()` 可加新來源。方向編碼 0=去程、1=回程，`route_id` 全層為 route name string。
 - 語音基礎：ASR proxy、前端錄音、TTS proxy、台語文字處理、分段播放；ASR 錯誤訊息不外洩原始 Python exception。
 - 正式部署：systemd 單 worker backend、loopback Nginx、immutable release、health check、自動失敗回切與指定版本 rollback；操作文件見 `docs/production-deployment.md`。
 - 串流回覆：`AgentSession.respond_stream` 逐句輸出 → 語音逐句 TTS（首音不等完整回覆）、chat SSE 逐字上屏、departures SSE 隨 ETA warmup tick 推播（取代輪詢相位差）。

@@ -11,11 +11,12 @@ import asyncio
 import httpx
 
 import providers.ebus as ebus_module
+from providers.bus import Direction, RouteInfo, RouteStopEstimate, StopArrival, StopStatus
 from providers.ebus import (
     EbusBusProvider,
     _dedup_eta_by_min_seq,
     _norm_route_estimate_row,
-    _terminals_from_estimate,
+    _route_info_from_estimate,
 )
 
 # ── Fake HTTP helpers ──────────────────────────────────────────────────────────
@@ -88,47 +89,48 @@ _ESTIMATE_CIRCULAR = [
 
 def test_norm_route_estimate_row_running():
     row = {"StopName": "斗六火車站", "GoBack": 1, "Value": 5, "SeqNo": 3}
-    out = _norm_route_estimate_row(row)
-    assert out["stop_name"] == "斗六火車站"
-    assert out["direction"] == 0  # GoBack 1 → direction 0
-    assert out["stop_status"] == 0
-    assert out["estimate_seconds"] == 300  # 5 min × 60
-    assert out["stop_sequence"] == 3
+    out = _norm_route_estimate_row(row, "201")
+    assert out.stop_name == "斗六火車站"
+    assert out.direction is Direction.OUTBOUND  # GoBack 1 → direction 0
+    assert out.status is StopStatus.AVAILABLE
+    assert out.eta_seconds == 300  # 5 min × 60
+    assert out.sequence == 3
+    assert out.route_name == "201"
 
 
 def test_norm_route_estimate_row_zero_value():
     """Value=0 → 即將到站 (status 0, estimate_seconds=0)."""
     row = {"StopName": "本站", "GoBack": 1, "Value": 0, "SeqNo": 1}
-    out = _norm_route_estimate_row(row)
-    assert out["stop_status"] == 0
-    assert out["estimate_seconds"] == 0
+    out = _norm_route_estimate_row(row, "201")
+    assert out.status is StopStatus.AVAILABLE
+    assert out.eta_seconds == 0
 
 
 def test_norm_route_estimate_row_not_departed():
     """Value=None → 未發車 (status 1)."""
     row = {"StopName": "終點站", "GoBack": 2, "Value": None, "SeqNo": 8}
-    out = _norm_route_estimate_row(row)
-    assert out["direction"] == 1
-    assert out["stop_status"] == 1
-    assert out["estimate_seconds"] is None
+    out = _norm_route_estimate_row(row, "201")
+    assert out.direction is Direction.INBOUND
+    assert out.status is StopStatus.NOT_DEPARTED
+    assert out.eta_seconds is None
 
 
 def test_norm_route_estimate_row_last_departed():
     """Value=-3 (ebus sentinel) → 末班已過 (status 3)."""
     row = {"StopName": "終點站", "GoBack": 2, "Value": -3, "SeqNo": 8}
-    out = _norm_route_estimate_row(row)
-    assert out["stop_status"] == 3
-    assert out["estimate_seconds"] is None
+    out = _norm_route_estimate_row(row, "201")
+    assert out.status is StopStatus.LAST_DEPARTED
+    assert out.eta_seconds is None
 
 
 def test_dedup_eta_keeps_min_seq():
     rows = [
-        {"sub_route_name": "Y02", "direction": 0, "stop_status": 0, "estimate_seconds": 0, "stop_sequence": 1},
-        {"sub_route_name": "Y02", "direction": 0, "stop_status": 0, "estimate_seconds": 1500, "stop_sequence": 10},
+        StopArrival(route_name="Y02", direction=Direction.OUTBOUND, status=StopStatus.AVAILABLE, eta_seconds=0, sequence=1),
+        StopArrival(route_name="Y02", direction=Direction.OUTBOUND, status=StopStatus.AVAILABLE, eta_seconds=1500, sequence=10),
     ]
     result = _dedup_eta_by_min_seq(rows)
     assert len(result) == 1
-    assert result[0]["stop_sequence"] == 1  # boarding point, not loop-completion
+    assert result[0].sequence == 1  # boarding point, not loop-completion
 
 
 # ── Route ID lookup ────────────────────────────────────────────────────────────
@@ -178,9 +180,9 @@ def test_fetch_route_estimate_normalises_rows(monkeypatch):
     assert len(rows) == len(_ESTIMATE_201)
     # spot-check first row
     first = rows[0]
-    assert first["stop_name"] == "高鐵雲林站"
-    assert first["direction"] == 0
-    assert first["estimate_seconds"] == 300
+    assert first.stop_name == "高鐵雲林站"
+    assert first.direction is Direction.OUTBOUND
+    assert first.eta_seconds == 300
 
 
 def test_fetch_route_estimate_caches(monkeypatch):
@@ -206,7 +208,7 @@ def test_fetch_eta_rows_for_stop_filters_to_stop(monkeypatch):
     _patch_http(monkeypatch, {"/route": _ROUTE_LIST, "65036/estimate": _ESTIMATE_201})
     p = EbusBusProvider()
     rows = asyncio.run(p.fetch_eta_rows_for_stop("斗六火車站", ["201"]))
-    stop_names = {r["sub_route_name"] for r in rows}
+    stop_names = {r.route_name for r in rows}
     assert stop_names == {"201"}
     # direction 0 (GoBack=1, seq=5) and direction 1 (GoBack=2, seq=3)
     assert len(rows) == 2
@@ -217,7 +219,7 @@ def test_fetch_eta_rows_for_stop_skips_unknown_route(monkeypatch):
     p = EbusBusProvider()
     rows = asyncio.run(p.fetch_eta_rows_for_stop("斗六火車站", ["201", "9999"]))
     # "9999" not in ebus → skipped; "201" matches
-    assert all(r["sub_route_name"] == "201" for r in rows)
+    assert all(r.route_name == "201" for r in rows)
 
 
 def test_fetch_eta_rows_for_stop_deduplicates_circular(monkeypatch):
@@ -228,21 +230,22 @@ def test_fetch_eta_rows_for_stop_deduplicates_circular(monkeypatch):
     )
     p = EbusBusProvider()
     rows = asyncio.run(p.fetch_eta_rows_for_stop("斗六火車站", ["101"]))
-    go_rows = [r for r in rows if r["direction"] == 0]
+    go_rows = [r for r in rows if r.direction is Direction.OUTBOUND]
     assert len(go_rows) == 1
-    assert go_rows[0]["stop_sequence"] == 1  # seq=1, not seq=10
+    assert go_rows[0].sequence == 1  # seq=1, not seq=10
 
 
 def test_fetch_eta_rows_for_stop_eta_format(monkeypatch):
-    """Returned rows must include sub_route_name, direction, stop_status, estimate_seconds."""
+    """Returned rows must be provider-neutral StopArrival models."""
     _patch_http(monkeypatch, {"/route": _ROUTE_LIST, "65036/estimate": _ESTIMATE_201})
     p = EbusBusProvider()
     rows = asyncio.run(p.fetch_eta_rows_for_stop("斗六火車站", ["201"]))
+    assert rows
     for row in rows:
-        assert "sub_route_name" in row
-        assert "direction" in row
-        assert "stop_status" in row
-        assert "estimate_seconds" in row
+        assert isinstance(row, StopArrival)
+        assert row.route_name == "201"
+        assert isinstance(row.direction, Direction)
+        assert isinstance(row.status, StopStatus)
 
 
 def test_fetch_eta_rows_for_stop_per_route_failure_does_not_abort(monkeypatch):
@@ -264,8 +267,8 @@ def test_fetch_eta_rows_for_stop_per_route_failure_does_not_abort(monkeypatch):
     monkeypatch.setattr(ebus_module, "get_http_client", lambda: FakeClient())
     p = EbusBusProvider()
     rows = asyncio.run(p.fetch_eta_rows_for_stop("斗六火車站", ["201", "101"]))
-    assert any(r["sub_route_name"] == "201" for r in rows)
-    assert not any(r["sub_route_name"] == "101" for r in rows)
+    assert any(r.route_name == "201" for r in rows)
+    assert not any(r.route_name == "101" for r in rows)
 
 
 def test_fetch_route_estimate_concurrent_miss_calls_upstream_once(monkeypatch):
@@ -297,7 +300,7 @@ def test_fetch_route_estimate_concurrent_miss_calls_upstream_once(monkeypatch):
 
 def test_fetch_eta_rows_for_stop_returns_none_when_every_route_fails(monkeypatch):
     """All per-route queries failing must surface as None (fetch failure), not []
-    (genuine empty), so HybridBusProvider can tell the two apart."""
+    (genuine empty), so the fallback composer can tell the two apart."""
 
     class FailingClient:
         async def get(self, url, **kwargs):
@@ -335,35 +338,40 @@ def test_fetch_eta_rows_shares_cache_with_fetch_route_estimate(monkeypatch):
     assert call_count == 1
 
 
-# ── _terminals_from_estimate ───────────────────────────────────────────────────
+# ── _route_info_from_estimate ─────────────────────────────────────────────────
 
 
-def test_terminals_from_estimate_basic():
+def _estimate_row(name: str, sequence: int, direction: Direction) -> RouteStopEstimate:
+    return RouteStopEstimate(
+        stop_name=name,
+        sequence=sequence,
+        direction=direction,
+        status=StopStatus.AVAILABLE,
+    )
+
+
+def test_route_info_from_estimate_basic():
     rows = [
-        {"stop_name": "A", "stop_sequence": 1, "direction": 0},
-        {"stop_name": "B", "stop_sequence": 5, "direction": 0},
-        {"stop_name": "C", "stop_sequence": 10, "direction": 0},  # go_dest
-        {"stop_name": "C", "stop_sequence": 1, "direction": 1},
-        {"stop_name": "A", "stop_sequence": 10, "direction": 1},  # back_dest
+        _estimate_row("A", 1, Direction.OUTBOUND),
+        _estimate_row("B", 5, Direction.OUTBOUND),
+        _estimate_row("C", 10, Direction.OUTBOUND),  # outbound terminal
+        _estimate_row("C", 1, Direction.INBOUND),
+        _estimate_row("A", 10, Direction.INBOUND),  # inbound terminal
     ]
-    result = _terminals_from_estimate(rows)
-    assert result["go_dest"] == "C"
-    assert result["back_dest"] == "A"
+    assert _route_info_from_estimate("201", rows) == RouteInfo("201", "C", "A")
 
 
-def test_terminals_from_estimate_missing_direction():
-    """Only direction=0 rows → back_dest empty."""
+def test_route_info_from_estimate_missing_direction():
+    """Only outbound rows → inbound terminal empty."""
     rows = [
-        {"stop_name": "A", "stop_sequence": 1, "direction": 0},
-        {"stop_name": "Z", "stop_sequence": 20, "direction": 0},
+        _estimate_row("A", 1, Direction.OUTBOUND),
+        _estimate_row("Z", 20, Direction.OUTBOUND),
     ]
-    result = _terminals_from_estimate(rows)
-    assert result["go_dest"] == "Z"
-    assert result["back_dest"] == ""
+    assert _route_info_from_estimate("201", rows) == RouteInfo("201", "Z", "")
 
 
-def test_terminals_from_estimate_empty():
-    assert _terminals_from_estimate([]) == {"go_dest": "", "back_dest": ""}
+def test_route_info_from_estimate_empty():
+    assert _route_info_from_estimate("201", []) == RouteInfo("201", "", "")
 
 
 # ── find_routes_at_stop ────────────────────────────────────────────────────────
@@ -465,7 +473,7 @@ def test_route_index_survives_provider_restart(monkeypatch, tmp_path):
 
 
 def test_find_routes_at_stop_derives_terminals(monkeypatch):
-    """go_dest/back_dest are derived from max-sequence stops."""
+    """Terminal labels are derived from max-sequence stops."""
     _patch_http(
         monkeypatch,
         {
@@ -476,8 +484,7 @@ def test_find_routes_at_stop_derives_terminals(monkeypatch):
     p = EbusBusProvider()
     result = asyncio.run(p.find_routes_at_stop("斗六火車站"))
 
-    assert result["7120"]["go_dest"] == "虎尾"  # max seq=10, direction=0
-    assert result["7120"]["back_dest"] == "斗六火車站"  # max seq=7, direction=1
+    assert result["7120"] == RouteInfo("7120", "虎尾", "斗六火車站")  # max seq 10 / 7
 
 
 def test_find_routes_at_stop_cached(monkeypatch):
@@ -506,7 +513,7 @@ def test_find_routes_at_stop_serves_stale_on_empty_result(monkeypatch):
     """If scan returns empty, serve stale cache rather than empty dict."""
     p = EbusBusProvider()
     # Prime cache manually
-    stale = {"7120": {"id": "7120", "go_dest": "虎尾", "back_dest": "斗六火車站"}}
+    stale = {"7120": RouteInfo("7120", "虎尾", "斗六火車站")}
     p._stop_route_cache["斗六火車站"] = (p._clock() - p._stop_route_ttl - 1, stale, False)
 
     # Return empty estimates for all routes

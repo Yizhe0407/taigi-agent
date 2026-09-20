@@ -32,6 +32,15 @@ from collections.abc import Callable
 from pathlib import Path
 
 from async_lifecycle import ReclaimingAsyncLock, run_in_thread
+from providers.bus import (
+    BusProvider,
+    Direction,
+    RouteAtStop,
+    RouteInfo,
+    RouteStopEstimate,
+    StopArrival,
+    StopStatus,
+)
 from providers.http import get_http_client
 from providers.ttl_cache import TtlCache
 
@@ -42,7 +51,7 @@ _ROUTE_MAP_TTL = 86400.0  # route list changes at most daily
 _ESTIMATE_TTL = 30.0  # real-time; same cadence as TDX
 _STOP_ROUTE_TTL = 86400.0  # which routes serve a stop changes at most daily
 _STOP_ROUTE_PARTIAL_TTL = 60.0  # short TTL when the scan had per-route failures
-_ROUTE_INDEX_SCHEMA_VERSION = 1
+_ROUTE_INDEX_SCHEMA_VERSION = 2
 
 # Strips trailing alpha/Chinese-character suffixes used in sub-route variants:
 # "7120A" → "7120", "101甲" → "101". Used as fallback when exact name not found.
@@ -52,59 +61,51 @@ _SUFFIX_RE = re.compile(r"[A-Z甲乙丙丁區]+$")
 # ── Row normalisers ────────────────────────────────────────────────────────────
 
 
-def _norm_route_estimate_row(row: dict) -> dict:
-    """Raw ebus estimate row → fetch_route_estimate format.
-
-    Value >= 0  → 正常/接近站 (status 0)
-    Value < 0   → 末班已過 (status 3); ebus uses -3 as sentinel
-    Value null  → 未發車 (status 1)
-    """
+def _norm_route_estimate_row(row: dict, route_name: str) -> RouteStopEstimate:
+    """Translate one native Ebus row into the provider-neutral model."""
     value = row.get("Value")
     if value is None:
-        stop_status = 1  # 未發車
-        estimate_seconds = None
+        status = StopStatus.NOT_DEPARTED
+        eta_seconds = None
     elif value >= 0:
-        stop_status = 0
-        estimate_seconds = value * 60
-    else:  # negative sentinel, e.g. -3
-        stop_status = 3  # 末班已過
-        estimate_seconds = None
-    return {
-        "stop_name": row.get("StopName", ""),
-        "stop_sequence": row.get("SeqNo"),
-        "direction": (row.get("GoBack") or 1) - 1,
-        "stop_status": stop_status,
-        "estimate_seconds": estimate_seconds,
-        "scheduled_time": row.get("ComeTime"),  # HH:MM of next scheduled departure; None when no service
-        "car_id": row.get("CarId") or None,
-    }
+        status = StopStatus.AVAILABLE
+        eta_seconds = value * 60
+    else:
+        status = StopStatus.LAST_DEPARTED
+        eta_seconds = None
+    return RouteStopEstimate(
+        stop_name=str(row.get("StopName") or ""),
+        sequence=row.get("SeqNo"),
+        direction=Direction((row.get("GoBack") or 1) - 1),
+        status=status,
+        eta_seconds=eta_seconds,
+        scheduled_time=row.get("ComeTime"),
+        vehicle_id=row.get("CarId") or None,
+        route_name=route_name,
+    )
 
 
-def _route_est_to_eta(row: dict, sub_route_name: str) -> dict:
-    """Cached route-estimate row → fetch_eta_at_stop format."""
-    return {
-        "sub_route_name": sub_route_name,
-        "direction": row["direction"],
-        "stop_status": row["stop_status"],
-        "estimate_seconds": row["estimate_seconds"],
-        "stop_sequence": row.get("stop_sequence"),
-        "scheduled_time": row.get("scheduled_time"),
-        "car_id": row.get("car_id"),
-    }
+def _route_est_to_eta(row: RouteStopEstimate, route_name: str) -> StopArrival:
+    """Convert a route-stop estimate into a stop arrival."""
+    return StopArrival(
+        route_name=route_name,
+        direction=row.direction,
+        status=row.status,
+        eta_seconds=row.eta_seconds,
+        sequence=row.sequence,
+        scheduled_time=row.scheduled_time,
+        vehicle_id=row.vehicle_id,
+    )
 
 
-def _dedup_eta_by_min_seq(rows: list[dict]) -> list[dict]:
-    """Keep one row per (sub_route_name, direction) — minimum stop_sequence wins.
-
-    Handles circular routes where the kiosk stop appears at two sequence
-    positions (boarding point at seq=1 and loop-completion at seq=N).
-    """
-    best: dict[tuple[str, int], dict] = {}
+def _dedup_eta_by_min_seq(rows: list[StopArrival]) -> list[StopArrival]:
+    """Keep one row per route/direction; the boarding occurrence wins."""
+    best: dict[tuple[str, Direction], StopArrival] = {}
     for row in rows:
-        key = (row.get("sub_route_name", ""), row.get("direction", 0))
-        seq = row.get("stop_sequence") or 9999
+        key = (row.route_name, row.direction)
+        seq = row.sequence or 9999
         existing = best.get(key)
-        if existing is None or (existing.get("stop_sequence") or 9999) > seq:
+        if existing is None or (existing.sequence or 9999) > seq:
             best[key] = row
     return list(best.values())
 
@@ -112,35 +113,31 @@ def _dedup_eta_by_min_seq(rows: list[dict]) -> list[dict]:
 # ── Route terminal helper ──────────────────────────────────────────────────────
 
 
-def _terminals_from_estimate(rows: list[dict]) -> dict[str, str]:
-    """Derive go_dest/back_dest from a full route estimate (all stops, both directions).
-
-    Terminal = stop with the highest stop_sequence for each direction.
-    """
-    best: dict[int, tuple[int, str]] = {}  # direction → (max_seq, stop_name)
+def _route_info_from_estimate(route_name: str, rows: list[RouteStopEstimate]) -> RouteInfo:
+    """Derive outbound/inbound terminals from an ordered route estimate."""
+    best: dict[Direction, tuple[int, str]] = {}
     for row in rows:
-        direction = row.get("direction", 0)
-        seq = row.get("stop_sequence") or 0
-        name = row.get("stop_name", "")
-        if not name:
+        seq = row.sequence or 0
+        if not row.stop_name:
             continue
-        cur = best.get(direction)
-        if cur is None or seq > cur[0]:
-            best[direction] = (seq, name)
-    return {
-        "go_dest": best.get(0, (0, ""))[1],
-        "back_dest": best.get(1, (0, ""))[1],
-    }
+        current = best.get(row.direction)
+        if current is None or seq > current[0]:
+            best[row.direction] = (seq, row.stop_name)
+    return RouteInfo(
+        route_name=route_name,
+        outbound_destination=best.get(Direction.OUTBOUND, (0, ""))[1],
+        inbound_destination=best.get(Direction.INBOUND, (0, ""))[1],
+    )
 
 
 # ── Provider ───────────────────────────────────────────────────────────────────
 
 
-class EbusBusProvider:
+class EbusBusProvider(BusProvider):
     """HTTP client for ebus.yunlin.gov.tw city route ETA.
 
-    Designed to be composed inside HybridBusProvider so that TDX rate limits
-    are not hit for city routes. The route map is cached for 24 h; individual
+    Implements the provider-neutral bus contract; composition and fallback live in
+    ``FallbackBusProvider`` and do not depend on this concrete client. The route map is cached for 24 h; individual
     route estimates are cached for 30 s (same as TDX ETA TTL).
     """
 
@@ -160,9 +157,9 @@ class EbusBusProvider:
         # (fetched_at, {NameZh: route_id})
         self._route_map: tuple[float, dict[str, int]] | None = None
         # route_id → (fetched_at, normalised route-estimate rows)
-        self._estimate_cache: dict[int, tuple[float, list[dict]]] = {}
-        self._estimate_ttl_cache: TtlCache[int, list[dict]] = TtlCache(self._estimate_cache, clock=self._clock, cache_name="ebus route estimate")
-        # stop_name → (fetched_at, {route_name: {id, go_dest, back_dest}}, had_failures)
+        self._estimate_cache: dict[int, tuple[float, list[RouteStopEstimate]]] = {}
+        self._estimate_ttl_cache: TtlCache[int, list[RouteStopEstimate]] = TtlCache(self._estimate_cache, clock=self._clock, cache_name="ebus route estimate")
+        # stop_name → (fetched_at, {route_name: RouteInfo}, had_failures)
         # had_failures=True uses _STOP_ROUTE_PARTIAL_TTL so a route that failed
         # mid-scan gets re-checked soon instead of staying "missing" for 24h.
         #
@@ -181,7 +178,7 @@ class EbusBusProvider:
         # Bending TtlCache to cover all four would add flags to a class shared by
         # the TDX ETA path, where its per-key coalescing is what keeps the 429
         # cascade from returning. The hand-rolled lock stays.
-        self._stop_route_cache: dict[str, tuple[float, dict[str, dict], bool]] = {}
+        self._stop_route_cache: dict[str, tuple[float, dict[str, RouteInfo], bool]] = {}
         # A single scan builds every stop, so all misses share one lock.
         self._route_index_lock = ReclaimingAsyncLock("ebus route-index refresh")
         self._route_index_path = Path(route_index_path) if route_index_path is not None else None
@@ -205,17 +202,17 @@ class EbusBusProvider:
         self._route_map = (self._clock(), mapping)
         return mapping
 
-    async def get_route_id(self, sub_route_name: str) -> int | None:
+    async def get_route_id(self, route_name: str) -> int | None:
         """Return the ebus numeric route ID, or None if this route is not in ebus.
 
         Tries exact NameZh match first, then strips trailing ASCII/Chinese
         suffixes ("7120A" → "7120", "101甲" → "101") as a fallback.
         """
         route_map = await self._load_route_map()
-        if sub_route_name in route_map:
-            return route_map[sub_route_name]
-        base = _SUFFIX_RE.sub("", sub_route_name)
-        if base != sub_route_name:
+        if route_name in route_map:
+            return route_map[route_name]
+        base = _SUFFIX_RE.sub("", route_name)
+        if base != route_name:
             return route_map.get(base)
         return None
 
@@ -234,13 +231,22 @@ class EbusBusProvider:
             fetched_at = self._clock()
             for stop_name, info in stops.items():
                 if isinstance(stop_name, str) and isinstance(info, dict):
-                    self._stop_route_cache[stop_name] = (fetched_at, info, False)
+                    normalized = {
+                        str(route_name): RouteInfo(
+                            route_name=str(route_name),
+                            outbound_destination=str(route_info.get("outbound_destination") or ""),
+                            inbound_destination=str(route_info.get("inbound_destination") or ""),
+                        )
+                        for route_name, route_info in info.items()
+                        if isinstance(route_info, dict)
+                    }
+                    self._stop_route_cache[stop_name] = (fetched_at, normalized, False)
         except FileNotFoundError:
             return
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
             _log.warning("Ignoring invalid persisted ebus route index %s: %s", path, error)
 
-    def _write_persisted_route_index(self, stops: dict[str, dict[str, dict]]) -> None:
+    def _write_persisted_route_index(self, stops: dict[str, dict[str, RouteInfo]]) -> None:
         path = self._route_index_path
         if path is None:
             return
@@ -252,7 +258,16 @@ class EbusBusProvider:
                     {
                         "schema_version": _ROUTE_INDEX_SCHEMA_VERSION,
                         "saved_at": time.time(),
-                        "stops": stops,
+                        "stops": {
+                            stop_name: {
+                                route_name: {
+                                    "outbound_destination": route_info.outbound_destination,
+                                    "inbound_destination": route_info.inbound_destination,
+                                }
+                                for route_name, route_info in route_info_by_name.items()
+                            }
+                            for stop_name, route_info_by_name in stops.items()
+                        },
                     },
                     ensure_ascii=False,
                     separators=(",", ":"),
@@ -263,7 +278,7 @@ class EbusBusProvider:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def _stop_route_fresh(self, cached: tuple[float, dict[str, dict], bool]) -> bool:
+    def _stop_route_fresh(self, cached: tuple[float, dict[str, RouteInfo], bool]) -> bool:
         """True if a `_stop_route_cache` entry is still within its TTL.
 
         `had_failures` (cached[2]) selects the short partial TTL so a route
@@ -273,27 +288,26 @@ class EbusBusProvider:
         ttl = self._stop_route_ttl if not cached[2] else _STOP_ROUTE_PARTIAL_TTL
         return not self._expired(cached[0], ttl)
 
-    async def _scan_all_routes(self) -> tuple[dict[str, dict[str, dict]], bool]:
+    async def _scan_all_routes(self) -> tuple[dict[str, dict[str, RouteInfo]], bool]:
         """Fetch every known route's estimate (20 concurrent) and index stops by name.
 
-        Returns ({exact_stop_name: {sub_route_name: {id, go_dest, back_dest}}}, had_failures).
+        Returns ``{stop_name: {route_name: RouteInfo}}`` plus the failure flag.
         """
         route_map = await self._load_route_map()
         names = list(route_map.keys())
         sem = asyncio.Semaphore(20)
 
-        async def _check(name: str) -> tuple[dict, set[str]] | None:
+        async def _check(name: str) -> tuple[RouteInfo, set[str]] | None:
             async with sem:
                 rows = await self.fetch_route_estimate(name)
                 if not rows:
                     return None
-                terminals = _terminals_from_estimate(rows)
-                stop_names = {str(row.get("stop_name") or "").strip() for row in rows}
+                stop_names = {row.stop_name.strip() for row in rows}
                 stop_names.discard("")
-                return {"id": name, **terminals}, stop_names
+                return _route_info_from_estimate(name, rows), stop_names
 
         results = await asyncio.gather(*[_check(n) for n in names], return_exceptions=True)
-        route_index: dict[str, dict[str, dict]] = {}
+        route_index: dict[str, dict[str, RouteInfo]] = {}
         had_failures = False
         for name, result in zip(names, results):
             if isinstance(result, BaseException):
@@ -305,11 +319,11 @@ class EbusBusProvider:
                     route_index.setdefault(exact_stop_name, {})[name] = route_info
         return route_index, had_failures
 
-    async def find_routes_at_stop(self, stop_name: str) -> dict[str, dict]:
+    async def find_routes_at_stop(self, stop_name: str) -> dict[str, RouteInfo]:
         """Discover all routes serving stop_name by scanning all route estimates. Cached 24h
         (or 60s if the scan had per-route failures — see `_STOP_ROUTE_PARTIAL_TTL`).
 
-        Returns {sub_route_name: {id, go_dest, back_dest}}.
+        Returns ``route_name -> RouteInfo``.
         Covers city routes and 7xxx intercity routes alike.
         """
         cached = self._stop_route_cache.get(stop_name)
@@ -340,27 +354,39 @@ class EbusBusProvider:
                     _log.warning("Unable to persist ebus route index: %s", error)
             return info
 
-    async def fetch_route_estimate(self, sub_route_name: str) -> list[dict] | None:
-        """ETA rows for every stop along sub_route_name, or None if not in ebus.
+    async def load_route_info(self, stop_name: str) -> dict[str, RouteInfo]:
+        return await self.find_routes_at_stop(stop_name)
 
-        Returns None (not raises) so HybridBusProvider can silently fall back
-        to TDX for routes ebus does not cover.
+    async def fetch_routes_at_stop(self, stop_name: str) -> list[RouteAtStop]:
+        info = await self.load_route_info(stop_name)
+        return [RouteAtStop(route_name=name, direction=direction) for name in info for direction in (Direction.OUTBOUND, Direction.INBOUND)]
+
+    async def fetch_eta_at_stop(self, stop_name: str) -> list[StopArrival] | None:
+        info = await self.load_route_info(stop_name)
+        return await self.fetch_eta_rows_for_stop(stop_name, list(info))
+
+    async def fetch_route_estimate(self, route_name: str) -> list[RouteStopEstimate] | None:
+        """ETA rows for every stop along route_name, or None if not in ebus.
+
+        Returns None (not raises) so provider fallback composer can silently fall back
+        to another provider for routes this source does not cover.
         """
-        route_id = await self.get_route_id(sub_route_name)
+        route_id = await self.get_route_id(route_name)
         if route_id is None:
             return None
 
-        async def _fetch() -> list[dict]:
+        async def _fetch() -> list[RouteStopEstimate]:
             raw = await self._get(f"{_BASE}/route/{route_id}/estimate")
-            return [_norm_route_estimate_row(r) for r in raw]
+            return [_norm_route_estimate_row(r, route_name) for r in raw]
 
-        return await self._estimate_ttl_cache.get_or_fetch(route_id, _fetch, ttl=self._estimate_ttl)
+        rows = await self._estimate_ttl_cache.get_or_fetch(route_id, _fetch, ttl=self._estimate_ttl)
+        return list(rows)
 
     async def fetch_eta_rows_for_stop(
         self,
         stop_name: str,
         route_names: list[str],
-    ) -> list[dict] | None:
+    ) -> list[StopArrival] | None:
         """ETA rows at stop_name for the given city routes, or None if every
         route query failed outright.
 
@@ -369,15 +395,15 @@ class EbusBusProvider:
         Per-route failures are logged and skipped (partial degradation) as
         long as at least one route succeeded; an empty list is then a
         genuine "no ETA" answer, not a fetch failure. Only when every route
-        query raised is None returned, so callers (HybridBusProvider) can
+        query raised is None returned, so callers (provider fallback composer) can
         tell "ebus is down" apart from "ebus is up but has nothing to show".
         """
 
-        async def _one(name: str) -> list[dict]:
+        async def _one(name: str) -> list[StopArrival]:
             route_rows = await self.fetch_route_estimate(name)
             if route_rows is None:
                 return []
-            matching = [r for r in route_rows if str(r.get("stop_name") or "").strip() == stop_name.strip()]
+            matching = [r for r in route_rows if r.stop_name.strip() == stop_name.strip()]
             return _dedup_eta_by_min_seq([_route_est_to_eta(r, name) for r in matching])
 
         if not route_names:
@@ -389,7 +415,7 @@ class EbusBusProvider:
             for name, result in zip(route_names, results):
                 _log.warning("ebus ETA failed for %s: %s", name, result)
             return None
-        rows: list[dict] = []
+        rows: list[StopArrival] = []
         for name, result in zip(route_names, results):
             if isinstance(result, list):
                 rows.extend(result)

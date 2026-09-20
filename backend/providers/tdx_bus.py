@@ -29,21 +29,8 @@ volume and avoid 429 rate limits.
 
 ## Internal row schema
 
-  fetch_eta_at_stop rows:
-    sub_route_name  str
-    direction       int    0=去程 1=回程  (TDX Direction)
-    stop_status     int    0=正常 1=未發車 2=不停 3=末班過 4=今日停駛
-    estimate_seconds int|None
-    stop_sequence   int|None
-
-  fetch_route_estimate rows:
-    stop_name       str
-    stop_sequence   int|None
-    direction       int
-    stop_status     int
-    estimate_seconds int|None
-
-  load_route_info → {sub_route_name: {"id": str, "go_dest": str, "back_dest": str}}
+  Native TDX payloads are converted to the provider-neutral models in
+  ``providers.bus`` before they cross the provider boundary.
 """
 
 from __future__ import annotations
@@ -57,7 +44,15 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 
-from providers.bus import BusProvider
+from providers.bus import (
+    BusProvider,
+    Direction,
+    RouteAtStop,
+    RouteInfo,
+    RouteStopEstimate,
+    StopArrival,
+    StopStatus,
+)
 from providers.http import get_http_client
 from providers.tdx_auth import TdxTokenClient
 from providers.ttl_cache import KeyedLocks, TtlCache
@@ -152,7 +147,7 @@ class TdxBusProvider(BusProvider):
         # stop_name → (fetched_at, route_info_dict, had_failures); had_failures
         # selects _ROUTE_INFO_PARTIAL_TTL so a partial StopOfRoute result gets
         # re-checked soon instead of caching it for the full TTL.
-        self._route_info_by_stop: dict[str, tuple[float, dict[str, dict], bool]] = {}
+        self._route_info_by_stop: dict[str, tuple[float, dict[str, RouteInfo], bool]] = {}
         # Per-key lock guarding load_route_info (see KeyedLocks in ttl_cache.py).
         self._route_info_locks: KeyedLocks[str] = KeyedLocks()
         # Amortised sweep bookkeeping for _route_info_by_stop (see _maybe_sweep_route_info).
@@ -160,16 +155,16 @@ class TdxBusProvider(BusProvider):
         # stop_name → set of boarding StopUIDs (first occurrence of that stop in each route)
         self._kiosk_uids: dict[str, set[str]] = {}
         # sub_route_name → (fetched_at, rows)
-        self._route_estimate_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
-        self._route_estimate_ttl_cache: TtlCache[str, list[dict]] = TtlCache(
+        self._route_estimate_cache: OrderedDict[str, tuple[float, list[RouteStopEstimate]]] = OrderedDict()
+        self._route_estimate_ttl_cache: TtlCache[str, list[RouteStopEstimate]] = TtlCache(
             self._route_estimate_cache,
             clock=clock,
             cache_name="TDX route estimate",
             record_hit=lambda hit: get_telemetry().record_cache_lookup(cache="tdx.route_estimate", hit=hit),
         )
         # stop_name → (fetched_at, rows)
-        self._eta_cache: dict[str, tuple[float, list[dict]]] = {}
-        self._eta_ttl_cache: TtlCache[str, list[dict]] = TtlCache(
+        self._eta_cache: dict[str, tuple[float, list[StopArrival]]] = {}
+        self._eta_ttl_cache: TtlCache[str, list[StopArrival]] = TtlCache(
             self._eta_cache,
             clock=clock,
             cache_name="TDX ETA",
@@ -217,40 +212,56 @@ class TdxBusProvider(BusProvider):
     # ── Normalizers ───────────────────────────────────────────────────────────
 
     @staticmethod
-    def _norm_eta(row: dict) -> dict:
-        return {
-            "sub_route_name": _zh(row.get("SubRouteName")),
-            "direction": row.get("Direction", 0),
-            "stop_status": row.get("StopStatus", 1),
-            "estimate_seconds": row.get("EstimateTime"),
-            "stop_sequence": row.get("StopSequence"),
-        }
+    def _norm_status(value: object) -> StopStatus:
+        if value == 0:
+            return StopStatus.AVAILABLE
+        if value == 1:
+            return StopStatus.NOT_DEPARTED
+        if value == 2:
+            return StopStatus.NOT_STOPPING
+        if value == 3:
+            return StopStatus.LAST_DEPARTED
+        if value == 4:
+            return StopStatus.NOT_OPERATING
+        return StopStatus.UNKNOWN
 
-    @staticmethod
-    def _norm_stop_eta(row: dict) -> dict:
-        return {
-            "stop_name": _zh(row.get("StopName")),
-            "stop_sequence": row.get("StopSequence"),
-            "direction": row.get("Direction", 0),
-            "stop_status": row.get("StopStatus", 1),
-            "estimate_seconds": row.get("EstimateTime"),
-        }
+    @classmethod
+    def _norm_eta(cls, row: dict) -> StopArrival:
+        return StopArrival(
+            route_name=_zh(row.get("SubRouteName")),
+            direction=Direction(row.get("Direction", 0)),
+            status=cls._norm_status(row.get("StopStatus", 1)),
+            eta_seconds=row.get("EstimateTime"),
+            sequence=row.get("StopSequence"),
+        )
+
+    @classmethod
+    def _norm_stop_eta(cls, row: dict, route_name: str) -> RouteStopEstimate:
+        return RouteStopEstimate(
+            stop_name=_zh(row.get("StopName")),
+            sequence=row.get("StopSequence"),
+            direction=Direction(row.get("Direction", 0)),
+            status=cls._norm_status(row.get("StopStatus", 1)),
+            eta_seconds=row.get("EstimateTime"),
+            route_name=route_name,
+        )
 
     # ── BusProvider ───────────────────────────────────────────────────────────
 
-    async def fetch_routes_at_stop(self, stop_name: str) -> list[dict]:
-        """Unique subroutes at `stop_name` (city + intercity)."""
+    async def fetch_routes_at_stop(self, stop_name: str) -> list[RouteAtStop]:
+        """Unique route/direction pairs at ``stop_name``."""
         city, intercity, _had_failures = await self._stop_of_route(stop_name)
         seen: set[str] = set()
-        result: list[dict] = []
+        result: list[RouteAtStop] = []
         for rec in city + intercity:
             name = _zh(rec.get("SubRouteName"))
-            if name and name not in seen:
-                seen.add(name)
-                result.append({"sub_route_name": name, "direction": rec.get("Direction", 0)})
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            result.append(RouteAtStop(route_name=name, direction=Direction(rec.get("Direction", 0))))
         return result
 
-    async def fetch_eta_at_stop(self, stop_name: str) -> list[dict]:
+    async def fetch_eta_at_stop(self, stop_name: str) -> list[StopArrival]:
         """ETA rows for every subroute at `stop_name`.
 
         Uses StopUID filtering when boarding UIDs are already cached from a
@@ -259,7 +270,7 @@ class TdxBusProvider(BusProvider):
         called concurrently for the first time.
         """
 
-        async def _fetch() -> list[dict]:
+        async def _fetch() -> list[StopArrival]:
             uids = self._kiosk_uids.get(stop_name)
             fetch = self._fetch_eta_by_uids(uids) if uids else self._fetch_eta_by_name(stop_name)
             return await asyncio.wait_for(fetch, timeout=_ETA_FETCH_TIMEOUT)
@@ -267,46 +278,48 @@ class TdxBusProvider(BusProvider):
         # TtlCache.get_or_fetch leaves fetched_at unbumped on a stale-serve, so
         # staleness keeps accumulating toward _MAX_STALE_SECONDS instead of an
         # outage's last-good data resetting the clock on every failed retry.
-        return await self._eta_ttl_cache.get_or_fetch(
+        rows = await self._eta_ttl_cache.get_or_fetch(
             stop_name,
             _fetch,
             ttl=self._eta_ttl,
             stale_ttl=self._stale_ttl(self._eta_ttl),
         )
+        return list(rows)
 
-    async def fetch_route_estimate(self, sub_route_name: str) -> list[dict]:
-        async def _fetch() -> list[dict]:
+    async def fetch_route_estimate(self, route_name: str) -> list[RouteStopEstimate]:
+        async def _fetch() -> list[RouteStopEstimate]:
             # Only query the endpoint that owns this route — halves request volume.
-            if _is_intercity(sub_route_name):
+            if _is_intercity(route_name):
                 raw = await self._get(
                     f"{_BASE}/EstimatedTimeOfArrival/InterCity",
-                    {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(sub_route_name)}'"},
+                    {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(route_name)}'"},
                 )
             else:
                 raw = await self._get(
                     f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
-                    {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(sub_route_name)}'"},
+                    {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(route_name)}'"},
                 )
-            return [self._norm_stop_eta(r) for r in raw]
+            return [self._norm_stop_eta(r, route_name) for r in raw]
 
         def _touch(key: str) -> None:
             self._route_estimate_cache.move_to_end(key)
 
-        def _store(key: str, _rows: list[dict]) -> None:
+        def _store(key: str, _rows: list[RouteStopEstimate]) -> None:
             self._route_estimate_cache.move_to_end(key)
             while len(self._route_estimate_cache) > _MAX_ROUTE_ESTIMATE_CACHE_ENTRIES:
                 self._route_estimate_cache.popitem(last=False)
 
-        return await self._route_estimate_ttl_cache.get_or_fetch(
-            sub_route_name,
+        rows = await self._route_estimate_ttl_cache.get_or_fetch(
+            route_name,
             _fetch,
             ttl=self._route_estimate_ttl,
             stale_ttl=self._stale_ttl(self._route_estimate_ttl),
             on_hit=_touch,
             on_store=_store,
         )
+        return list(rows)
 
-    async def load_route_info(self, stop_name: str) -> dict[str, dict]:
+    async def load_route_info(self, stop_name: str) -> dict[str, RouteInfo]:
         cached = self._route_info_by_stop.get(stop_name)
         ttl = self._route_info_ttl if cached is None or not cached[2] else _ROUTE_INFO_PARTIAL_TTL
         hit = cached is not None and not self._expired(cached[0], ttl)
@@ -350,47 +363,15 @@ class TdxBusProvider(BusProvider):
             return
         if len(self._route_info_by_stop) <= self._route_info_sweep_threshold:
             return
-        expired = [
-            key
-            for key, (fetched_at, _info, _failed) in self._route_info_by_stop.items()
-            if self._expired(fetched_at, self._route_info_ttl)
-        ]
+        expired = [key for key, (fetched_at, _info, _failed) in self._route_info_by_stop.items() if self._expired(fetched_at, self._route_info_ttl)]
         for key in expired:
             del self._route_info_by_stop[key]
             self._kiosk_uids.pop(key, None)
         self._route_info_sweep_threshold = max(_MIN_ROUTE_INFO_SWEEP, 2 * len(self._route_info_by_stop))
 
-    async def load_route_terminals(self, route_name: str) -> dict[str, str]:
-        """Return {go_dest, back_dest} from TDX StopOfRoute filtered by route name.
-
-        Used to supplement ebus data when ebus encodes rare CJK characters as '?'.
-        """
-        filter_expr = f"SubRouteName/Zh_tw eq '{_odata_escape(route_name)}'"
-        results = await asyncio.gather(
-            self._get(f"{_BASE}/StopOfRoute/City/{_CITY}", {"$filter": filter_expr}),
-            self._get(f"{_BASE}/StopOfRoute/InterCity", {"$filter": filter_expr}),
-            return_exceptions=True,
-        )
-        records = _safe_list(results[0]) + _safe_list(results[1])
-        terminals: dict[int, str] = {}
-        for rec in records:
-            direction = rec.get("Direction", 0)
-            stops = rec.get("Stops") or []
-            if not stops:
-                continue
-            ordered = sorted(stops, key=lambda s: s.get("StopSequence", 0))
-            terminal = _zh(ordered[-1].get("StopName"))
-            if terminal and "?" not in terminal:
-                terminals[direction] = terminal
-        return {
-            "go_dest": terminals.get(0, ""),
-            "back_dest": terminals.get(1, ""),
-        }
-
-
     # ── ETA fetch helpers ──────────────────────────────────────────────────────
 
-    async def _fetch_eta_by_uids(self, uids: set[str]) -> list[dict]:
+    async def _fetch_eta_by_uids(self, uids: set[str]) -> list[StopArrival]:
         """Query by StopUID — precise, no dedup needed.
 
         Chunks the OR filter so an interchange stop with many boarding UIDs
@@ -418,7 +399,7 @@ class TdxBusProvider(BusProvider):
         rows = [row for r in all_results for row in _safe_list(r)]
         return [self._norm_eta(r) for r in rows]
 
-    async def _fetch_eta_by_name(self, stop_name: str) -> list[dict]:
+    async def _fetch_eta_by_name(self, stop_name: str) -> list[StopArrival]:
         """Fallback: query by stop name and dedup by min sequence."""
         results = await asyncio.gather(
             self._get(
@@ -462,7 +443,7 @@ class TdxBusProvider(BusProvider):
         return _safe_list(results[0]), _safe_list(results[1]), had_failures
 
     @staticmethod
-    def _build_route_info(records: list[dict], kiosk_stop: str) -> tuple[dict[str, dict], set[str]]:
+    def _build_route_info(records: list[dict], kiosk_stop: str) -> tuple[dict[str, RouteInfo], set[str]]:
         """Build route_info and collect boarding StopUIDs.
 
         For each (subroute, direction), the *first* stop occurrence of
@@ -501,24 +482,24 @@ class TdxBusProvider(BusProvider):
 
         all_names = {name for name, _ in terminals}
         route_info = {
-            name: {
-                "id": name,
-                "go_dest": terminals.get((name, 0), ""),
-                "back_dest": terminals.get((name, 1), ""),
-            }
+            name: RouteInfo(
+                route_name=name,
+                outbound_destination=terminals.get((name, 0), ""),
+                inbound_destination=terminals.get((name, 1), ""),
+            )
             for name in all_names
         }
         return route_info, boarding_uids
 
     @staticmethod
-    def _dedup_by_min_sequence(rows: list[dict]) -> list[dict]:
+    def _dedup_by_min_sequence(rows: list[StopArrival]) -> list[StopArrival]:
         """Fallback dedup: keep one row per (sub_route_name, direction) by min StopSequence."""
-        best: dict[tuple[str, int], dict] = {}
+        best: dict[tuple[str, Direction], StopArrival] = {}
         for row in rows:
-            key = (row.get("sub_route_name", ""), row.get("direction", 0))
-            seq = row.get("stop_sequence") or 9999
+            key = (row.route_name, row.direction)
+            seq = row.sequence or 9999
             existing = best.get(key)
-            if existing is None or (existing.get("stop_sequence") or 9999) > seq:
+            if existing is None or (existing.sequence or 9999) > seq:
                 best[key] = row
         return list(best.values())
 
