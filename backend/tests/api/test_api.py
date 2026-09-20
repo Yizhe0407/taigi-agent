@@ -3,10 +3,11 @@ from datetime import datetime
 from fastapi.testclient import TestClient
 
 import api
+import api.bike
 import api.departures
-import api.moovo
 import api.route_plans
 from providers import otp
+from services.bike import BikeProviderApiError, BikeStation, NearbyBikeStation
 from services.departures import (
     DepartureDecision,
     DepartureRouteDetail,
@@ -19,7 +20,6 @@ from services.departures import (
     RouteStopDetail,
     StopDepartureSnapshot,
 )
-from services.moovo import MoovoApiError, MoovoStation, NearbyMoovoStation
 from services.route_plans import (
     InvalidRouteDestination,
     Place,
@@ -154,8 +154,8 @@ def _route_plan() -> RoutePlan:
     )
 
 
-def _moovo_station() -> MoovoStation:
-    return MoovoStation(
+def _bike_station() -> BikeStation:
+    return BikeStation(
         station_uid="YUN100",
         station_id="100",
         name="雲林科技大學",
@@ -166,6 +166,7 @@ def _moovo_station() -> MoovoStation:
         available_return_bikes=4,
         service_status=1,
         update_time=datetime.fromisoformat("2026-05-22T08:30:00+08:00"),
+        provider="tdx",
     )
 
 
@@ -400,13 +401,13 @@ def test_create_route_plan_maps_route_errors(monkeypatch):
     assert invalid_response.status_code == 400
 
 
-def test_list_moovo_stations_returns_tdx_availability(monkeypatch):
+def test_list_bike_stations_returns_tdx_availability(monkeypatch):
     async def fake_load_stations():
-        return (_moovo_station(),)
+        return (_bike_station(),)
 
-    monkeypatch.setattr(api.moovo, "load_moovo_stations", fake_load_stations)
+    monkeypatch.setattr(api.bike, "load_bike_stations", fake_load_stations)
 
-    response = TestClient(api.app).get("/api/moovo/stations")
+    response = TestClient(api.app).get("/api/bike/stations")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -422,34 +423,35 @@ def test_list_moovo_stations_returns_tdx_availability(monkeypatch):
                 "availableReturnBikes": 4,
                 "serviceStatus": 1,
                 "updateTime": "2026-05-22T08:30:00+08:00",
+                "provider": "tdx",
             }
         ]
     }
 
 
-def test_list_nearby_moovo_stations_passes_query(monkeypatch):
+def test_list_nearby_bike_stations_passes_query(monkeypatch):
     calls = []
 
     async def fake_nearby(latitude, longitude, *, radius_meters, limit):
         calls.append((latitude, longitude, radius_meters, limit))
-        return (NearbyMoovoStation(_moovo_station(), 17.5),)
+        return (NearbyBikeStation(_bike_station(), 17.5),)
 
-    monkeypatch.setattr(api.moovo, "nearby_moovo_stations", fake_nearby)
+    monkeypatch.setattr(api.bike, "nearby_bike_stations", fake_nearby)
 
-    response = TestClient(api.app).get("/api/moovo/stations/nearby?lat=23.696147&lng=120.534823&radius=800&limit=3")
+    response = TestClient(api.app).get("/api/bike/stations/nearby?lat=23.696147&lng=120.534823&radius=800&limit=3")
 
     assert response.status_code == 200
     assert response.json()["stations"][0]["distanceMeters"] == 17.5
     assert calls == [(23.696147, 120.534823, 800, 3)]
 
 
-def test_moovo_endpoints_map_provider_errors(monkeypatch):
+def test_bike_endpoints_map_provider_errors(monkeypatch):
     async def unavailable():
-        raise MoovoApiError("TDX Bike request failed")
+        raise BikeProviderApiError("TDX Bike request failed")
 
-    monkeypatch.setattr(api.moovo, "load_moovo_stations", unavailable)
+    monkeypatch.setattr(api.bike, "load_bike_stations", unavailable)
 
-    response = TestClient(api.app).get("/api/moovo/stations")
+    response = TestClient(api.app).get("/api/bike/stations")
 
     assert response.status_code == 503
     assert response.json()["detail"] == "TDX Bike request failed"

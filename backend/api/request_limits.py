@@ -160,8 +160,8 @@ VOICE_ICE_RATE_LIMIT = RateLimit(10, 60.0)
 CLIENT_EVENT_RATE_LIMIT = RateLimit(20, 60.0)
 ADMIN_WRITE_RATE_LIMIT = RateLimit(10, 60.0)
 # Admin's GET endpoints (kiosk config read, stop catalog) aren't the kiosk's
-# own hot path — same permissive allowance as MOOVO_RATE_LIMIT, but its own
+# own hot path — same permissive allowance as BIKE_RATE_LIMIT, but its own
 # instance so the two features don't share a token bucket.
 ADMIN_READ_RATE_LIMIT = RateLimit(30, 60.0)
 ROUTE_PLAN_RATE_LIMIT = RateLimit(30, 60.0)
-MOOVO_RATE_LIMIT = RateLimit(30, 60.0)
+BIKE_RATE_LIMIT = RateLimit(30, 60.0)

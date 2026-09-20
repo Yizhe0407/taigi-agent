@@ -60,6 +60,7 @@ async def _eta_warmup_loop() -> None:
 
 from .admin import router as admin_router  # noqa: E402
 from .asr import router as asr_router  # noqa: E402
+from .bike import router as bike_router  # noqa: E402
 from .chat import close_store, run_lock_purge_loop, startup_store  # noqa: E402
 from .chat import router as chat_router  # noqa: E402
 from .client_events import router as client_events_router  # noqa: E402
@@ -70,7 +71,6 @@ from .departures import (  # noqa: E402
 )
 from .departures import router as departures_router  # noqa: E402
 from .health import router as health_router  # noqa: E402
-from .moovo import router as moovo_router  # noqa: E402
 from .request_limits import RequestBodyLimitMiddleware  # noqa: E402
 from .route_plans import router as route_plans_router  # noqa: E402
 from .tts import router as tts_router  # noqa: E402
@@ -284,7 +284,7 @@ app.include_router(client_events_router)
 app.include_router(departures_router)
 app.include_router(health_router)
 app.include_router(route_plans_router)
-app.include_router(moovo_router)
+app.include_router(bike_router)
 app.include_router(asr_router)
 app.include_router(tts_router)
 app.include_router(voice_router)

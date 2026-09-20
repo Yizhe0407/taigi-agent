@@ -22,7 +22,7 @@ backend/
   agent/           # Agent harness、LLM client、tool dispatch、prompt、context、telemetry
   voice/           # Pipecat WebRTC 語音全雙工 pipeline（VAD, STT, TTS, Agent Processor）
   pipeline/        # Mandarin -> HanloFlow -> Taibun 等文字處理 pipeline
-  providers/       # 外部資料來源 adapter：provider-neutral bus、OTP、TDX Moovo
+  providers/       # 外部資料來源 adapter：provider-neutral bus、bike、OTP
   services/        # 領域模型、分類、決策、provider facade
   tools/           # Agent 可見的 str facade
   scripts/         # GTFS / stop metadata 更新流程
@@ -49,7 +49,7 @@ backend/
 - `api/chat.py`：`/api/chat/*`，SQLite-backed `ChatSessionStore`。`respond_in_session_stream` 為唯一實作路徑（voice 與 SSE 共用）；`chat_store_operation()` 是 store 的公開存取點：它取一個 lease 綁住當前 store generation，voice（`api/voice.py`、`voice/agent_processor.py`）與 SSE 都經它取得同一個 store，不跨層 import 底線符號；lifespan 以 `startup_store()`／`close_store()` 管理 generation，關閉會等所有 lease 交還。`PUT /api/chat/sessions/{id}` 以 client-owned UUID 冪等建立 session；`POST /api/chat/sessions/{id}/messages/stream` 以 SSE 推 `{delta}`/`{done}`/`{error}` 事件；舊 server-generated create 與非串流 endpoint 已移除。
 - `api/departures.py`：`/api/departures/here` 與路線詳情；`GET /api/departures/stream` SSE 推播——ETA warmup loop（25 s）每次刷新 cache 後 `notify_snapshot_refreshed()` 喚醒連線推最新 snapshot，40 s fallback 自刷新兜底。兩個 GET 端點刻意不掛 RateLimit：是 kiosk 自家高頻主路徑，且 `services.departures` 對底層 snapshot 已有 25 s cache。
 - `api/route_plans.py`：`/api/route-plans` 與 `/api/kiosk`（含 direction）。
-- `api/moovo.py`：`/api/moovo/*`。
+- `api/bike.py`：`/api/bike/*`。
 - `api/asr.py`：`/api/asr` proxy，config 讀取與 upstream 呼叫委派給 `providers/asr.py`（文字模式與語音模組共用）；音檔以 1 MB chunk 讀取，實際檔案內容上限 25 MB。
 - `api/tts.py`：`/api/tts`，呼叫 `services/taigi_tts.py` 的共用 pipeline（見下）後轉成 WAV `Response`。Tailo 最多 64 段、每段最多 500 字元、同時最多 4 個 upstream request；單請求 15 秒、整次合成 45 秒。
 - `api/voice.py`：`/api/voice/offer`，處理 WebRTC SDP 交換並在背景啟動語音 pipeline；`session_id` 是必填且必須先由 chat PUT 建立。session 不存在或過期時回 404，其他啟動失敗回 500，兩者都會關閉該 peer connection——pipecat 會吞掉 callback 例外並照樣發 SDP answer，不主動關就會留下沒有 pipeline 的孤兒 pc。
@@ -83,13 +83,17 @@ backend/
 - `providers/fallback.py`：provider-neutral `FallbackBusProvider`，接受任意長度的有序 provider 清單。只依賴 `BusProvider` Protocol，不知道 TaiwanBus、Ebus、TDX 或其他具體供應商。各操作的「這個來源沒東西」訊號不同：`fetch_routes_at_stop` 空清單代表不認得這站會續查下一個；ETA 與 route estimate 的 `None` 代表不可用、`[]` 是真答案並結束查詢；`load_route_info` 則沿鏈合併直到每條路線的去回終點都補齊（前面的來源優先）。結果以中立的 fallback metrics 記錄。
 - `services/departures/provider.py`：composition root 與 registry。`BUS_PROVIDER_ORDER`（逗號分隔，預設 `taiwanbus,tdx`；內建名稱 `taiwanbus` / `tdx` / `ebus`）決定鏈的順序，`register_provider()` 可在組裝前加入新來源，`configure_providers()` / `provider_override()` / `reset_provider()` 供測試與 runtime 切換；其他層不需要知道具體供應商。
 - `providers/otp.py`：OpenTripPlanner GraphQL provider。
-- `providers/moovo.py`：TDX bike provider。
+- `providers/bike.py`：provider-neutral bike contract 與 `BikeStation` model；上游沒提供的欄位一律留 `None`，不得以 0 代替（0 在前端等同「沒車可借」）。
+- `providers/tdx_bike.py`：TDX Bike adapter；OAuth、HTTP、native payload normalization 都封裝在 adapter 內。
+- `providers/moovo_website.py`：MOOVO 官方城市地圖 adapter；只輸出官網能提供的站點座標與可借車數。
+- `providers/fallback_bike.py`：provider-neutral bike fallback；只依賴 `BikeProvider` contract。provider 拋錯或回空清單都視為不可用，會往下一個來源退，只有非空快照才算命中。
+- `services/bike_provider.py`：bike provider composition root 與 registry，可透過 `BIKE_PROVIDER_ORDER` 或 `configure_providers()` 切換與加入 provider。
 - `providers/asr.py`：ASR upstream provider（config 讀取 + multipart 上傳），供 `api/asr.py` 與 `voice/stt_breeze.py` 共用，兩邊都不再互相 import 私有符號。
 - `services/taigi_tts.py`：TTS config、Tailo 切段、`synthesize_segments` 有界並發派送；`prepare_tailo()` 收斂 normalize 後→text-process→split 的共用序列（回傳解碼前的 hanlo/tailo/segments），`api/tts.py` 與 `voice/tts_taigi.py` 各自接手 `synthesize_segments` 的錯誤轉換與音訊解碼（WAV vs PCM）。`make_silence_pcm()` 是兩邊共用的靜音位元組運算。
 - `services/kiosk_config.py`：Runtime kiosk 設定 singleton（stop_name、direction、lat/lon）；先原子落盤再發布記憶體狀態，並用 mtime 觀察其他 worker 的更新。持久化至 `.agent_state/kiosk_config.json`，預設雲林科技大學／回程。
 - `services/departures/`：離站決策唯一分類來源，只讀 provider-neutral `StopStatus`、`eta_seconds` 與 `RouteInfo`；不依賴任何上游名稱或 status code。
 - `services/route_plans.py`：OTP 路線規劃 facade、Kiosk 起點、雲林邊界、view model。
-- `services/moovo.py`：公共自行車站 dataclass、解析、cache、距離查詢。
+- `services/bike.py`：公共自行車 normalized station cache、provider switching、距離查詢；不依賴任何 upstream payload 格式。MOOVO 只是其中一個來源，所以服務層與 `/api/bike/*` 一律用中立的 bike 命名。
 - `services/stop_catalog.py`：TDX / GTFS 更新流程產生的雲林 stop index。
 - `services/yunlin_boundary.py`：雲林縣 GeoJSON point-in-polygon。
 - `tools/kiosk_bus.py`：Agent str facade，解析 kiosk 範圍（stop/direction）後轉呼叫 `services.departures`。

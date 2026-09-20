@@ -1,7 +1,7 @@
 """Shared TDX OAuth2 client_credentials token client.
 
 Both `TdxBusProvider` (providers/tdx_bus.py) and `TdxBikeProvider`
-(providers/moovo.py) authenticate against the same TDX OAuth endpoint with
+(providers/tdx_bike.py) authenticate against the same TDX OAuth endpoint with
 the same scheme: fetch + cache a bearer token, refresh it slightly before
 expiry, and — since TDX will occasionally reject an unexpired-by-our-clock
 token with a 401 (revoked/rotated server-side) — force a refresh and retry
