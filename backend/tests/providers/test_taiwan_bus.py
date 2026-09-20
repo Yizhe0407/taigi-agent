@@ -109,3 +109,35 @@ def test_unknown_route_returns_none(monkeypatch):
     provider = TaiwanBusProvider()
 
     assert asyncio.run(provider.fetch_route_estimate("9999")) is None
+
+
+def test_fetch_eta_at_stop_returns_none_for_a_stop_this_source_does_not_know(monkeypatch):
+    """An unknown stop name is "unavailable", not "no buses".
+
+    Answering [] would end the fallback chain and hide the stop from every
+    later source, which is exactly the case TaiwanBus cannot speak to.
+    """
+    monkeypatch.setattr(taiwan_bus, "get_http_client", lambda: _FakeClient())
+    provider = TaiwanBusProvider()
+
+    assert asyncio.run(provider.fetch_eta_at_stop("北港武德宮")) is None
+
+
+def test_fetch_eta_at_stop_returns_empty_when_a_known_stop_has_nothing_to_show(monkeypatch):
+    """A stop this source does serve, with no live rows, is a real [] answer."""
+
+    class _EmptyRouteClient(_FakeClient):
+        async def get(self, url, *, params, **kwargs):
+            if url.endswith("getRData.ashx"):
+                return _FakeResponse({"time": "12:00:00", "data": [], "cars": []})
+            return await super().get(url, params=params, **kwargs)
+
+    monkeypatch.setattr(taiwan_bus, "get_http_client", lambda: _FakeClient())
+    provider = TaiwanBusProvider()
+    assert asyncio.run(provider.load_route_info("斗六火車站"))  # warms the route index
+
+    # Upstream goes quiet for the routes themselves; the stop is still known.
+    provider._route_cache.clear()
+    monkeypatch.setattr(taiwan_bus, "get_http_client", lambda: _EmptyRouteClient())
+
+    assert asyncio.run(provider.fetch_eta_at_stop("斗六火車站")) == []

@@ -268,7 +268,11 @@ class TaiwanBusProvider(BusProvider):
     async def fetch_eta_at_stop(self, stop_name: str) -> list[StopArrival] | None:
         info = await self.load_route_info(stop_name)
         if not info:
-            return None if await self._search_routes(stop_name) else []
+            # Finding no route here means this source has nothing to say about
+            # the stop — often its search index simply does not carry the name.
+            # That is "unavailable" (None), not the real answer "no buses" ([]),
+            # so the fallback chain still gets to ask the next source.
+            return None
         result: list[StopArrival] = []
         for route_name in info:
             rows = await self.fetch_route_estimate(route_name)
