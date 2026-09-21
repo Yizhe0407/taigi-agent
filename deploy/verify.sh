@@ -47,4 +47,10 @@ log "確認 frontend SPA"
 frontend_response="$(fetch_with_retry "frontend SPA" "http://127.0.0.1:$WEB_PORT/")"
 grep -q '<div id="app"></div>' <<<"$frontend_response" || die "frontend index.html 不正確"
 
+log "確認語音 TURN 設定（提醒用，不擋部署）"
+ice_response="$(curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:$BACKEND_PORT/api/voice/ice-servers" 2>/dev/null || true)"
+if [[ -n "$ice_response" ]] && ! grep -Eqi 'turns?:' <<<"$ice_response"; then
+    log "警告：/api/voice/ice-servers 沒有 turn:/turns: entry，公網 WebRTC 語音會卡在連線中。純內網部署可忽略；否則請設定 CLOUDFLARE_TURN_KEY_ID / CLOUDFLARE_TURN_KEY_API_TOKEN 後重啟服務。"
+fi
+
 log "部署驗證通過"
