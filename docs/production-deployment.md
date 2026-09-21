@@ -15,7 +15,8 @@ Docker（給 SigNoz 觀測用，[官方安裝步驟](https://docs.docker.com/eng
 
 ```bash
 sudo systemctl enable --now docker
-sudo usermod -aG docker "$USER"   # 要重新登入才生效
+sudo usermod -aG docker "$USER"
+newgrp docker   # 立即套用新群組，不用整個重新登入（只在目前這個 shell 生效）
 ```
 
 ## 2. 填 `backend/.env`
