@@ -9,13 +9,9 @@
 ## Port 對外行為（偏離 vendor 原檔）
 
 `ingester`（4317/4318）與 `signoz-signoz-0`（UI，host port 改成 **8085**，避開正式環境
-backend 佔用的 8080）都 bind `127.0.0.1`，不對外網開放。UI 沒有子網域，正式主機上
-只能 SSH tunnel 進去看：
-
-```bash
-ssh -L 8085:127.0.0.1:8085 <正式主機>
-# 本機開 http://127.0.0.1:8085
-```
+backend 佔用的 8080）都 bind `127.0.0.1`，不對外網開放，只有透過 Cloudflare Tunnel +
+Access 掛的 `signoz.yizhe.dev` 才能從外部連到（設定步驟見
+`docs/production-deployment.md` 第 5 節）。
 
 這兩處 port mapping 是唯一手改的地方（其餘見下方「這份檔案哪來的」）；下次用
 `foundryctl forge` 重新產生時要記得重新套用這個 patch，否則會被蓋回
@@ -61,8 +57,8 @@ diff -r /tmp/signoz-pours/deployment .   # 核對差異後手動覆蓋
 - 這是單機部署（無叢集/多副本），正式環境跟本機開發用同一份 compose；量大到需要獨立
   telemetry 主機或叢集時再重新評估。
 - **正式主機第一次啟動必做**：`deploy/install.sh` 跑完 `docker compose up -d` 後，
-  SSH tunnel 進去（見上方指令）開 http://127.0.0.1:8085 完成註冊精靈（建立 org +
-  admin 帳號），OTLP 送進來的資料才有 org 可歸屬。這一步部署腳本不會自動做，
+  開 `https://signoz.yizhe.dev`（Cloudflare Tunnel 設好之後）完成註冊精靈（建立
+  org + admin 帳號），OTLP 送進來的資料才有 org 可歸屬。這一步部署腳本不會自動做，
   只是把 container 啟動起來。
   在完成註冊前送 span/metric 到 4317/4318 會失敗（`ingester` 對 4318 的
   連線直接被 reset，因為 collector 透過 opamp 跟 `signoz-signoz-0` 要完整
@@ -81,7 +77,8 @@ diff -r /tmp/signoz-pours/deployment .   # 核對差異後手動覆蓋
   mismatch 會一直被帶著跑。已實測驗證（2026-07-09）。
   **解法只有清 volume 重來**：`docker compose down -v && docker compose up -d`，
   代價是 SigNoz 的 org/帳號（存在 postgres volume）也會一起清掉，
-  重開後要重新跑一次 http://localhost:8080 的註冊精靈。
+  重開後要重新跑一次註冊精靈（本機開發開 http://127.0.0.1:8085，正式環境開
+  https://signoz.yizhe.dev）。
   尚未查出是什麼操作觸發這個 mismatch 第一次發生（懷疑跟不完整關閉
   / container 各自獨立重啟導致 clickhouse-server 與 keeper 不同步有關，
   但沒有再現最小條件）；乾淨開機（volume 全新）目前沒遇過這問題。

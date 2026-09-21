@@ -65,17 +65,22 @@ Cloudflare Tunnel 指到 `http://127.0.0.1:3000` 即可，不用開 backend port
 
 ## 5.（選用）開通觀測 Dashboard
 
-SigNoz 已經跑起來，但只 bind `127.0.0.1:8085`，沒有子網域。用遠端桌面連進主機的話，
-直接在那台機器桌面上開瀏覽器打 `http://127.0.0.1:8085` 就能看，不用額外設定。
+SigNoz 已經跑起來，bind 在 `127.0.0.1:8085`。要用瀏覽器直接連 `https://signoz.yizhe.dev`
+看，走既有的 Cloudflare Tunnel `ai2-school-server`（跟 `llm.`/`asr.`/`tts.`/`ai2.` 同一個，
+設定方式見 `docs/cloudflare-model-services.md`）：
 
-沒有遠端桌面、只能 SSH 的話，用 port forward：
+1. Cloudflare Dashboard → Zero Trust → 網路 → 連接器 → Cloudflare Tunnels →
+   `ai2-school-server` → Public Hostnames → Add a public hostname。
+2. Subdomain 填 `signoz`，Domain 選 `yizhe.dev`，Path 留空，Service type 選 `HTTP`，
+   URL 填 `localhost:8085`。
+3. `Additional application settings → Access` 開啟 `Protect with Access`，建立一個
+   Access application 掛在 `signoz.yizhe.dev`，policy 用互動登入（誰能登入自行設定，
+   不要沿用 LLM/ASR/TTS 那種 Service Token policy——那是機器對機器用的，人要用瀏覽器
+   登入的話需要一般登入方式）。
+4. 儲存，確認 `dig +short signoz.yizhe.dev` 有解析，瀏覽器開
+   `https://signoz.yizhe.dev` 應該先看到 Access 登入頁，登入後才進 SigNoz。
 
-```bash
-ssh -L 8085:127.0.0.1:8085 <主機的 SSH 連法，例如 user@host>
-# 換成本機瀏覽器開 http://127.0.0.1:8085
-```
-
-第一次打開要先建立 org/帳號。
+第一次打開要先建立 SigNoz 自己的 org/帳號（跟 Cloudflare Access 登入是兩層，各自獨立）。
 
 再到 `/etc/taigi-agent/taigi-agent.env` 加：
 
