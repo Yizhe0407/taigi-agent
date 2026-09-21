@@ -204,7 +204,7 @@ OTEL_SERVICE_NAME=taigi-bus-agent                   # 顯示在 SigNoz 的服務
 本機起 SigNoz：`cd backend/telemetry && docker compose up -d`，UI 開
 http://localhost:8080。正式環境由 `deploy/install.sh`/`update.sh` 自動啟動，UI port
 改為 8085 且只能透過 SSH tunnel 存取（無子網域）。細節見 `backend/telemetry/README.md`
-與 `docs/production-deployment.md` 第 10 節。
+與 `docs/production-deployment.md` 第 5 節。
 
 相關設定都在 `backend/telemetry.py`（backend 根層級的中立 infra 模組，
 agent / api / providers / services 都可引用，不構成跨層依賴）：
