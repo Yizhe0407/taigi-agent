@@ -7,6 +7,7 @@ source "$SCRIPT_DIR/lib.sh"
 
 require_app_user
 require_commands git uv pnpm node python3 rsync curl nginx systemctl install mktemp tr
+require_docker_compose
 require_source_repo
 require_clean_repo
 
@@ -16,6 +17,7 @@ validate_env_file "$ENV_FILE"
 as_root chown "$APP_USER:$APP_GROUP" "$ENV_FILE"
 as_root chmod 0600 "$ENV_FILE"
 migrate_initial_state
+deploy_telemetry_stack
 
 old_release="$(read_link_target "$CURRENT_LINK")"
 old_previous="$(read_link_target "$PREVIOUS_LINK")"

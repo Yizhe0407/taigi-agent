@@ -24,12 +24,16 @@ systemd taigi-agent.service
 - `uv`
 - Node.js + `pnpm`
 - `git`、`rsync`、`curl`、`nginx`、`systemctl`、`sudo`
+- Docker + Docker Compose plugin（跑 `backend/telemetry/` 的 SigNoz stack）
 
 Ubuntu 系統套件：
 
 ```bash
 sudo apt update
 sudo apt install -y git curl rsync nginx
+# Docker：依官方文件安裝 docker-ce + docker-compose-plugin，並把 APP_USER 加進 docker 群組
+# https://docs.docker.com/engine/install/ubuntu/
+sudo systemctl enable --now docker
 ```
 
 `uv`、Node.js、`pnpm` 依主機既有標準安裝。確認：
@@ -87,13 +91,14 @@ cd /path/to/taigi-agent
 腳本執行內容：
 
 1. 驗證 Git working tree 乾淨。
-2. `pnpm install --frozen-lockfile`，建立 frontend production build。
-3. 對 backend 執行 `uv sync --locked --no-dev`。
-4. 建立新的版本目錄。
-5. 將 `.env` 與 `.agent_state/` 改為共享路徑，避免更新覆蓋 secrets/runtime state。
-6. 安裝並驗證 systemd、Nginx 設定。
-7. 啟動 `taigi-agent.service`，reload Nginx。
-8. 等待 backend ready，再驗證 backend health、Nginx proxy 與 frontend SPA。
+2. 啟動/更新可觀測性 stack（SigNoz，`docker compose up -d`，失敗僅警告不中斷安裝）。
+3. `pnpm install --frozen-lockfile`，建立 frontend production build。
+4. 對 backend 執行 `uv sync --locked --no-dev`。
+5. 建立新的版本目錄。
+6. 將 `.env` 與 `.agent_state/` 改為共享路徑，避免更新覆蓋 secrets/runtime state。
+7. 安裝並驗證 systemd、Nginx 設定。
+8. 啟動 `taigi-agent.service`，reload Nginx。
+9. 等待 backend ready，再驗證 backend health、Nginx proxy、frontend SPA，並提醒（不擋部署）TURN 與 SigNoz 是否可連。
 
 ## 4. 版本與檔案位置
 
@@ -209,3 +214,33 @@ Cloudflare Tunnel 只轉送 `/api/voice/offer` signaling，不轉送 WebRTC medi
    ```
 
 `/api/voice/ice-servers` 應回傳含 `turn:` 或 `turns:` 的 `iceServers`，但不得在文件、issue 或 log 貼出其中的短效 username/credential。從外網開啟語音後，journal 的 ICE state 應進入 `connected`/`completed`，不應在約 60 秒後 timeout。
+
+## 10. 可觀測性（SigNoz）
+
+`deploy/install.sh`/`deploy/update.sh` 會自動對 `backend/telemetry/` 執行
+`docker compose up -d`，啟動 SigNoz（OTLP collector + ClickHouse + Postgres）。
+這一步失敗只印警告、不會中斷 taigi-agent 本身的部署（這包 stack 仍在踩坑階段，
+細節見 `backend/telemetry/README.md` 的「已知坑」）。
+
+UI 與 OTLP port 都只 bind `127.0.0.1`（8085 / 4317 / 4318），不對外開，也沒有子網域。
+要看 dashboard 得先 SSH tunnel：
+
+```bash
+ssh -L 8085:127.0.0.1:8085 <正式主機>
+# 本機開 http://127.0.0.1:8085
+```
+
+**第一次啟動必做**：SSH tunnel 進去完成 SigNoz 的註冊精靈（建立 org + admin 帳號），
+在完成之前 OTLP 送進來的 span/metric 都會被拒絕（沒有 org 可歸屬）。
+
+要讓 backend 實際把 telemetry 送過去，還要在 `/etc/taigi-agent/taigi-agent.env` 打開：
+
+```dotenv
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+OTEL_SERVICE_NAME=taigi-bus-agent
+```
+
+改完 `sudo systemctl restart taigi-agent.service`。內容層級的觀測（user input、
+LLM 回應、ASR/TTS 文字）預設會進 SigNoz，正式環境要調整前先看
+`docs/observability.md`「Content-level 觀測」一節；不想收集就設
+`TELEMETRY_CAPTURE_CONTENT=false`。

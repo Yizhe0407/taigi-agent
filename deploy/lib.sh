@@ -22,6 +22,8 @@ SYSTEMD_UNIT_PATH="/etc/systemd/system/$SYSTEMD_UNIT_NAME"
 NGINX_SITE_NAME="${NGINX_SITE_NAME:-$APP_NAME}"
 NGINX_SITE_PATH="/etc/nginx/sites-available/$NGINX_SITE_NAME"
 FRONTEND_API_BASE_URL="${FRONTEND_API_BASE_URL:-}"
+TELEMETRY_DIR="$SOURCE_DIR/backend/telemetry"
+TELEMETRY_UI_PORT="${TELEMETRY_UI_PORT:-8085}"
 
 log() {
     printf '[%s] %s\n' "$APP_NAME" "$*"
@@ -131,6 +133,19 @@ validate_env_file() {
             die "$file 的 $first 與 $second 必須一起設定"
         fi
     done
+}
+
+require_docker_compose() {
+    require_command docker
+    docker compose version >/dev/null 2>&1 || die "找不到 docker compose plugin（docker compose version 失敗）"
+}
+
+deploy_telemetry_stack() {
+    [[ -f "$TELEMETRY_DIR/docker-compose.yml" ]] || return 0
+    log "啟動/更新可觀測性 stack（SigNoz，docker compose；失敗僅警告，不擋 taigi-agent 部署）"
+    if ! (cd "$TELEMETRY_DIR" && as_root docker compose pull --quiet && as_root docker compose up -d); then
+        log "警告：SigNoz docker compose 啟動失敗，telemetry 暫時不可用。手動除錯：cd $TELEMETRY_DIR && docker compose logs"
+    fi
 }
 
 ensure_layout() {

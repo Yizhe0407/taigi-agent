@@ -20,8 +20,8 @@ services:
         aliases:
         - signoz-ingester
     ports:
-    - 4317:4317
-    - 4318:4318
+    - 127.0.0.1:4317:4317
+    - 127.0.0.1:4318:4318
     restart: unless-stopped
     volumes:
     - ./ingester/ingester.yaml:/etc/otel-collector-config.yaml:ro
@@ -68,7 +68,7 @@ services:
     networks:
     - signoz-network
     ports:
-    - 8080:8080
+    - 127.0.0.1:8085:8080
     restart: unless-stopped
   signoz-telemetrykeeper-clickhousekeeper-0:
     container_name: signoz-telemetrykeeper-clickhousekeeper-0

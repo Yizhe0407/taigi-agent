@@ -1,14 +1,33 @@
-# SigNoz（本機觀測後端）
+# SigNoz（觀測後端）
 
-跑 `docker compose up -d` 即可，UI 在 http://localhost:8080。啟動後把 `.env` 的
+跑 `docker compose up -d` 即可，UI 在 http://127.0.0.1:8085。啟動後把 `.env` 的
 `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` 打開（見 `backend/.env.example`）。
+
+正式環境由 `deploy/install.sh`/`deploy/update.sh` 自動 `docker compose up -d`
+這個 stack（見 `docs/production-deployment.md`）；本機開發一樣手動跑上面那行即可。
+
+## Port 對外行為（偏離 vendor 原檔）
+
+`ingester`（4317/4318）與 `signoz-signoz-0`（UI，host port 改成 **8085**，避開正式環境
+backend 佔用的 8080）都 bind `127.0.0.1`，不對外網開放。UI 沒有子網域，正式主機上
+只能 SSH tunnel 進去看：
+
+```bash
+ssh -L 8085:127.0.0.1:8085 <正式主機>
+# 本機開 http://127.0.0.1:8085
+```
+
+這兩處 port mapping 是唯一手改的地方（其餘見下方「這份檔案哪來的」）；下次用
+`foundryctl forge` 重新產生時要記得重新套用這個 patch，否則會被蓋回
+`8080:8080`／`4317:4317`／`4318:4318` 而跟正式環境 backend port 衝突。
 
 ## 這份檔案哪來的
 
 SigNoz 官方已棄用手寫 docker-compose，改用 [Foundry](https://github.com/SigNoz/foundry)
 CLI 動態產生。`docker-compose.yml` 與其餘 config（`ingester/`、`telemetrykeeper/`、
 `telemetrystore/`）是用官方 `foundryctl forge` 對 `casting.yaml`（docker compose flavor，
-全預設值）產生後原樣 vendor 進來的，沒有手改內容——手改容易跟官方實際架構漂移。
+全預設值）產生後 vendor 進來的，唯一手改是上面那組 port mapping——其餘沒有手改內容，
+手改容易跟官方實際架構漂移。
 
 ## 升版
 
@@ -35,11 +54,16 @@ diff -r /tmp/signoz-pours/deployment .   # 核對差異後手動覆蓋
 
 ## 已知坑
 
-- Port 8080/4317/4318 跟本專案其他服務（backend 8000、frontend、`backend/otp` 的 8081）不衝突，已核對過。
+- 本機開發用預設 port（8080/4317/4318）跟本專案其他服務（backend 8000、frontend、
+  `backend/otp` 的 8081）不衝突，已核對過。正式環境 UI port 改成 8085（見上方
+  「Port 對外行為」），因為正式 backend 佔用 8080。
 - 資料存在 named volume（`signoz-telemetrystore-0-0-data` 等），`docker compose down` 不會清；要重置環境用 `docker compose down -v`。
-- 這是單機開發用途，未做叢集/多副本；正式環境另評估。
-- **第一次啟動必做**：`docker compose up -d` 起完後，先開 http://localhost:8080
-  完成註冊精靈（建立 org + admin 帳號），OTLP 送進來的資料才有 org 可歸屬。
+- 這是單機部署（無叢集/多副本），正式環境跟本機開發用同一份 compose；量大到需要獨立
+  telemetry 主機或叢集時再重新評估。
+- **正式主機第一次啟動必做**：`deploy/install.sh` 跑完 `docker compose up -d` 後，
+  SSH tunnel 進去（見上方指令）開 http://127.0.0.1:8085 完成註冊精靈（建立 org +
+  admin 帳號），OTLP 送進來的資料才有 org 可歸屬。這一步部署腳本不會自動做，
+  只是把 container 啟動起來。
   在完成註冊前送 span/metric 到 4317/4318 會失敗（`ingester` 對 4318 的
   連線直接被 reset，因為 collector 透過 opamp 跟 `signoz-signoz-0` 要完整
   pipeline 設定時被拒絕，signoz app log 會印

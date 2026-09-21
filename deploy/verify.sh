@@ -53,4 +53,9 @@ if [[ -n "$ice_response" ]] && ! grep -Eqi 'turns?:' <<<"$ice_response"; then
     log "警告：/api/voice/ice-servers 沒有 turn:/turns: entry，公網 WebRTC 語音會卡在連線中。純內網部署可忽略；否則請設定 CLOUDFLARE_TURN_KEY_ID / CLOUDFLARE_TURN_KEY_API_TOKEN 後重啟服務。"
 fi
 
+log "確認可觀測性 stack（SigNoz，提醒用，不擋部署）"
+if ! curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:$TELEMETRY_UI_PORT/api/v1/health" >/dev/null 2>&1; then
+    log "警告：SigNoz（http://127.0.0.1:$TELEMETRY_UI_PORT）目前連不上，telemetry 暫時不可用。手動檢查：cd $TELEMETRY_DIR && docker compose ps"
+fi
+
 log "部署驗證通過"
