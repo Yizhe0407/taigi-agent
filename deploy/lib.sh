@@ -15,6 +15,7 @@ PREVIOUS_LINK="$DEPLOY_ROOT/previous"
 STATE_DIR="${STATE_DIR:-/var/lib/$APP_NAME}"
 ENV_DIR="${ENV_DIR:-/etc/$APP_NAME}"
 ENV_FILE="${ENV_FILE:-$ENV_DIR/$APP_NAME.env}"
+SOURCE_ENV_FILE="${SOURCE_ENV_FILE:-$SOURCE_DIR/backend/.env}"
 BACKEND_PORT="${BACKEND_PORT:-8080}"
 WEB_PORT="${WEB_PORT:-3000}"
 SYSTEMD_UNIT_NAME="${SYSTEMD_UNIT_NAME:-$APP_NAME.service}"
@@ -154,12 +155,12 @@ ensure_layout() {
     as_root install -d -o root -g "$APP_GROUP" -m 0750 "$ENV_DIR"
 }
 
-install_initial_env() {
-    local source_env="$SOURCE_DIR/backend/.env"
-    [[ -f "$ENV_FILE" ]] && return 0
-    validate_env_file "$source_env"
-    log "安裝 production environment file：$ENV_FILE"
-    as_root install -o "$APP_USER" -g "$APP_GROUP" -m 0600 "$source_env" "$ENV_FILE"
+# backend/.env in the source checkout is the single source of truth. Every
+# install/update overwrites the production copy, so never edit $ENV_FILE by hand.
+sync_env_file() {
+    validate_env_file "$SOURCE_ENV_FILE"
+    log "同步 $SOURCE_ENV_FILE → $ENV_FILE"
+    as_root install -o "$APP_USER" -g "$APP_GROUP" -m 0600 "$SOURCE_ENV_FILE" "$ENV_FILE"
 }
 
 migrate_initial_state() {

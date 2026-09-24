@@ -14,7 +14,7 @@ require_docker_compose
 require_source_repo
 require_clean_repo
 [[ -f "$ENV_FILE" ]] || die "尚未安裝；請先執行 deploy/install.sh"
-validate_env_file "$ENV_FILE"
+validate_env_file "$SOURCE_ENV_FILE"
 
 current_branch="$(git -C "$SOURCE_DIR" branch --show-current)"
 [[ "$current_branch" == "$DEPLOY_BRANCH" ]] || die "目前分支是 $current_branch，預期為 $DEPLOY_BRANCH"
@@ -32,6 +32,7 @@ old_previous="$(read_link_target "$PREVIOUS_LINK")"
 release_id="$(make_release_id)"
 build_release "$release_id"
 release_path="$RELEASES_DIR/$release_id"
+sync_env_file
 
 if ! activate_and_verify_release "$release_path"; then
     log "更新失敗，回切 $(basename "$old_release")"

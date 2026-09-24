@@ -37,6 +37,10 @@ CLOUDFLARE_TURN_KEY_API_TOKEN=...
 模型/ASR/TTS 若走 Cloudflare Access 保護、或要換 ASR/TTS upstream，完整選填清單看
 `backend/.env.example` 抄一份出來改。空著不用管，腳本會擋掉漏填或範例值。
 
+`backend/.env` 是唯一真相源：每次 `install.sh` / `update.sh` 都會把它覆蓋到
+`/etc/taigi-agent/taigi-agent.env`（systemd 實際讀的那份）並重啟服務。之後要改設定就改
+`backend/.env` 再跑 `./deploy/update.sh`，**不要直接改 `/etc` 那份**，下次部署會被蓋掉。
+
 ## 3. 安裝
 
 ```bash
@@ -59,8 +63,8 @@ Cloudflare Tunnel 指到 `http://127.0.0.1:3000` 即可，不用開 backend port
 ## 4. 之後更新 / 回滾
 
 ```bash
-./deploy/update.sh      # 拉 main 最新 commit 部署，失敗自動回退
-./deploy/rollback.sh    # 回到上一版
+./deploy/update.sh      # 拉 main 最新 commit + 同步 backend/.env 部署，失敗自動回退
+./deploy/rollback.sh    # 回到上一版（只回退程式，env 維持目前那份）
 ```
 
 ## 5.（選用）開通觀測 Dashboard
@@ -82,14 +86,14 @@ SigNoz 已經跑起來，bind 在 `127.0.0.1:8085`。要用瀏覽器直接連 `h
 
 第一次打開要先建立 SigNoz 自己的 org/帳號（跟 Cloudflare Access 登入是兩層，各自獨立）。
 
-再到 `/etc/taigi-agent/taigi-agent.env` 加：
+再到 `backend/.env` 加：
 
 ```dotenv
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 OTEL_SERVICE_NAME=taigi-bus-agent
 ```
 
-`sudo systemctl restart taigi-agent.service`。細節、已知問題見
+跑 `./deploy/update.sh` 套用。細節、已知問題見
 `backend/telemetry/README.md`、`docs/observability.md`。
 
 ## 常用檢查指令
@@ -105,7 +109,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ```text
 /opt/taigi-agent/current -> releases/<目前版本>
-/etc/taigi-agent/taigi-agent.env
+/etc/taigi-agent/taigi-agent.env  # 由 backend/.env 同步產生，勿手改
 /var/lib/taigi-agent/            # runtime state（sessions.db、kiosk_config.json）
 /etc/systemd/system/taigi-agent.service
 /etc/nginx/sites-available/taigi-agent

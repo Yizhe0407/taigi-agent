@@ -11,11 +11,9 @@ require_docker_compose
 require_source_repo
 require_clean_repo
 
+validate_env_file "$SOURCE_ENV_FILE"
+
 ensure_layout
-install_initial_env
-validate_env_file "$ENV_FILE"
-as_root chown "$APP_USER:$APP_GROUP" "$ENV_FILE"
-as_root chmod 0600 "$ENV_FILE"
 migrate_initial_state
 deploy_telemetry_stack
 
@@ -24,6 +22,7 @@ old_previous="$(read_link_target "$PREVIOUS_LINK")"
 release_id="$(make_release_id)"
 build_release "$release_id"
 release_path="$RELEASES_DIR/$release_id"
+sync_env_file
 
 if ! activate_and_verify_release "$release_path"; then
     if [[ -n "$old_release" && -d "$old_release" ]]; then

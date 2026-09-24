@@ -55,6 +55,16 @@ write_required_env "$bad_asr_env"
 printf 'ASR_MODEL=asr-model\n' >>"$bad_asr_env"
 (validate_env_file "$bad_asr_env") >/dev/null 2>&1 && fail "incomplete ASR pair passed validation"
 
+as_root() { "$@"; }
+mkdir -p "$ENV_DIR"
+printf 'STALE=1\n' >"$ENV_FILE"
+SOURCE_ENV_FILE="$good_env" sync_env_file >/dev/null
+cmp -s "$good_env" "$ENV_FILE" || fail "sync_env_file did not overwrite the production env file"
+[[ "$(stat -c %a "$ENV_FILE" 2>/dev/null || stat -f %Lp "$ENV_FILE")" == 600 ]] || fail "production env file is not 0600"
+printf 'STALE=1\n' >"$ENV_FILE"
+(SOURCE_ENV_FILE="$bad_asr_env" sync_env_file) >/dev/null 2>&1 && fail "invalid source env was synced"
+[[ "$(cat "$ENV_FILE")" == "STALE=1" ]] || fail "invalid source env overwrote the production env file"
+
 # Keep the transaction test portable to the macOS development host. Production
 # uses the GNU mv-based atomic_symlink implementation on Ubuntu.
 atomic_symlink() {
