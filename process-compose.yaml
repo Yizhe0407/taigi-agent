@@ -1,0 +1,42 @@
+version: "0.5"
+
+processes:
+  setup-backend:
+    working_dir: backend
+    command: uv sync
+
+  setup-frontend:
+    working_dir: frontend
+    command: pnpm install
+
+  otp:
+    working_dir: backend/otp
+    command: docker compose up
+    # No readiness_probe: this OTP build has no Actuator API (confirmed 404) and
+    # is GraphQL-only, so /otp/gtfs/v1 answers 405 on a GET whether or not the
+    # graph has finished loading — nothing here can tell "starting" from "ready".
+
+  backend:
+    working_dir: backend
+    command: uv run uvicorn api:app --reload --port 8000
+    depends_on:
+      setup-backend:
+        condition: process_completed_successfully
+    readiness_probe:
+      http_get:
+        host: 127.0.0.1
+        port: 8000
+        path: /api/health
+      initial_delay_seconds: 2
+      period_seconds: 2
+      timeout_seconds: 2
+      failure_threshold: 30
+
+  frontend:
+    working_dir: frontend
+    command: pnpm run dev
+    depends_on:
+      setup-frontend:
+        condition: process_completed_successfully
+      backend:
+        condition: process_healthy

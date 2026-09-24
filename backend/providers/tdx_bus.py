@@ -197,12 +197,14 @@ class TdxBusProvider(BusProvider):
             # Handles the 401 refresh-and-retry dance internally, independent of
             # the 429 retry budget below — a 401 refresh must not consume it.
             resp = await self._token_client.request_with_retry(_do)
-            if resp.status_code == 429 and attempt < _MAX_RETRIES:
-                wait = self._retry_after_seconds(resp, float(1 << attempt))
-                _log.warning("TDX 429 on %s; retry in %.0fs (attempt %d/%d)", url, wait, attempt + 1, _MAX_RETRIES)
-                await self._sleep(wait)
-                attempt += 1
-                continue
+            if resp.status_code == 429:
+                get_telemetry().record_provider_rate_limit(provider="tdx", endpoint=url.removeprefix(_BASE))
+                if attempt < _MAX_RETRIES:
+                    wait = self._retry_after_seconds(resp, float(1 << attempt))
+                    _log.warning("TDX 429 on %s; retry in %.0fs (attempt %d/%d)", url, wait, attempt + 1, _MAX_RETRIES)
+                    await self._sleep(wait)
+                    attempt += 1
+                    continue
             resp.raise_for_status()
             payload = resp.json()
             if not isinstance(payload, list):
@@ -225,6 +227,12 @@ class TdxBusProvider(BusProvider):
             return StopStatus.NOT_OPERATING
         return StopStatus.UNKNOWN
 
+    @staticmethod
+    def _norm_plate(value: object) -> str | None:
+        """TDX uses PlateNumb="-1" (or "") for a not-yet-dispatched bus."""
+        plate = str(value or "").strip()
+        return plate if plate and plate != "-1" else None
+
     @classmethod
     def _norm_eta(cls, row: dict) -> StopArrival:
         return StopArrival(
@@ -233,6 +241,7 @@ class TdxBusProvider(BusProvider):
             status=cls._norm_status(row.get("StopStatus", 1)),
             eta_seconds=row.get("EstimateTime"),
             sequence=row.get("StopSequence"),
+            vehicle_id=cls._norm_plate(row.get("PlateNumb")),
         )
 
     @classmethod
@@ -244,6 +253,7 @@ class TdxBusProvider(BusProvider):
             status=cls._norm_status(row.get("StopStatus", 1)),
             eta_seconds=row.get("EstimateTime"),
             route_name=route_name,
+            vehicle_id=cls._norm_plate(row.get("PlateNumb")),
         )
 
     # ── BusProvider ───────────────────────────────────────────────────────────

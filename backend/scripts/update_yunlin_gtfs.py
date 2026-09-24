@@ -265,18 +265,35 @@ def _get_tdx_token(session: requests.Session, client_id: str, client_secret: str
     return str(token)
 
 
+_GTFS_DOWNLOAD_ATTEMPTS = 5
+
+
 def _download_tdx_gtfs(session: requests.Session, token: str, output: Path) -> None:
-    with session.get(
-        _TDX_GTFS_URL,
-        headers={"Authorization": f"Bearer {token}"},
-        stream=True,
-        timeout=(30, 300),
-    ) as response:
-        response.raise_for_status()
-        with output.open("wb") as gtfs_zip:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    gtfs_zip.write(chunk)
+    """Stream the TDX GTFS bundle to `output`, retrying the whole transfer on
+    a mid-stream connection reset (observed on some networks for this
+    multi-hundred-MB endpoint) instead of failing on the first drop."""
+    last_error: Exception | None = None
+    for attempt in range(1, _GTFS_DOWNLOAD_ATTEMPTS + 1):
+        try:
+            with session.get(
+                _TDX_GTFS_URL,
+                headers={"Authorization": f"Bearer {token}"},
+                stream=True,
+                timeout=(30, 300),
+            ) as response:
+                response.raise_for_status()
+                written = 0
+                with output.open("wb") as gtfs_zip:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            gtfs_zip.write(chunk)
+                            written += len(chunk)
+            print(f"Downloaded TDX GTFS bundle: {written / 1_048_576:.1f} MiB")
+            return
+        except requests.exceptions.RequestException as exc:
+            last_error = exc
+            print(f"GTFS download attempt {attempt}/{_GTFS_DOWNLOAD_ATTEMPTS} failed: {exc}")
+    raise RuntimeError(f"TDX GTFS download failed after {_GTFS_DOWNLOAD_ATTEMPTS} attempts") from last_error
 
 
 def _tdx_stop_uids(

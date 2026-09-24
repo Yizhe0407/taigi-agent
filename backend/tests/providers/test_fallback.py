@@ -112,6 +112,59 @@ def test_fetch_eta_falls_back_only_when_primary_is_unavailable():
     fallback.fetch_eta_at_stop.assert_awaited_once_with("斗六火車站")
 
 
+def test_fetch_eta_backfills_scheduled_time_for_not_departed_rows():
+    primary_rows = [
+        StopArrival(route_name="201", direction=Direction.OUTBOUND, status=StopStatus.NOT_DEPARTED, eta_seconds=None),
+        StopArrival(route_name="101", direction=Direction.OUTBOUND, status=StopStatus.AVAILABLE, eta_seconds=60),
+    ]
+    fallback_rows = [
+        StopArrival(route_name="201", direction=Direction.OUTBOUND, status=StopStatus.NOT_DEPARTED, scheduled_time="08:30"),
+    ]
+    provider, primary, fallback = _make_fallback(primary_eta=primary_rows, fallback_eta=fallback_rows)
+
+    result = asyncio.run(provider.fetch_eta_at_stop("斗六火車站"))
+
+    assert result[0].scheduled_time == "08:30"
+    assert result[1].scheduled_time is None  # AVAILABLE row untouched
+    fallback.fetch_eta_at_stop.assert_awaited_once_with("斗六火車站")
+
+
+def test_fetch_eta_skips_backfill_when_nothing_is_missing():
+    primary_rows = [StopArrival(route_name="101", direction=Direction.OUTBOUND, status=StopStatus.AVAILABLE, eta_seconds=60)]
+    provider, primary, fallback = _make_fallback(primary_eta=primary_rows, fallback_eta=[])
+
+    result = asyncio.run(provider.fetch_eta_at_stop("斗六火車站"))
+
+    assert result == primary_rows
+    fallback.fetch_eta_at_stop.assert_not_awaited()
+
+
+def test_fetch_eta_backfill_failure_keeps_primary_rows():
+    primary_rows = [StopArrival(route_name="201", direction=Direction.OUTBOUND, status=StopStatus.NOT_DEPARTED)]
+    provider, primary, fallback = _make_fallback(primary_eta=primary_rows)
+    fallback.fetch_eta_at_stop.side_effect = RuntimeError("down")
+
+    result = asyncio.run(provider.fetch_eta_at_stop("斗六火車站"))
+
+    assert result == primary_rows
+
+
+def test_fetch_route_estimate_backfills_scheduled_time_matched_by_stop_and_direction():
+    primary_rows = [
+        RouteStopEstimate(stop_name="高鐵雲林站", sequence=1, direction=Direction.OUTBOUND, status=StopStatus.NOT_DEPARTED),
+        RouteStopEstimate(stop_name="斗六火車站", sequence=2, direction=Direction.OUTBOUND, status=StopStatus.AVAILABLE, eta_seconds=120),
+    ]
+    fallback_rows = [
+        RouteStopEstimate(stop_name="高鐵雲林站", sequence=1, direction=Direction.OUTBOUND, status=StopStatus.NOT_DEPARTED, scheduled_time="08:30"),
+    ]
+    provider, primary, fallback = _make_fallback(primary_route_estimate=primary_rows, fallback_route_estimate=fallback_rows)
+
+    result = asyncio.run(provider.fetch_route_estimate("201"))
+
+    assert result[0].scheduled_time == "08:30"
+    assert result[1].scheduled_time is None
+
+
 def test_fetch_eta_returns_empty_when_both_providers_fail():
     provider, primary, fallback = _make_fallback(primary_eta=None)
     primary.fetch_eta_at_stop.side_effect = RuntimeError("down")

@@ -67,6 +67,22 @@ The first OSM input is the Yunlin extract in:
 otp/data/yunlin.osm.pbf
 ```
 
+This file is not committed and has no fetch script; it was previously
+generated ad hoc and the source was never recorded. To regenerate it:
+
+```bash
+# 1. Download the Taiwan-wide extract (~300 MB)
+curl -L -o /tmp/taiwan-latest.osm.pbf https://download.geofabrik.de/asia/taiwan-latest.osm.pbf
+
+# 2. Clip to Yunlin County's official OSM boundary (relation 2915930) plus a
+#    ~0.1° buffer so routes that cross the county line (e.g. THB intercity
+#    routes 7120/7126) don't get cut off mid-road. Bounding box source:
+#    https://nominatim.openstreetmap.org/search?q=Yunlin+County,+Taiwan&format=json
+brew install osmium-tool
+osmium extract -b 119.88,23.31,120.84,23.97 \
+  /tmp/taiwan-latest.osm.pbf -o otp/data/yunlin.osm.pbf
+```
+
 Build the OTP graph after GTFS and OSM inputs are present:
 
 ```bash

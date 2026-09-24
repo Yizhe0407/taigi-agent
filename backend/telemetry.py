@@ -191,6 +191,14 @@ class AgentTelemetry:
                 "provider.outcome (primary_hit/fallback_hit/both_empty)."
             ),
         )
+        self._provider_rate_limits = provider_meter.create_counter(
+            "provider.rate_limit",
+            unit="{event}",
+            description=(
+                "Upstream HTTP 429 responses hit while calling a provider. "
+                "Attributes: provider.name (e.g. tdx), provider.endpoint."
+            ),
+        )
 
         # ── Departures instrumentation (decision classification) ──────────────
         departures_meter = metrics.get_meter(_DEPARTURES_INSTRUMENTATION_NAME)
@@ -396,6 +404,17 @@ class AgentTelemetry:
             {
                 "provider.operation": operation,
                 "provider.outcome": outcome,
+            },
+        )
+
+    def record_provider_rate_limit(self, *, provider: str, endpoint: str) -> None:
+        """Record one upstream HTTP 429, so rate-limit pressure shows up as a
+        dashboard/alert instead of only ever being visible in warning logs."""
+        self._provider_rate_limits.add(
+            1,
+            {
+                "provider.name": provider,
+                "provider.endpoint": endpoint,
             },
         )
 
