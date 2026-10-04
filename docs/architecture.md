@@ -78,7 +78,8 @@ backend/
 - `providers/bus.py`：provider-neutral `BusProvider` Protocol 與 `RouteInfo`、`RouteAtStop`、`StopArrival`、`RouteStopEstimate` model。`RouteInfo` 除去回終點外也帶靜態站序（`outbound_stops` / `inbound_stops`，依站序排列）：各 adapter 在 `load_route_info` 探索路線時本來就讀到完整站序，必須保留。契約裡沒有任何上游欄位名或 status code，adapter 必須回傳完整 typed row（不再有 dict 相容層或 `as_*` coercion）。
 - `providers/http.py`：process-wide 共用 `httpx.AsyncClient`（連線池重用）；TTS/ASR/OTP/TDX 都透過它發請求，各呼叫點自帶 per-request timeout，app shutdown 時由 lifespan 關閉。
 - `providers/tdx_bus.py`：TDX 的 provider-neutral adapter；整合 City/InterCity endpoint，OAuth2、TTL、LRU 與 retry 都封裝在 adapter 內。互動呼叫（工具派發設的 `upstream_deadline`）被 429 時不等 Retry-After，直接讓快取供舊資料；StopOfRoute 重抓失敗或只抓到一半時保留上一份完整快照。
-- `upstream_deadline.py`：每次請求的上游時間預算（ContextVar）。`agent/tool_dispatch.py` 給每次工具呼叫 3 秒；`providers/ttl_cache.py` 與 TDX adapter 依剩餘預算決定是否等待。
+- `providers/tdx_rate_limit.py`：每把 TDX 金鑰一個全程序共用的滑動視窗限速器（`TDX_RATE_LIMIT`，預設 5/min）。公車與單車 adapter 每個請求都先取額度；背景呼叫只能用約 60%，其餘留給有預算的互動呼叫；429 依 Retry-After 暫停整把金鑰。所有等待都在這裡，provider 不自己 sleep。
+- `upstream_deadline.py`：每次請求的上游時間預算（ContextVar）。`agent/tool_dispatch.py` 給每次工具呼叫 3 秒，`api/departures.py` 給 Kiosk 畫面的到站讀取 3 秒；`providers/ttl_cache.py` 與 TDX adapter 依剩餘預算決定是否等待。
 - `services/departures/provider.py`：composition root，固定組裝 `TdxBusProvider`（TaiwanBus / ebus 爬蟲來源已移除）；`set_provider()` / `provider_override()` / `reset_provider()` 供測試替換，其他層不需要知道具體供應商。
 - `providers/otp.py`：OpenTripPlanner GraphQL provider。
 - `providers/bike.py`：provider-neutral bike contract 與 `BikeStation` model；上游沒提供的欄位一律留 `None`，不得以 0 代替（0 在前端等同「沒車可借」）。

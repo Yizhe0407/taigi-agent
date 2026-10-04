@@ -46,7 +46,7 @@ import logging
 import re
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
@@ -62,6 +62,7 @@ from providers.bus import (
 )
 from providers.http import get_http_client
 from providers.tdx_auth import TdxTokenClient
+from providers.tdx_rate_limit import TdxRateLimiter, tdx_rate_limiter
 from providers.ttl_cache import KeyedLocks, TtlCache
 from telemetry import get_telemetry
 from upstream_deadline import UpstreamBudgetExceeded, remaining_budget
@@ -76,13 +77,13 @@ _ROUTE_INFO_PARTIAL_TTL = 60.0  # short TTL when a StopOfRoute endpoint failed m
 _DEFAULT_ROUTE_ESTIMATE_TTL = 30.0  # TDX updates ~30 s; 10 s caused 429 rate-limit hits
 _MAX_ROUTE_ESTIMATE_CACHE_ENTRIES = 256
 _MIN_STOP_ROUTES_SWEEP = 32  # don't bother sweeping _stop_routes_by_stop below this size
-_DEFAULT_ETA_TTL = 60.0  # must exceed wait_for(12s) + warmup_sleep(25s) = 37s to break 429 cascade
+_DEFAULT_ETA_TTL = 60.0  # outlives two 25 s warmup ticks, so a tick that waits for a rate-limit slot still lands in time
 _MAX_RETRIES = 1  # retries on HTTP 429; Retry-After is 20-40 s so 3 retries = 60-120 s blocking
 _MAX_UIDS_PER_FILTER = 15  # keeps encoded $filter well under typical gateway URL-length limits
 _MAX_STALE_SECONDS = 300.0  # upstream-down grace period; beyond this, stop serving stale data
-_ETA_FETCH_TIMEOUT = 12.0  # outer budget for fetch_eta_at_stop's asyncio.wait_for
-# Per-request timeout; must stay below _ETA_FETCH_TIMEOUT or wait_for cancels the
-# request before this timeout can ever fire.
+# Per-request HTTP timeout. Waiting for a rate-limit slot is not bounded here:
+# background work queues as long as it takes, and interactive callers are
+# bounded by their `upstream_deadline` budget instead.
 _REQUEST_TIMEOUT_SECONDS = 10.0
 
 _INTERCITY_RE = re.compile(r"^7\d{3}")
@@ -142,7 +143,7 @@ class TdxBusProvider(BusProvider):
         route_estimate_ttl_seconds: float | None = _DEFAULT_ROUTE_ESTIMATE_TTL,
         eta_ttl_seconds: float | None = _DEFAULT_ETA_TTL,
         clock: Callable[[], float] = time.monotonic,
-        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        rate_limiter: TdxRateLimiter | None = None,
     ) -> None:
         self._client_id = client_id
         self._client_secret = client_secret
@@ -150,7 +151,8 @@ class TdxBusProvider(BusProvider):
         self._route_estimate_ttl = route_estimate_ttl_seconds
         self._eta_ttl = eta_ttl_seconds
         self._clock = clock
-        self._sleep = sleep
+        # Shared with every other TDX consumer on this key (bike stations, …).
+        self._limiter = rate_limiter or tdx_rate_limiter(client_id)
         # Passed as a factory (not called here) so tests that monkeypatch
         # `tdx_bus.get_http_client` before constructing the provider also cover
         # the token client's requests.
@@ -199,28 +201,30 @@ class TdxBusProvider(BusProvider):
             return default
 
     async def _get(self, url: str, params: dict) -> list[dict]:
-        """GET a TDX endpoint, honouring the caller's upstream budget.
+        """GET a TDX endpoint through the key's shared rate limiter.
 
-        Background callers (no budget) sit out a 429's Retry-After and retry.
-        Interactive callers (`upstream_deadline`) never block past their budget:
-        the request timeout is capped to what is left, and a 429 whose backoff
-        would overrun it raises `UpstreamBudgetExceeded` at once, so the cache
-        layer can serve stale data instead of the rider waiting 20-40 s.
+        Every request first takes a slot from `self._limiter`, which is also
+        where all waiting happens: for a free slot, and after a 429 for the
+        Retry-After pause the 429 put on the whole key. Background callers wait
+        it out; interactive callers (`upstream_deadline`) get
+        `UpstreamBudgetExceeded` when the wait would overrun their budget, and
+        their request timeout is capped to what is left — so the cache layer
+        can answer with stale data instead of the rider waiting 20-40 s.
         """
         http = get_http_client()
         attempt = 0
         while True:
-            budget = remaining_budget()
-            if budget is not None and budget <= 0:
-                raise UpstreamBudgetExceeded(f"TDX {url.removeprefix(_BASE)}: caller's budget spent")
-            request_timeout = _REQUEST_TIMEOUT_SECONDS if budget is None else min(_REQUEST_TIMEOUT_SECONDS, budget)
 
-            async def _do(token: str, url: str = url, params: dict = params, timeout: float = request_timeout) -> httpx.Response:
+            async def _do(token: str, url: str = url, params: dict = params) -> httpx.Response:
+                await self._limiter.acquire()
+                budget = remaining_budget()
+                if budget is not None and budget <= 0:
+                    raise UpstreamBudgetExceeded(f"TDX {url.removeprefix(_BASE)}: caller's budget spent")
                 return await http.get(
                     url,
                     params={**params, "$format": "JSON"},
                     headers={"Authorization": f"Bearer {token}"},
-                    timeout=timeout,
+                    timeout=_REQUEST_TIMEOUT_SECONDS if budget is None else min(_REQUEST_TIMEOUT_SECONDS, budget),
                 )
 
             # Handles the 401 refresh-and-retry dance internally, independent of
@@ -228,13 +232,10 @@ class TdxBusProvider(BusProvider):
             resp = await self._token_client.request_with_retry(_do)
             if resp.status_code == 429:
                 get_telemetry().record_provider_rate_limit(provider="tdx", endpoint=url.removeprefix(_BASE))
+                wait = self._retry_after_seconds(resp, float(1 << attempt))
+                self._limiter.penalize(wait)
                 if attempt < _MAX_RETRIES:
-                    wait = self._retry_after_seconds(resp, float(1 << attempt))
-                    budget = remaining_budget()
-                    if budget is not None and wait >= budget:
-                        raise UpstreamBudgetExceeded(f"TDX 429 on {url.removeprefix(_BASE)}: Retry-After {wait:.0f}s exceeds the caller's budget")
-                    _log.warning("TDX 429 on %s; retry in %.0fs (attempt %d/%d)", url, wait, attempt + 1, _MAX_RETRIES)
-                    await self._sleep(wait)
+                    _log.warning("TDX 429 on %s; key paused %.0fs (attempt %d/%d)", url, wait, attempt + 1, _MAX_RETRIES)
                     attempt += 1
                     continue
             resp.raise_for_status()
@@ -305,8 +306,7 @@ class TdxBusProvider(BusProvider):
 
         async def _fetch() -> list[StopArrival]:
             uids = self._kiosk_uids.get(stop_name)
-            fetch = self._fetch_eta_by_uids(uids) if uids else self._fetch_eta_by_name(stop_name)
-            return await asyncio.wait_for(fetch, timeout=_ETA_FETCH_TIMEOUT)
+            return await (self._fetch_eta_by_uids(uids) if uids else self._fetch_eta_by_name(stop_name))
 
         # TtlCache.get_or_fetch leaves fetched_at unbumped on a stale-serve, so
         # staleness keeps accumulating toward _MAX_STALE_SECONDS instead of an

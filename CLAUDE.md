@@ -56,6 +56,7 @@ pnpm dev
 - Kiosk 方向設定語意：admin 設「去程」或「回程」→ 直接過濾，不 auto-detect；設「去回程都有」(go_back=None) → `_is_terminal_direction()` 自動過濾終點到站方向，循環路線不過濾。
 - **方向編碼**：TDX Direction 0=去程、1=回程（非舊 ebus 的 1/2）。`kiosk_config.go_back`、`iter_scoped_stop_etas` 的 `go_back` 參數、API response `goBack` 全部用 0/1。
 - **TDX provider**：`providers/tdx_bus.py` 同時查 `City/YunlinCounty` 與 `InterCity` 兩個 endpoint 並合併。`load_route_info` 從 `StopOfRoute` Stops 末站推導 `go_dest`/`back_dest`，並保留完整站序到 `RouteInfo.outbound_stops`/`inbound_stops`。
+- **TDX 限速器**：所有 TDX API 請求（公車＋單車，同一把金鑰）都要先 `tdx_rate_limiter(client_id).acquire()`，額度由 `TDX_RATE_LIMIT` 設定（預設 `5/min` 基礎會員）。背景呼叫只能用約 60% 額度，其餘保留給有預算的互動呼叫；429 用 `penalize()` 暫停整把金鑰，不要在 provider 內自己 sleep。
 - **上游時間預算**：工具派發用 `upstream_deadline(TOOL_UPSTREAM_BUDGET_SECONDS)` 包住每次工具呼叫；會阻塞的上游程式碼（TDX `_get` 的 429 退避、`TtlCache` / StopOfRoute 的鎖等待）要看 `remaining_budget()`，不得等超過，改丟 `UpstreamBudgetExceeded` 讓快取供舊資料。背景工作沒有預算，照常等 Retry-After。
 - **路線拓撲 vs 即時資料**：「這條路線之後會不會到 X」是靜態問題，用 `RouteInfo` 站序回答（`rows._iter_route_downstream`）；`fetch_route_estimate` 只用來取即時 ETA，不要再為了判斷路線形狀逐條抓。
 - **TDX 欄位**：ETA rows — `sub_route_name`(str)、`direction`(0/1)、`stop_status`(0-4)、`estimate_seconds`(int|None)。route estimate rows 多加 `stop_name`、`stop_sequence`。`route_id` 整個 service/API 層是 `str`。

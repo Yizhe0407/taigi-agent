@@ -13,6 +13,19 @@ import pytest
 from providers import tdx_bus
 from providers.bus import Direction, RouteInfo, StopArrival, StopStatus
 from providers.tdx_bus import TdxBusProvider
+from providers.tdx_rate_limit import RateLimit, TdxRateLimiter
+
+
+def _limiter(sleeps: list[float] | None = None, now: list[float] | None = None) -> TdxRateLimiter:
+    """An effectively unlimited limiter whose waits are recorded and advance a fake clock."""
+    clock = now if now is not None else [0.0]
+
+    async def fake_sleep(seconds: float) -> None:
+        if sleeps is not None:
+            sleeps.append(seconds)
+        clock[0] += seconds
+
+    return TdxRateLimiter(RateLimit(requests=1000, per_seconds=1.0), clock=lambda: clock[0], sleep=fake_sleep)
 
 
 class _FakeResp:
@@ -463,7 +476,8 @@ def test_fetch_eta_at_stop_raises_when_both_endpoints_fail(monkeypatch):
 
 
 def test_get_retries_on_429_then_succeeds(monkeypatch):
-    """_get retries up to _MAX_RETRIES times on 429 response before succeeding."""
+    """A 429 pauses the key for its backoff (1 s without Retry-After); the retry
+    waits that out in the limiter, then succeeds."""
     calls = []
     sleeps = []
 
@@ -473,23 +487,15 @@ def test_get_retries_on_429_then_succeeds(monkeypatch):
 
         async def get(self, url, **kwargs):
             calls.append(url)
-            # First 2 calls return 429; 3rd succeeds
-            if len(calls) <= 2:
-                return _FakeResp([], status_code=429)
-            return _FakeResp(_ETA_ROWS)
-
-    async def fake_sleep(s: float) -> None:
-        sleeps.append(s)
+            return _FakeResp([], status_code=429) if len(calls) == 1 else _FakeResp(_ETA_ROWS)
 
     monkeypatch.setattr(tdx_bus, "get_http_client", lambda: RetryClient())
-    provider = TdxBusProvider("id", "secret", sleep=fake_sleep)
-    provider._kiosk_uids["A"] = {"UID1"}
-    rows = asyncio.run(provider.fetch_eta_at_stop("A"))
+    provider = TdxBusProvider("id", "secret", rate_limiter=_limiter(sleeps))
+    rows = asyncio.run(provider._get(f"{tdx_bus._BASE}/x", {}))
 
-    # 1 sleep (backoff before attempt 2); data from successful call
-    assert len(sleeps) == 1
     assert sleeps == [1.0]  # 1<<0
-    assert any(r.route_name == "201" for r in rows)
+    assert len(calls) == 2
+    assert rows == _ETA_ROWS
 
 
 def test_get_raises_after_max_retries(monkeypatch):
@@ -503,11 +509,8 @@ def test_get_raises_after_max_retries(monkeypatch):
         async def get(self, url, **kwargs):
             return _FakeResp([], status_code=429)
 
-    async def fake_sleep(s: float) -> None:
-        pass
-
     monkeypatch.setattr(tdx_bus, "get_http_client", lambda: Always429Client())
-    provider = TdxBusProvider("id", "secret", sleep=fake_sleep)
+    provider = TdxBusProvider("id", "secret", rate_limiter=_limiter())
     provider._kiosk_uids["A"] = {"UID1"}
     try:
         asyncio.run(provider.fetch_eta_at_stop("A"))
@@ -642,12 +645,9 @@ def test_fetch_eta_at_stop_returns_stale_on_error(monkeypatch):
         async def get(self, url, **kwargs):
             return _FakeResp([], status_code=429)
 
-    async def fake_sleep(s: float) -> None:
-        pass
-
     monkeypatch.setattr(tdx_bus, "get_http_client", lambda: Always429Client())
     fake_now = [0.0]
-    provider = TdxBusProvider("id", "secret", eta_ttl_seconds=30.0, sleep=fake_sleep, clock=lambda: fake_now[0])
+    provider = TdxBusProvider("id", "secret", eta_ttl_seconds=30.0, clock=lambda: fake_now[0], rate_limiter=_limiter())
     provider._kiosk_uids["A"] = {"UID1"}
 
     # Seed stale cache manually (expired)
@@ -814,11 +814,8 @@ def test_429_under_budget_fails_fast_instead_of_sleeping(monkeypatch):
         async def get(self, url, **kwargs):
             return _RateLimitedResp("30")
 
-    async def fake_sleep(s: float) -> None:
-        sleeps.append(s)
-
     monkeypatch.setattr(tdx_bus, "get_http_client", lambda: Limited())
-    provider = TdxBusProvider("id", "secret", sleep=fake_sleep)
+    provider = TdxBusProvider("id", "secret", rate_limiter=_limiter(sleeps))
 
     async def scenario() -> None:
         with upstream_deadline(3.0):
@@ -842,11 +839,8 @@ def test_429_without_budget_still_waits_retry_after(monkeypatch):
             calls.append(url)
             return _RateLimitedResp("30") if len(calls) == 1 else _FakeResp([])
 
-    async def fake_sleep(s: float) -> None:
-        sleeps.append(s)
-
     monkeypatch.setattr(tdx_bus, "get_http_client", lambda: LimitedOnce())
-    provider = TdxBusProvider("id", "secret", sleep=fake_sleep)
+    provider = TdxBusProvider("id", "secret", rate_limiter=_limiter(sleeps))
     assert asyncio.run(provider._get(f"{tdx_bus._BASE}/x", {})) == []
     assert sleeps == [30.0]
 

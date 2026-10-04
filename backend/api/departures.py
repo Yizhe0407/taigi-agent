@@ -25,6 +25,7 @@ from services.departures import (
     build_route_detail,
 )
 from services.kiosk_config import kiosk_go_back_filter, kiosk_stop_name
+from upstream_deadline import upstream_deadline
 
 from .sse import SSE_HEADERS, sse_event
 
@@ -45,16 +46,24 @@ router = APIRouter()
 # on `api.departures` so route handlers see the patched callable.
 
 
+# Someone is looking at the kiosk screen, so these reads get the same kind of
+# upstream budget as an agent tool call: on a rate-limited TDX they answer from
+# cache (or 503) instead of queueing behind the background warmup for a slot.
+HTTP_UPSTREAM_BUDGET_SECONDS = 3.0
+
+
 async def get_departure_snapshot_here(*, updated_at: datetime | None = None) -> StopDepartureSnapshot:
-    return await build_departure_snapshot(
-        kiosk_stop_name(),
-        kiosk_go_back_filter(),
-        updated_at=updated_at,
-    )
+    with upstream_deadline(HTTP_UPSTREAM_BUDGET_SECONDS):
+        return await build_departure_snapshot(
+            kiosk_stop_name(),
+            kiosk_go_back_filter(),
+            updated_at=updated_at,
+        )
 
 
 async def get_route_detail_here(route: str) -> DepartureRouteDetail:
-    return await build_route_detail(route, kiosk_stop_name(), kiosk_go_back_filter())
+    with upstream_deadline(HTTP_UPSTREAM_BUDGET_SECONDS):
+        return await build_route_detail(route, kiosk_stop_name(), kiosk_go_back_filter())
 
 
 # ── Pydantic response schemas ─────────────────────────────────────────────────

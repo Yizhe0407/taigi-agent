@@ -21,11 +21,19 @@ from async_lifecycle import ReclaimingAsyncLock
 from providers.bike import BikeProviderApiError, BikeProviderConfigError, BikeStation
 from providers.http import get_http_client
 from providers.tdx_auth import TdxTokenClient
+from providers.tdx_rate_limit import TdxRateLimiter, tdx_rate_limiter
 from telemetry import get_telemetry
 
 _DEFAULT_BIKE_BASE_URL = "https://tdx.transportdata.tw/api/basic/v2/Bike"
 _DEFAULT_CITY = "YunlinCounty"
 _REQUEST_TIMEOUT_SECONDS = 20.0
+
+
+def _retry_after_seconds(response: httpx.Response, default: float = 1.0) -> float:
+    try:
+        return float(response.headers.get("Retry-After", ""))
+    except ValueError:
+        return default
 
 
 def _tdx_credentials() -> tuple[str, str]:
@@ -147,12 +155,15 @@ class TdxBikeProvider:
         city: str = _DEFAULT_CITY,
         timeout: float = _REQUEST_TIMEOUT_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        rate_limiter: TdxRateLimiter | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._city = city
         self._timeout = timeout
         self._clock = clock
         self._token_client: TdxTokenClient | None = None
+        # Resolved with the credentials: shared with the bus provider on the same key.
+        self._rate_limiter = rate_limiter
         self._token_client_lock = ReclaimingAsyncLock("TDX bike token-client construction")
 
     async def fetch_stations(self) -> tuple[BikeStation, ...]:
@@ -176,6 +187,8 @@ class TdxBikeProvider:
         async with self._token_client_lock.acquire():
             if self._token_client is None:
                 client_id, client_secret = _tdx_credentials()
+                if self._rate_limiter is None:
+                    self._rate_limiter = tdx_rate_limiter(client_id)
                 self._token_client = TdxTokenClient(
                     client_id,
                     client_secret,
@@ -188,9 +201,12 @@ class TdxBikeProvider:
 
     async def _get_json(self, path: str, *, params: dict[str, str] | None = None) -> Any:
         token_client = await self._ensure_token_client()
+        limiter = self._rate_limiter
+        assert limiter is not None  # set alongside the token client
         client = get_http_client()
 
         async def _do(token: str) -> httpx.Response:
+            await limiter.acquire()
             return await client.get(
                 f"{self._base}/{path}",
                 headers={
@@ -203,6 +219,8 @@ class TdxBikeProvider:
 
         try:
             response = await token_client.request_with_retry(_do)
+            if response.status_code == 429:
+                limiter.penalize(_retry_after_seconds(response))
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as error:
