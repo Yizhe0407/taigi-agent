@@ -34,7 +34,7 @@ agent/session.py
     └─ diagnostic span events                ← [manual] log_diagnostic（retry / context trim）
 
 providers / services 快取
-    └─ provider.cache.lookup counter         ← [manual] taiwanbus route_info / route_estimate、
+    └─ provider.cache.lookup counter         ← [manual] TDX stop_routes / route_estimate / ETA、
                                                 TDX token、公共自行車站點的 hit/miss
 
 voice/（pipecat WebRTC 語音 pipeline，api/voice.py 的 SmallWebRTCRequestHandler 啟動）
@@ -118,8 +118,8 @@ context trim、tool round limit 這類運維訊息直接出現在 trace 時間�
 
 | Metric 名稱 | 類型 | 單位 | 屬性 | 說明 |
 |-------------|------|------|------|------|
-| `provider.cache.lookup` | Counter | {lookup} | `cache.name`（taiwanbus.route_info / taiwanbus.route_estimate / tdx.token / bike.stations）, `cache.outcome`（hit/miss） | 上游資料快取命中率；調 TTL 與評估 upstream 負載的依據 |
-| `provider.fallback` | Counter | {call} | `provider.operation`（routes/route_info/eta/route_estimate）, `provider.outcome`（primary_hit/fallback_hit/both_empty） | provider-neutral fallback 鏈結果；鏈上第一個來源回答時是 primary_hit，由後面任何一個來源回答時是 fallback_hit，整條鏈都給不出可用答案時是 both_empty |
+| `provider.cache.lookup` | Counter | {lookup} | `cache.name`（tdx.stop_routes / tdx.route_estimate / tdx.eta / tdx.token / bike.stations）, `cache.outcome`（hit/miss） | 上游資料快取命中率；調 TTL 與評估 upstream 負載的依據 |
+| `provider.fallback` | Counter | {call} | `provider.operation`（bike.*）, `provider.outcome` | 公共自行車 provider 鏈結果（公車只有 TDX 一個來源，不再記這個 metric） |
 
 ### Departures（`taigi_bus_agent.departures` meter）
 

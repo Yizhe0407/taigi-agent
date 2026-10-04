@@ -75,13 +75,10 @@ backend/
 
 ### 領域層
 
-- `providers/bus.py`：provider-neutral `BusProvider` Protocol 與 `RouteInfo`、`RouteAtStop`、`StopArrival`、`RouteStopEstimate` model，以及 `BusProviderConfigError`。契約裡沒有任何上游欄位名或 status code，adapter 必須回傳完整 typed row（不再有 dict 相容層或 `as_*` coercion）。
-- `providers/http.py`：process-wide 共用 `httpx.AsyncClient`（連線池重用）；TTS/ASR/OTP/TaiwanBus/TDX/ebus 都透過它發請求，各呼叫點自帶 per-request timeout，app shutdown 時由 lifespan 關閉。
-- `providers/taiwan_bus.py`：TaiwanBus eBUS provider-neutral adapter；解析路線搜尋、route key 與即時資料，所有 native payload 在 adapter 內轉成 `providers.bus` model。
-- `providers/ebus.py`：ebus.yunlin.gov.tw 的 provider-neutral adapter；保留 route index 與 upstream cache，所有 native payload 在 adapter 內轉成 `providers.bus` model。預設鏈不含它，用 `BUS_PROVIDER_ORDER` 選入即可啟用；`.agent_state/ebus-route-index.json` 路徑由 `EBUS_ROUTE_INDEX_PATH` 覆寫（schema v2 存 provider-neutral 欄位名）。
+- `providers/bus.py`：provider-neutral `BusProvider` Protocol 與 `RouteInfo`、`RouteAtStop`、`StopArrival`、`RouteStopEstimate` model。契約裡沒有任何上游欄位名或 status code，adapter 必須回傳完整 typed row（不再有 dict 相容層或 `as_*` coercion）。
+- `providers/http.py`：process-wide 共用 `httpx.AsyncClient`（連線池重用）；TTS/ASR/OTP/TDX 都透過它發請求，各呼叫點自帶 per-request timeout，app shutdown 時由 lifespan 關閉。
 - `providers/tdx_bus.py`：TDX 的 provider-neutral adapter；整合 City/InterCity endpoint，OAuth2、TTL、LRU 與 retry 都封裝在 adapter 內。
-- `providers/fallback.py`：provider-neutral `FallbackBusProvider`，接受任意長度的有序 provider 清單。只依賴 `BusProvider` Protocol，不知道 TaiwanBus、Ebus、TDX 或其他具體供應商。各操作的「這個來源沒東西」訊號不同：`fetch_routes_at_stop` 空清單代表不認得這站會續查下一個；ETA 與 route estimate 的 `None` 代表不可用、`[]` 是真答案並結束查詢；`load_route_info` 則沿鏈合併直到每條路線的去回終點都補齊（前面的來源優先）。結果以中立的 fallback metrics 記錄。
-- `services/departures/provider.py`：composition root 與 registry。`BUS_PROVIDER_ORDER`（逗號分隔，預設 `taiwanbus,tdx`；內建名稱 `taiwanbus` / `tdx` / `ebus`）決定鏈的順序，`register_provider()` 可在組裝前加入新來源，`configure_providers()` / `provider_override()` / `reset_provider()` 供測試與 runtime 切換；其他層不需要知道具體供應商。
+- `services/departures/provider.py`：composition root，固定組裝 `TdxBusProvider`（TaiwanBus / ebus 爬蟲來源已移除）；`set_provider()` / `provider_override()` / `reset_provider()` 供測試替換，其他層不需要知道具體供應商。
 - `providers/otp.py`：OpenTripPlanner GraphQL provider。
 - `providers/bike.py`：provider-neutral bike contract 與 `BikeStation` model；上游沒提供的欄位一律留 `None`，不得以 0 代替（0 在前端等同「沒車可借」）。
 - `providers/tdx_bike.py`：TDX Bike adapter；OAuth、HTTP、native payload normalization 都封裝在 adapter 內。
@@ -120,7 +117,7 @@ frontend/
 
 ## 已知技術債
 
-- TaiwanBus、TDX、ebus 三個 API 都是外部契約，各自的欄位或 endpoint 改版只修自己的 adapter（`providers/taiwan_bus.py`、`providers/tdx_bus.py`、`providers/ebus.py`）；鏈的順序改設定，fallback 語意改 `providers/fallback.py`。三個來源能填的欄位不同（TDX 沒有 `scheduled_time` 與 `vehicle_id`、只有 TDX 產得出 `NOT_STOPPING` / `NOT_OPERATING`、TaiwanBus 的方向是從站序分組推導而非上游宣告），所以切換來源時畫面上的「尚未發車」預計時刻、車號與方向標籤可能跟著變。
+- TDX 是唯一公車資料來源，也是外部契約：欄位或 endpoint 改版只修 `providers/tdx_bus.py`。TDX 沒有 `scheduled_time`（未發車的預計發車時刻）與 `vehicle_id`，畫面上「尚未發車」不會附時刻；TDX 掛掉時沒有備援，只能回「查詢失敗」。
 - Chat session 持久化在 `.agent_state/sessions.db`，目前仍綁單機檔案；scale out 需改外部 KV / Redis。
 - API rate limit 是單 worker、最多 2048 client bucket 的 in-process token bucket；多 worker 或多機部署必須在 gateway 另設全域限流。
 - Backend runtime 採 async 單一路徑；HTTP-facing providers、services、AgentSession tool dispatch 與 LLM client 都是 async。GTFS 更新腳本可用同步 requests，不屬於線上 API 路徑。

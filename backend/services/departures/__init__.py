@@ -7,8 +7,8 @@ cannot drift.
 
 Provider I/O is reached through the `BusProvider` Protocol; the active
 instance lives at module scope (`_provider`) and can be swapped via
-`set_provider()` — tests inject a fake, production composes a named chain from
-`BUS_PROVIDER_ORDER` at the composition root (`provider.py`).
+`set_provider()` — tests inject a fake, production uses TDX (composition root:
+`provider.py`).
 """
 
 from services.departures.classification import (
@@ -19,11 +19,8 @@ from services.departures.classification import (
 )
 from services.departures.normalize import TAIPEI_TZ
 from services.departures.provider import (
-    configure_providers,
     get_provider,
     provider_override,
-    register_provider,
-    registered_provider_names,
     reset_provider,
     set_provider,
 )
@@ -70,9 +67,6 @@ __all__ = [
     "set_provider",
     "provider_override",
     "reset_provider",
-    "configure_providers",
-    "register_provider",
-    "registered_provider_names",
     # builders (HTTP API)
     "build_departure_snapshot",
     "build_route_detail",

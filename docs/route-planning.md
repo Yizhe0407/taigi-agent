@@ -10,15 +10,15 @@
 - Agent 收到「怎麼去某地」時，只引導使用者進入地圖選點流程，不猜目的地。
 - 若 OTP 找不到方案、座標不可用或 service 不可用，API 要明確回錯誤，不用 LLM 補答案。
 
-## OTP 與 ebus 分工
+## OTP 與即時到站分工
 
 | 能力 | 資料來源 |
 |------|----------|
 | 該搭哪條路線、上下車站、轉乘 | OpenTripPlanner |
 | 排程式預估旅程與班次可行性 | OTP + GTFS |
-| 本站下一班車目前到站狀態 | Yunlin ebus |
+| 本站下一班車目前到站狀態 | TDX |
 
-OTP 負責 GTFS / OSM graph 上的路線規劃，ebus 負責固定站牌的即時到站狀態。兩者不要混在 provider 層；需要整合時由 service / facade 組合結果。
+OTP 負責 GTFS / OSM graph 上的路線規劃，TDX 負責固定站牌的即時到站狀態。兩者不要混在 provider 層；需要整合時由 service / facade 組合結果。
 
 ## 後端流程
 
@@ -47,8 +47,7 @@ frontend destination picker
 
 ## 已知資料風險
 
-- TDX static GTFS route naming 可能和 ebus Kiosk route code 不完全一致，例如目前資料有 `7000D`，但 Kiosk 可能顯示 `7000B`。
-- GTFS route naming 與 ebus route naming 可能需要 mapping。
+- TDX static GTFS route naming 可能和 Kiosk 顯示的 route code 不完全一致，例如目前資料有 `7000D`，但 Kiosk 可能顯示 `7000B`。
 - Kiosk 站名必須穩定映到 OTP stop 或座標。
 - 地圖選點若落在路網不可達點、河道另一側或離站牌過遠，前端與 API 需要清楚引導重選。
 - OSM 步行路網可能讓站牌 snap 或轉乘步行結果失真。

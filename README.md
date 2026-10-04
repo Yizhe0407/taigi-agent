@@ -30,11 +30,10 @@ IntentRouter（Python regex，deterministic）
 `backend/.agent_state/kiosk_config.json`；寫入必須提供 `ADMIN_TOKEN`。系統只回答
 目前 Kiosk 站牌可查到的到站與路線資訊。
 
-公車資料來源走 provider-neutral 契約（`backend/providers/bus.py`），線上是一條
-有序 fallback 鏈：預設 `taiwanbus` 為主、`tdx` 為備援，可用 `BUS_PROVIDER_ORDER`
-切換或加入 `ebus`（雲林公車動態系統）。這些介面都不是本專題可控制的公開契約；
-若某個介面變更，調整點集中在該來源自己的 adapter（`providers/taiwan_bus.py`、
-`providers/tdx_bus.py`、`providers/ebus.py`），service 層不需要改。
+公車資料來源只用交通部 TDX（`backend/providers/tdx_bus.py`，需 `TDX_CLIENT_ID` /
+`TDX_CLIENT_SECRET`）。以前串接的 TaiwanBus、雲林 ebus 都是爬別人網站，常被封 IP
+或掛站，已移除。service 層只認 provider-neutral 契約（`backend/providers/bus.py`），
+TDX 改版時只需調整 adapter。
 
 ## 使用者分眾
 
@@ -212,8 +211,7 @@ prompt 或 tool result 放進 span attributes。
 
 | 問法 | 工具 | 資料來源 |
 |------|------|----------|
-資料來源一律是當時 `BUS_PROVIDER_ORDER` 鏈上第一個給得出答案的 provider
-（預設 taiwanbus → tdx），工具本身不綁定任何來源。
+資料來源一律是 TDX，工具本身只認 provider-neutral 契約。
 
 | 問法 | 工具 | 資料 |
 |------|------|------|

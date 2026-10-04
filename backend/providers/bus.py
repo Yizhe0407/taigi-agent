@@ -2,7 +2,7 @@
 
 Concrete upstream clients translate their native payloads into these models before
 anything leaves ``providers``.  The services layer must not know whether data came
-from TDX, Ebus, TaiwanBus, or a test double, and never sees an upstream field name
+from TDX or a test double, and never sees an upstream field name
 or status code — adapters are responsible for producing fully typed rows.
 """
 
@@ -11,14 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from typing import Protocol
-
-
-class BusProviderError(RuntimeError):
-    """Base error raised when a bus provider cannot return usable data."""
-
-
-class BusProviderConfigError(BusProviderError):
-    """Raised when a provider chain is not configured for use."""
 
 
 class Direction(IntEnum):
