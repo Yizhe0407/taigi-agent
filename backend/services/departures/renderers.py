@@ -56,9 +56,12 @@ def _rescue_prefix(best: str) -> str:
     Deliberately never restates the mis-heard original: the downstream 4B
     treats a repeated original term as licence to echo it back instead of the
     resolved `best` (eval E3 「虎尾科大」, R9 "YO2"), so `best` is the
-    sentence's sole subject.
+    sentence's sole subject. The literal confirmation question is spelled out
+    because the user's own (mis-heard) term is still in the conversation
+    history, and the 4B otherwise copies it into "你是要問<原詞>嗎" (live
+    trace: user said 101, rescue resolved 102, reply asked about 101).
     """
-    return f"最接近的是「{best}」。{best}的狀態："
+    return f"最接近的是「{best}」，確認句要問「你是要問{best}嗎？」。{best}的狀態："
 
 
 def _is_real_status(text: str) -> bool:
@@ -375,11 +378,7 @@ def _boarding_status(
     # report a shorter/negative travel time.
     boarding_seq = boarding.sequence or 0
     dest_rows = _dedup_stop_rows_by_direction(
-        [
-            row
-            for row in data
-            if _name_matches(canonical_dest, row.stop_name) and row.direction == Direction(direction) and (row.sequence or 0) >= boarding_seq
-        ]
+        [row for row in data if _name_matches(canonical_dest, row.stop_name) and row.direction == Direction(direction) and (row.sequence or 0) >= boarding_seq]
     )
     dest_suffix = _dest_arrival_text(dest_rows, boarding, canonical_dest, now)
     return f"{_incoming_status_text(c)}{dest_suffix}", c.sort_minutes, c.section

@@ -58,6 +58,10 @@ voice/（pipecat WebRTC 語音 pipeline，api/voice.py 的 SmallWebRTCRequestHan
                記錄 pipeline.voice.turn.duration）
 ```
 
+> `/api/health` 不產生 span（`FastAPIInstrumentor.instrument_app(excluded_urls=...)`）：
+> process-compose 的 readiness probe 每 2 秒打一次，不排除的話會佔掉大部分 span，
+> 淹沒真正的使用流量。
+>
 > 所有 upstream HTTP 走 `providers/http.py` 的共用 `httpx.AsyncClient`，
 > `HTTPXClientInstrumentor` 是全域 instrument，共用 client 一樣會自動產生 child span。
 
@@ -102,6 +106,8 @@ context trim、tool round limit 這類運維訊息直接出現在 trace 時間�
 | Metric 名稱 | 類型 | 單位 | 屬性 | 說明 |
 |-------------|------|------|------|------|
 | `agent.llm.duration` | Histogram | s | `agent.llm.model`, `agent.llm.operation`, `agent.outcome` | 單次 LLM request 耗時 |
+| `gen_ai.client.token.usage` | Histogram | {token} | `gen_ai.token.type`（input/output）, `agent.llm.model`, `agent.llm.operation` | 單次成功 LLM request 的 token 數，來自上游回傳的 `usage`；串流呼叫靠 `stream_options.include_usage` 取得。同一次呼叫也寫進 `agent.llm.call` span 的 `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens`，上游有回報時另記 `gen_ai.usage.cached_input_tokens`（prompt cache 命中數） |
+| `agent.llm.first_token.duration` | Histogram | s | `agent.llm.model`, `agent.llm.operation` | 僅串流呼叫：送出 request 到第一個 content / tool-call delta 的時間，約等於上游處理 prompt 的時間；同值寫在 span 的 `agent.llm.first_token_s` |
 | `agent.llm.retry` | Counter | {retry} | `agent.llm.operation`, `error.type` | LLM retry 次數 |
 | `agent.tool.duration` | Histogram | s | `agent.tool.name`, `agent.outcome` | 單次 tool handler 耗時 |
 | `agent.tool.error` | Counter | {error} | `agent.tool.name`, `error.type` | Tool dispatch / handler 失敗 |

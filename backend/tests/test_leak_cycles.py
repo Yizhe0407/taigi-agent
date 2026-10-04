@@ -53,6 +53,12 @@ class _NoOpTelemetry:
     def record_llm_duration(self, duration_s, *, model, operation, outcome):
         pass
 
+    def record_llm_usage(self, span, usage, *, model, operation):
+        pass
+
+    def record_llm_first_token(self, span, duration_s, *, model, operation):
+        pass
+
     def record_llm_retry(self, *, operation, error_type):
         pass
 

@@ -292,8 +292,10 @@ app.include_router(voice_router)
 # ── Observability ─────────────────────────────────────────────────────────────
 # configure_telemetry() is idempotent; safe to call here and in make_agent_session().
 # FastAPIInstrumentor: auto-spans every route with http.server.request.duration.
+#   /api/health is excluded: process-compose's readiness probe hits it every 2 s,
+#   which otherwise makes up the bulk of all spans and buries real traffic.
 # HTTPXClientInstrumentor: auto-traces all httpx.AsyncClient calls (ASR / TTS
 #   upstreams) with server.address, http.request.method, http.response.status_code.
 configure_telemetry()
-FastAPIInstrumentor.instrument_app(app)
+FastAPIInstrumentor.instrument_app(app, excluded_urls=r"/api/health(\?.*)?$")
 HTTPXClientInstrumentor().instrument()

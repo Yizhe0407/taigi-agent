@@ -125,6 +125,12 @@ class RecordingTelemetry:
     def record_llm_duration(self, duration_s, *, model, operation, outcome):
         self.llm_durations.append((duration_s, model, operation, outcome))
 
+    def record_llm_usage(self, span, usage, *, model, operation):
+        pass
+
+    def record_llm_first_token(self, span, duration_s, *, model, operation):
+        pass
+
     def record_llm_retry(self, *, operation, error_type):
         self.llm_retries.append((operation, error_type))
 
@@ -551,3 +557,27 @@ def test_router_fallthrough_still_calls_llm():
     reply = asyncio.run(session.respond("你好"))
     assert reply == "你好，有需要查公車嗎？"
     assert len(session.client.chat.completions.calls) == 1
+
+
+def test_empty_forced_reply_falls_back_to_fixed_message():
+    # Live trace: tool_choice="required" came back with neither text nor a tool
+    # call, and the turn ended silently. It must still say something.
+    session = make_session([llm_response(assistant_message(None))])
+
+    assert asyncio.run(session.respond("我要吃豆化")) == "歹勢，我沒聽清楚，麻煩再說一次。"
+    assert session.messages[-1] == {"role": "assistant", "content": "歹勢，我沒聽清楚，麻煩再說一次。"}
+
+
+def test_empty_streamed_reply_falls_back_to_fixed_message():
+    async def bus_handler():
+        return "查詢結果"
+
+    session = make_session(
+        [
+            llm_response(assistant_message(tool_calls=[tool_call("bus", "{}", "c1")])),
+            llm_response(assistant_message("")),
+        ],
+        tool_handlers={"bus": bus_handler},
+    )
+
+    assert asyncio.run(session.respond("查一下")) == "歹勢，我沒聽清楚，麻煩再說一次。"

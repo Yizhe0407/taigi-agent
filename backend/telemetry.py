@@ -149,6 +149,20 @@ class AgentTelemetry:
             unit="s",
             description="Duration of one LLM request attempt.",
         )
+        self._llm_token_usage = agent_meter.create_histogram(
+            "gen_ai.client.token.usage",
+            unit="{token}",
+            description=(
+                "Tokens reported by the LLM server for one successful request. "
+                "Attributes: gen_ai.token.type (input/output), agent.llm.model, agent.llm.operation."
+            ),
+        )
+        # Name contains "duration" so the duration bucket view applies.
+        self._llm_first_token_duration = agent_meter.create_histogram(
+            "agent.llm.first_token.duration",
+            unit="s",
+            description="Streaming LLM calls only: request start to the first content/tool-call delta.",
+        )
         self._llm_retries = agent_meter.create_counter(
             "agent.llm.retry",
             unit="{retry}",
@@ -180,7 +194,7 @@ class AgentTelemetry:
         self._cache_lookups = provider_meter.create_counter(
             "provider.cache.lookup",
             unit="{lookup}",
-            description=("Upstream-data cache lookups. Attributes: cache.name (e.g. tdx.route_info), cache.outcome (hit/miss)."),
+            description=("Upstream-data cache lookups. Attributes: cache.name (e.g. tdx.stop_routes), cache.outcome (hit/miss)."),
         )
         self._provider_fallbacks = provider_meter.create_counter(
             "provider.fallback",
@@ -194,10 +208,7 @@ class AgentTelemetry:
         self._provider_rate_limits = provider_meter.create_counter(
             "provider.rate_limit",
             unit="{event}",
-            description=(
-                "Upstream HTTP 429 responses hit while calling a provider. "
-                "Attributes: provider.name (e.g. tdx), provider.endpoint."
-            ),
+            description=("Upstream HTTP 429 responses hit while calling a provider. Attributes: provider.name (e.g. tdx), provider.endpoint."),
         )
 
         # ── Departures instrumentation (decision classification) ──────────────
@@ -323,6 +334,47 @@ class AgentTelemetry:
                 "agent.llm.operation": operation,
                 "agent.outcome": outcome,
             },
+        )
+
+    def record_llm_usage(self, span: Any, usage: Any, *, model: str, operation: str) -> None:
+        """Attach prompt/completion token counts to the LLM span and the usage histogram.
+
+        `usage` is the OpenAI-shaped object (`prompt_tokens` / `completion_tokens`);
+        servers that omit it (or a field) simply record nothing for that side.
+        Never raises — telemetry must not break the request path.
+        """
+        if usage is None:
+            return
+        try:
+            for token_type, field_name, span_key in (
+                ("input", "prompt_tokens", "gen_ai.usage.input_tokens"),
+                ("output", "completion_tokens", "gen_ai.usage.output_tokens"),
+            ):
+                count = getattr(usage, field_name, None)
+                if not isinstance(count, int):
+                    continue
+                span.set_attribute(span_key, count)
+                self._llm_token_usage.record(
+                    count,
+                    {
+                        "gen_ai.token.type": token_type,
+                        "agent.llm.model": model,
+                        "agent.llm.operation": operation,
+                    },
+                )
+            # Prompt-cache hits explain why two calls with the same prompt size
+            # take very different time (a miss re-processes the whole prompt).
+            cached = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", None)
+            if isinstance(cached, int):
+                span.set_attribute("gen_ai.usage.cached_input_tokens", cached)
+        except Exception:  # noqa: BLE001 — usage capture is best-effort
+            pass
+
+    def record_llm_first_token(self, span: Any, duration_s: float, *, model: str, operation: str) -> None:
+        span.set_attribute("agent.llm.first_token_s", round(duration_s, 4))
+        self._llm_first_token_duration.record(
+            duration_s,
+            {"agent.llm.model": model, "agent.llm.operation": operation},
         )
 
     def record_llm_retry(self, *, operation: str, error_type: str) -> None:

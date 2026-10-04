@@ -79,3 +79,35 @@ def test_set_content_disabled_by_env(monkeypatch):
     telemetry.set_content(span, "agent.input.text", "去斗六")
     assert span.attributes == {}
     assert telemetry.capture_content is False
+
+
+def test_record_llm_usage_sets_token_attributes():
+    from types import SimpleNamespace
+
+    telemetry = AgentTelemetry()
+    span = FakeSpan()
+    usage = SimpleNamespace(
+        prompt_tokens=1200,
+        completion_tokens=35,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=1100),
+    )
+
+    telemetry.record_llm_usage(span, usage, model="m", operation="respond")
+
+    assert span.attributes == {
+        "gen_ai.usage.input_tokens": 1200,
+        "gen_ai.usage.output_tokens": 35,
+        "gen_ai.usage.cached_input_tokens": 1100,
+    }
+
+
+def test_record_llm_usage_tolerates_missing_usage_fields():
+    from types import SimpleNamespace
+
+    telemetry = AgentTelemetry()
+    span = FakeSpan()
+
+    telemetry.record_llm_usage(span, None, model="m", operation="respond")
+    telemetry.record_llm_usage(span, SimpleNamespace(completion_tokens=7), model="m", operation="respond")
+
+    assert span.attributes == {"gen_ai.usage.output_tokens": 7}

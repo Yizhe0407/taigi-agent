@@ -16,6 +16,23 @@ processes:
     # is GraphQL-only, so /otp/gtfs/v1 answers 405 on a GET whether or not the
     # graph has finished loading — nothing here can tell "starting" from "ready".
 
+  signoz:
+    working_dir: backend/telemetry
+    command: docker compose up
+    # Backend does not depend on this: the OTLP exporter tolerates a missing
+    # collector, and SigNoz's first boot (ClickHouse + migrations) takes about a
+    # minute — gating backend on it would slow every dev start for telemetry
+    # that is optional. UI: http://127.0.0.1:8085
+    readiness_probe:
+      http_get:
+        host: 127.0.0.1
+        port: 8085
+        path: /api/v1/health
+      initial_delay_seconds: 5
+      period_seconds: 5
+      timeout_seconds: 3
+      failure_threshold: 36
+
   backend:
     working_dir: backend
     command: uv run uvicorn api:app --reload --port 8000

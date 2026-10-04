@@ -41,6 +41,9 @@ def empty_state() -> ConvState:
         ("201 ", "201"),  # trailing whitespace
         (" 201", "201"),  # leading whitespace
         ("２０１", "201"),  # full-width digits normalized
+        ("七零一二", "7012"),  # ASR digit-by-digit Chinese numerals
+        ("一零二路", "102"),
+        ("二〇一", "201"),
     ],
 )
 def test_route_only_fires_for_bare_route_numbers(router: IntentRouter, empty_state: ConvState, user_input: str, expected_route: str):
@@ -60,6 +63,8 @@ def test_route_only_fires_for_bare_route_numbers(router: IntentRouter, empty_sta
         "201停哪些站",  # has verb
         "搭201可以嗎",  # has verb
         "去201",  # not a question about the route
+        "七零一二幾分到",  # Chinese-numeral route inside a question
+        "一二三四五",  # too many digits for a route
     ],
 )
 def test_route_only_does_not_fire_when_question_present(router: IntentRouter, empty_state: ConvState, user_input: str):

@@ -70,7 +70,7 @@ IntentRouter（Python regex，deterministic）
 tool calling 與非思考模式需要額外參數：
 
 ```bash
-vllm serve Qwen/Qwen3-4B-Instruct-2507 \
+vllm serve Qwen/Qwen3.5-4B \
   --enable-auto-tool-choice --tool-call-parser hermes \
   --reasoning-parser qwen3
 ```

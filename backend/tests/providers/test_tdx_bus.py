@@ -339,6 +339,50 @@ def test_fetch_routes_at_stop_deduplicates(monkeypatch):
     assert names.count("201") == 1
 
 
+def test_fetch_routes_at_stop_shares_cache_with_load_route_info(monkeypatch):
+    """Both methods read the same StopOfRoute snapshot: one upstream fetch serves both."""
+    calls = []
+
+    class CountingClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            return _FakeResp(_STOP_OF_ROUTE)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: CountingClient())
+    provider = TdxBusProvider("id", "secret")
+    asyncio.run(provider.load_route_info("雲林科技大學"))
+    routes = asyncio.run(provider.fetch_routes_at_stop("雲林科技大學"))
+    asyncio.run(provider.fetch_routes_at_stop("雲林科技大學"))
+    assert [r.route_name for r in routes] == ["201"]
+    assert len(calls) == 2  # City + InterCity StopOfRoute, fetched once
+
+
+def test_fetch_routes_at_stop_refetches_after_ttl(monkeypatch):
+    calls = []
+
+    class CountingClient:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            return _FakeResp(_STOP_OF_ROUTE)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: CountingClient())
+    fake_now = [0.0]
+    provider = TdxBusProvider("id", "secret", route_info_ttl_seconds=60.0, clock=lambda: fake_now[0])
+    asyncio.run(provider.fetch_routes_at_stop("雲林科技大學"))
+    fake_now[0] += 30
+    asyncio.run(provider.fetch_routes_at_stop("雲林科技大學"))
+    assert len(calls) == 2
+    fake_now[0] += 60
+    asyncio.run(provider.fetch_routes_at_stop("雲林科技大學"))
+    assert len(calls) == 4
+
+
 def test_fetch_route_estimate_city_uses_single_endpoint(monkeypatch):
     calls = []
 
@@ -544,7 +588,7 @@ def test_load_route_info_uses_short_ttl_when_stop_of_route_partially_fails(monke
 
     asyncio.run(provider.load_route_info("雲林科技大學"))
     first_call_count = len(calls)
-    assert provider._route_info_by_stop["雲林科技大學"][2] is True  # had_failures recorded
+    assert provider._stop_routes_by_stop["雲林科技大學"][2] is True  # had_failures recorded
 
     # Within the 60s partial TTL → still served from cache.
     fake_now[0] += 30
@@ -574,7 +618,7 @@ def test_load_route_info_uses_full_ttl_when_stop_of_route_succeeds(monkeypatch):
     provider = TdxBusProvider("id", "secret", route_info_ttl_seconds=600.0, clock=lambda: fake_now[0])
 
     asyncio.run(provider.load_route_info("雲林科技大學"))
-    assert provider._route_info_by_stop["雲林科技大學"][2] is False
+    assert provider._stop_routes_by_stop["雲林科技大學"][2] is False
     first_call_count = len(calls)
 
     fake_now[0] += 70  # past the 60s partial TTL but this fetch had no failures
@@ -621,7 +665,7 @@ def test_fetch_eta_at_stop_returns_stale_on_error(monkeypatch):
 # ── Cache-growth bounds (see providers/ttl_cache.py) ──────────────────────────
 
 
-def test_route_info_locks_do_not_accumulate(monkeypatch):
+def test_stop_routes_locks_do_not_accumulate(monkeypatch):
     """Per-key route-info locks must not leak one entry per stop name ever seen."""
     _patch_http(monkeypatch, _TOKEN, _STOP_OF_ROUTE)
     provider = TdxBusProvider("id", "secret")
@@ -631,7 +675,7 @@ def test_route_info_locks_do_not_accumulate(monkeypatch):
             await provider.load_route_info(f"stop-{index}")
 
     asyncio.run(load_many())
-    assert len(provider._route_info_locks) == 0
+    assert len(provider._stop_routes_locks) == 0
 
 
 def test_concurrent_load_route_info_coalesces_into_one_fetch(monkeypatch):
@@ -657,7 +701,7 @@ def test_concurrent_load_route_info_coalesces_into_one_fetch(monkeypatch):
     async def scenario():
         tasks = [asyncio.create_task(provider.load_route_info("雲林科技大學")) for _ in range(15)]
         # Spin the loop until all 15 are registered on the stop's lock.
-        while len(provider._route_info_locks) == 0 or provider._route_info_locks._entries["雲林科技大學"].users < 15:
+        while len(provider._stop_routes_locks) == 0 or provider._stop_routes_locks._entries["雲林科技大學"].users < 15:
             await asyncio.sleep(0)
         gate.set()
         return await asyncio.gather(*tasks)
@@ -668,7 +712,7 @@ def test_concurrent_load_route_info_coalesces_into_one_fetch(monkeypatch):
     # under the lock and hit the freshly filled cache.
     assert len(get_calls) == 2, f"expected a single coalesced fetch, got {len(get_calls)} requests"
     assert all(result == results[0] for result in results)
-    assert len(provider._route_info_locks) == 0
+    assert len(provider._stop_routes_locks) == 0
 
 
 def _patch_http_echoing_stop_name(monkeypatch):
@@ -704,7 +748,7 @@ def _patch_http_echoing_stop_name(monkeypatch):
 
 
 def test_route_info_cache_evicts_expired_entries(monkeypatch):
-    """_route_info_by_stop and _kiosk_uids must not grow for the process lifetime."""
+    """_stop_routes_by_stop and _kiosk_uids must not grow for the process lifetime."""
     _patch_http_echoing_stop_name(monkeypatch)
     fake_now = [0.0]
     provider = TdxBusProvider("id", "secret", route_info_ttl_seconds=100.0, clock=lambda: fake_now[0])
@@ -716,12 +760,12 @@ def test_route_info_cache_evicts_expired_entries(monkeypatch):
 
     asyncio.run(load_many())
 
-    assert len(provider._route_info_by_stop) < 64, f"route_info cache grew to {len(provider._route_info_by_stop)}"
+    assert len(provider._stop_routes_by_stop) < 64, f"route_info cache grew to {len(provider._stop_routes_by_stop)}"
     # Removal, not read-time masking.
-    assert "stop-0" not in provider._route_info_by_stop
+    assert "stop-0" not in provider._stop_routes_by_stop
     # _kiosk_uids is pruned in lockstep with the entries actually swept.
     assert "stop-0" not in provider._kiosk_uids
-    assert len(provider._kiosk_uids) == len(provider._route_info_by_stop)
+    assert len(provider._kiosk_uids) == len(provider._stop_routes_by_stop)
 
 
 def test_route_info_sweep_keeps_unexpired_entries(monkeypatch):
@@ -737,6 +781,6 @@ def test_route_info_sweep_keeps_unexpired_entries(monkeypatch):
 
     asyncio.run(load_many())
 
-    assert len(provider._route_info_by_stop) == 100
-    assert "stop-0" in provider._route_info_by_stop
+    assert len(provider._stop_routes_by_stop) == 100
+    assert "stop-0" in provider._stop_routes_by_stop
     assert "stop-0" in provider._kiosk_uids

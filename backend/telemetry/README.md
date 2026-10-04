@@ -1,6 +1,6 @@
 # SigNoz（觀測後端）
 
-跑 `docker compose up -d` 即可，UI 在 http://127.0.0.1:8085。啟動後把 `.env` 的
+跑 `docker compose up -d` 即可，UI 在 http://127.0.0.1:8085。在 repo root 跑 `process-compose up` 時也會一起帶起來（`signoz` process）。啟動後把 `.env` 的
 `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` 打開（見 `backend/.env.example`）。
 
 正式環境由 `deploy/install.sh`/`deploy/update.sh` 自動 `docker compose up -d`

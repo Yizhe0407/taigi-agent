@@ -9,13 +9,13 @@ routes (e.g., Y02: 斗六火車站 seq=1 → … → 斗六火車站 seq=10) pro
 for the same stop name — one for the boarding point (seq=1) and one for the
 arriving bus completing the loop (seq=10).
 
-To avoid showing the irrelevant arrival row, `load_route_info` extracts the
+To avoid showing the irrelevant arrival row, the stop's `StopOfRoute` lookup extracts the
 StopUID of the *first* occurrence of the kiosk stop in each route direction
 (the boarding point) from the `StopOfRoute` payload.  Subsequent calls to
 `fetch_eta_at_stop` query TDX using those UIDs instead of the stop name, so
 TDX only returns rows for the boarding-point stops.
 
-The UID set is cached alongside route_info.  A name-based fallback with
+The UID set is cached alongside the stop's routes.  A name-based fallback with
 min-sequence dedup handles the cold-start window where `load_route_info` and
 `fetch_eta_at_stop` are first called concurrently.
 
@@ -26,6 +26,12 @@ min-sequence dedup handles the cold-start window where `load_route_info` and
 
 `fetch_route_estimate` only queries the relevant endpoint to halve request
 volume and avoid 429 rate limits.
+
+## Stop routes cache
+
+`load_route_info` and `fetch_routes_at_stop` are two views of the same
+`StopOfRoute` payload, so both read one per-stop `_StopRoutes` snapshot
+(`_load_stop_routes`) instead of querying TDX separately.
 
 ## Internal row schema
 
@@ -41,6 +47,7 @@ import re
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 import httpx
 
@@ -67,7 +74,7 @@ _DEFAULT_ROUTE_INFO_TTL = 600.0
 _ROUTE_INFO_PARTIAL_TTL = 60.0  # short TTL when a StopOfRoute endpoint failed mid-fetch
 _DEFAULT_ROUTE_ESTIMATE_TTL = 30.0  # TDX updates ~30 s; 10 s caused 429 rate-limit hits
 _MAX_ROUTE_ESTIMATE_CACHE_ENTRIES = 256
-_MIN_ROUTE_INFO_SWEEP = 32  # don't bother sweeping _route_info_by_stop below this size
+_MIN_STOP_ROUTES_SWEEP = 32  # don't bother sweeping _stop_routes_by_stop below this size
 _DEFAULT_ETA_TTL = 60.0  # must exceed wait_for(12s) + warmup_sleep(25s) = 37s to break 429 cascade
 _MAX_RETRIES = 1  # retries on HTTP 429; Retry-After is 20-40 s so 3 retries = 60-120 s blocking
 _MAX_UIDS_PER_FILTER = 15  # keeps encoded $filter well under typical gateway URL-length limits
@@ -113,6 +120,15 @@ def _safe_list(result: object) -> list[dict]:
     return [item for item in result if isinstance(item, dict)]
 
 
+@dataclass(frozen=True)
+class _StopRoutes:
+    """Everything derived from one stop's `StopOfRoute` payload."""
+
+    route_info: dict[str, RouteInfo]
+    routes: tuple[RouteAtStop, ...]
+    boarding_uids: frozenset[str]
+
+
 class TdxBusProvider(BusProvider):
     """HTTP-backed `BusProvider` for tdx.transportdata.tw."""
 
@@ -144,14 +160,14 @@ class TdxBusProvider(BusProvider):
             timeout=_REQUEST_TIMEOUT_SECONDS,
             http_client_factory=get_http_client,
         )
-        # stop_name → (fetched_at, route_info_dict, had_failures); had_failures
+        # stop_name → (fetched_at, stop_routes, had_failures); had_failures
         # selects _ROUTE_INFO_PARTIAL_TTL so a partial StopOfRoute result gets
         # re-checked soon instead of caching it for the full TTL.
-        self._route_info_by_stop: dict[str, tuple[float, dict[str, RouteInfo], bool]] = {}
-        # Per-key lock guarding load_route_info (see KeyedLocks in ttl_cache.py).
-        self._route_info_locks: KeyedLocks[str] = KeyedLocks()
-        # Amortised sweep bookkeeping for _route_info_by_stop (see _maybe_sweep_route_info).
-        self._route_info_sweep_threshold = _MIN_ROUTE_INFO_SWEEP
+        self._stop_routes_by_stop: dict[str, tuple[float, _StopRoutes, bool]] = {}
+        # Per-key lock guarding _load_stop_routes (see KeyedLocks in ttl_cache.py).
+        self._stop_routes_locks: KeyedLocks[str] = KeyedLocks()
+        # Amortised sweep bookkeeping for _stop_routes_by_stop (see _maybe_sweep_stop_routes).
+        self._stop_routes_sweep_threshold = _MIN_STOP_ROUTES_SWEEP
         # stop_name → set of boarding StopUIDs (first occurrence of that stop in each route)
         self._kiosk_uids: dict[str, set[str]] = {}
         # sub_route_name → (fetched_at, rows)
@@ -260,16 +276,7 @@ class TdxBusProvider(BusProvider):
 
     async def fetch_routes_at_stop(self, stop_name: str) -> list[RouteAtStop]:
         """Unique route/direction pairs at ``stop_name``."""
-        city, intercity, _had_failures = await self._stop_of_route(stop_name)
-        seen: set[str] = set()
-        result: list[RouteAtStop] = []
-        for rec in city + intercity:
-            name = _zh(rec.get("SubRouteName"))
-            if not name or name in seen:
-                continue
-            seen.add(name)
-            result.append(RouteAtStop(route_name=name, direction=Direction(rec.get("Direction", 0))))
-        return result
+        return list((await self._load_stop_routes(stop_name)).routes)
 
     async def fetch_eta_at_stop(self, stop_name: str) -> list[StopArrival]:
         """ETA rows for every subroute at `stop_name`.
@@ -330,32 +337,41 @@ class TdxBusProvider(BusProvider):
         return list(rows)
 
     async def load_route_info(self, stop_name: str) -> dict[str, RouteInfo]:
-        cached = self._route_info_by_stop.get(stop_name)
+        return (await self._load_stop_routes(stop_name)).route_info
+
+    async def _load_stop_routes(self, stop_name: str) -> _StopRoutes:
+        cached = self._stop_routes_by_stop.get(stop_name)
         ttl = self._route_info_ttl if cached is None or not cached[2] else _ROUTE_INFO_PARTIAL_TTL
         hit = cached is not None and not self._expired(cached[0], ttl)
-        get_telemetry().record_cache_lookup(cache="tdx.route_info", hit=hit)
+        get_telemetry().record_cache_lookup(cache="tdx.stop_routes", hit=hit)
         if cached is not None and hit:
             return cached[1]
 
         # Not a TtlCache: the TTL here depends on had_failures from the
         # *previous* fetch, which doesn't fit TtlCache's fixed-ttl/2-tuple shape.
-        async with self._route_info_locks.acquire(stop_name):
+        async with self._stop_routes_locks.acquire(stop_name):
             # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
-            cached = self._route_info_by_stop.get(stop_name)
+            cached = self._stop_routes_by_stop.get(stop_name)
             ttl = self._route_info_ttl if cached is None or not cached[2] else _ROUTE_INFO_PARTIAL_TTL
             if cached is not None and not self._expired(cached[0], ttl):
                 return cached[1]
 
             city, intercity, had_failures = await self._stop_of_route(stop_name)
-            info, boarding_uids = self._build_route_info(city + intercity, stop_name)
-            self._route_info_by_stop[stop_name] = (self._clock(), info, had_failures)
+            records = city + intercity
+            info, boarding_uids = self._build_route_info(records, stop_name)
+            stop_routes = _StopRoutes(
+                route_info=info,
+                routes=self._build_routes_at_stop(records),
+                boarding_uids=frozenset(boarding_uids),
+            )
+            self._stop_routes_by_stop[stop_name] = (self._clock(), stop_routes, had_failures)
             if boarding_uids:
                 self._kiosk_uids[stop_name] = boarding_uids
-            self._maybe_sweep_route_info()
-            return info
+            self._maybe_sweep_stop_routes()
+            return stop_routes
 
-    def _maybe_sweep_route_info(self) -> None:
-        """Evict expired `_route_info_by_stop` entries (and their `_kiosk_uids`).
+    def _maybe_sweep_stop_routes(self) -> None:
+        """Evict expired `_stop_routes_by_stop` entries (and their `_kiosk_uids`).
 
         Bounds both dicts to "distinct stops seen within one route-info TTL" —
         without this they'd grow for the life of the process, since entries only
@@ -366,18 +382,18 @@ class TdxBusProvider(BusProvider):
         longer is harmless, dropping a live one costs an extra upstream fetch.
 
         `_kiosk_uids` has no timestamp of its own, so it is pruned strictly in
-        lockstep with the route-info entries actually removed here — never by
+        lockstep with the stop-routes entries actually removed here — never by
         reconciling the whole dict, which would also discard directly-seeded UIDs.
         """
         if self._route_info_ttl is None or self._route_info_ttl <= 0:
             return
-        if len(self._route_info_by_stop) <= self._route_info_sweep_threshold:
+        if len(self._stop_routes_by_stop) <= self._stop_routes_sweep_threshold:
             return
-        expired = [key for key, (fetched_at, _info, _failed) in self._route_info_by_stop.items() if self._expired(fetched_at, self._route_info_ttl)]
+        expired = [key for key, (fetched_at, _routes, _failed) in self._stop_routes_by_stop.items() if self._expired(fetched_at, self._route_info_ttl)]
         for key in expired:
-            del self._route_info_by_stop[key]
+            del self._stop_routes_by_stop[key]
             self._kiosk_uids.pop(key, None)
-        self._route_info_sweep_threshold = max(_MIN_ROUTE_INFO_SWEEP, 2 * len(self._route_info_by_stop))
+        self._stop_routes_sweep_threshold = max(_MIN_STOP_ROUTES_SWEEP, 2 * len(self._stop_routes_by_stop))
 
     # ── ETA fetch helpers ──────────────────────────────────────────────────────
 
@@ -500,6 +516,19 @@ class TdxBusProvider(BusProvider):
             for name in all_names
         }
         return route_info, boarding_uids
+
+    @staticmethod
+    def _build_routes_at_stop(records: list[dict]) -> tuple[RouteAtStop, ...]:
+        """Unique sub-routes in `records`, keeping the first direction seen."""
+        seen: set[str] = set()
+        result: list[RouteAtStop] = []
+        for rec in records:
+            name = _zh(rec.get("SubRouteName"))
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            result.append(RouteAtStop(route_name=name, direction=Direction(rec.get("Direction", 0))))
+        return tuple(result)
 
     @staticmethod
     def _dedup_by_min_sequence(rows: list[StopArrival]) -> list[StopArrival]:

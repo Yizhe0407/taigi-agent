@@ -58,6 +58,12 @@ class Decision:
 # years or amounts.
 _ROUTE_ONLY_RE = re.compile(r"^([A-Za-z]?\d{2,4}[A-Za-z]?)路?$")
 
+# Breeze-ASR often transcribes a spoken route number digit by digit in Chinese
+# numerals ("七零一二"), which _ROUTE_ONLY_RE would miss. Only a whole-input,
+# digit-by-digit run is converted, so ordinary text containing 一/二 is untouched.
+_CHINESE_ROUTE_ONLY_RE = re.compile(r"^([零〇一二三四五六七八九]{2,4})路?$")
+_CHINESE_DIGITS = str.maketrans("零〇一二三四五六七八九", "00123456789")
+
 # Remote (cross-county) destinations the kiosk cannot route to directly —
 # user must use a map planner instead. 嘉義/彰化/南投 excluded: TDX InterCity
 # endpoint (see providers/tdx_bus.py) has direct Yunlin routes there (e.g.
@@ -105,6 +111,9 @@ class IntentRouter:
         # Rule 1: pure route number → ask the user what about it.
         # Highest priority — even Rule 2 keywords matter less than "user
         # just said a route number with no question".
+        chinese = _CHINESE_ROUTE_ONLY_RE.match(text)
+        if chinese:
+            text = chinese.group(1).translate(_CHINESE_DIGITS)
         match = _ROUTE_ONLY_RE.match(text)
         if match:
             route = match.group(1)

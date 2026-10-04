@@ -83,6 +83,7 @@ def _record_llm_success(
     model: str,
     operation: str,
     started: float,
+    usage: Any = None,
 ) -> None:
     telemetry.record_llm_duration(
         time.perf_counter() - started,
@@ -90,6 +91,7 @@ def _record_llm_success(
         operation=operation,
         outcome="ok",
     )
+    telemetry.record_llm_usage(span, usage, model=model, operation=operation)
     telemetry.set_content(span, "gen_ai.output.messages", _output_content(response))
 
 
@@ -222,6 +224,8 @@ async def call_llm_stream(
             _record_llm_input(telemetry, span, messages)
             content_parts: list[str] = []
             tool_calls_acc: dict[int, dict] = {}
+            usage: Any = None
+            first_token_seen = False
             try:
                 acquisition = http_owner.begin_acquisition()
                 try:
@@ -232,6 +236,8 @@ async def call_llm_stream(
                         tool_choice=tool_choice if tools else "none",
                         extra_body=extra_body,
                         stream=True,
+                        # Final chunk then carries token usage (empty choices).
+                        stream_options={"include_usage": True},
                     )
                 except BaseException:
                     http_owner.abort_acquisition(acquisition)
@@ -255,9 +261,13 @@ async def call_llm_stream(
 
                 try:
                     async for chunk in stream:
+                        usage = getattr(chunk, "usage", None) or usage
                         if not getattr(chunk, "choices", None):
                             continue
                         delta = chunk.choices[0].delta
+                        if not first_token_seen and (delta.tool_calls or getattr(delta, "content", None)):
+                            first_token_seen = True
+                            telemetry.record_llm_first_token(span, time.perf_counter() - started, model=model, operation=operation)
                         for call in delta.tool_calls or []:
                             acc = tool_calls_acc.setdefault(call.index, {"id": None, "name": None, "arguments": []})
                             if getattr(call, "id", None):
@@ -310,7 +320,7 @@ async def call_llm_stream(
                 # surfaced as cleanup debt instead of admitting a second stream.
                 await http_owner.release(owned_stream)
                 response = _assemble_stream_response(content_parts, tool_calls_acc)
-                _record_llm_success(telemetry, span, response, model=model, operation=operation, started=started)
+                _record_llm_success(telemetry, span, response, model=model, operation=operation, started=started, usage=usage)
                 yield ("response", response)
                 return
 
@@ -379,7 +389,15 @@ async def call_llm(
                     raise
                 retry_error = e
             else:
-                _record_llm_success(telemetry, span, response, model=model, operation=operation, started=started)
+                _record_llm_success(
+                    telemetry,
+                    span,
+                    response,
+                    model=model,
+                    operation=operation,
+                    started=started,
+                    usage=getattr(response, "usage", None),
+                )
                 return response
 
         if retry_error is not None:

@@ -63,6 +63,10 @@ def _find_direct_response(tool_calls: list[ToolCall], tool_results: list[ToolCal
 _MAX_CONTEXT_RECOVERY_RETRIES = 1
 _DEFAULT_MAX_TOOL_ROUNDS = 8
 _TOOL_ROUND_LIMIT_MESSAGE = "查詢逾時，請換個方式再問一次。"
+# The model occasionally returns neither text nor a tool call — seen live with
+# Qwen3.5-4B under tool_choice="required" on an ASR-garbled off-topic input.
+# A turn must never end silently: the kiosk user would just be left waiting.
+_EMPTY_REPLY_MESSAGE = "歹勢，我沒聽清楚，麻煩再說一次。"
 
 
 @dataclass(frozen=True)
@@ -375,13 +379,17 @@ class AgentSession:
                     entry["content"] = "".join(round_pieces)
                 else:
                     entry["content"] = normalize_llm_output(entry["content"] or "")
+                if not tool_calls and not entry["content"]:
+                    log_diagnostic("warn", "LLM 未回傳文字也未呼叫工具，改用固定回覆")
+                    entry["content"] = _EMPTY_REPLY_MESSAGE
+                    yield ("chunk", entry["content"])
+                elif not tool_calls and force_tool:
+                    # Non-streamed round produced free text (model ignored
+                    # tool_choice="required") — emit it as one chunk.
+                    yield ("chunk", entry["content"])
                 self.messages.append(entry)
                 if not tool_calls:
                     self._trim()
-                    if force_tool and entry["content"]:
-                        # Non-streamed round produced free text (model ignored
-                        # tool_choice="required") — emit it as one chunk.
-                        yield ("chunk", entry["content"])
                     yield ("result", _LlmTurnResult(outcome="ok", tool_rounds=tool_rounds))
                     return
 
