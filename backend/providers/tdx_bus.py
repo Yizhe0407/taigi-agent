@@ -470,7 +470,7 @@ class TdxBusProvider(BusProvider):
 
     @staticmethod
     def _build_route_info(records: list[dict], kiosk_stop: str) -> tuple[dict[str, RouteInfo], set[str]]:
-        """Build route_info and collect boarding StopUIDs.
+        """Build route_info (terminals + ordered stop names) and collect boarding StopUIDs.
 
         For each (subroute, direction), the *first* stop occurrence of
         `kiosk_stop` in the ordered stop list is the boarding point.  Its
@@ -481,6 +481,7 @@ class TdxBusProvider(BusProvider):
         Returns (route_info, boarding_uids).
         """
         terminals: dict[tuple[str, int], str] = {}
+        stop_orders: dict[tuple[str, int], tuple[str, ...]] = {}
         boarding_uids: set[str] = set()
 
         for rec in records:
@@ -492,6 +493,7 @@ class TdxBusProvider(BusProvider):
             if not stops:
                 continue
             ordered = sorted(stops, key=lambda s: s.get("StopSequence", 0))
+            stop_orders[(name, direction)] = tuple(stop_name for stop in ordered if (stop_name := _zh(stop.get("StopName"))))
 
             # Last stop = terminal for direction label
             terminal = _zh(ordered[-1].get("StopName"))
@@ -512,6 +514,8 @@ class TdxBusProvider(BusProvider):
                 route_name=name,
                 outbound_destination=terminals.get((name, 0), ""),
                 inbound_destination=terminals.get((name, 1), ""),
+                outbound_stops=stop_orders.get((name, 0), ()),
+                inbound_stops=stop_orders.get((name, 1), ()),
             )
             for name in all_names
         }

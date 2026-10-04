@@ -75,7 +75,7 @@ backend/
 
 ### 領域層
 
-- `providers/bus.py`：provider-neutral `BusProvider` Protocol 與 `RouteInfo`、`RouteAtStop`、`StopArrival`、`RouteStopEstimate` model。契約裡沒有任何上游欄位名或 status code，adapter 必須回傳完整 typed row（不再有 dict 相容層或 `as_*` coercion）。
+- `providers/bus.py`：provider-neutral `BusProvider` Protocol 與 `RouteInfo`、`RouteAtStop`、`StopArrival`、`RouteStopEstimate` model。`RouteInfo` 除去回終點外也帶靜態站序（`outbound_stops` / `inbound_stops`，依站序排列）：各 adapter 在 `load_route_info` 探索路線時本來就讀到完整站序，必須保留。契約裡沒有任何上游欄位名或 status code，adapter 必須回傳完整 typed row（不再有 dict 相容層或 `as_*` coercion）。
 - `providers/http.py`：process-wide 共用 `httpx.AsyncClient`（連線池重用）；TTS/ASR/OTP/TDX 都透過它發請求，各呼叫點自帶 per-request timeout，app shutdown 時由 lifespan 關閉。
 - `providers/tdx_bus.py`：TDX 的 provider-neutral adapter；整合 City/InterCity endpoint，OAuth2、TTL、LRU 與 retry 都封裝在 adapter 內。
 - `services/departures/provider.py`：composition root，固定組裝 `TdxBusProvider`（TaiwanBus / ebus 爬蟲來源已移除）；`set_provider()` / `provider_override()` / `reset_provider()` 供測試替換，其他層不需要知道具體供應商。
@@ -89,6 +89,7 @@ backend/
 - `services/taigi_tts.py`：TTS config、Tailo 切段、`synthesize_segments` 有界並發派送；`prepare_tailo()` 收斂 normalize 後→text-process→split 的共用序列（回傳解碼前的 hanlo/tailo/segments），`api/tts.py` 與 `voice/tts_taigi.py` 各自接手 `synthesize_segments` 的錯誤轉換與音訊解碼（WAV vs PCM）。`make_silence_pcm()` 是兩邊共用的靜音位元組運算。
 - `services/kiosk_config.py`：Runtime kiosk 設定 singleton（stop_name、direction、lat/lon）；先原子落盤再發布記憶體狀態，並用 mtime 觀察其他 worker 的更新。持久化至 `.agent_state/kiosk_config.json`，預設雲林科技大學／回程。
 - `services/departures/`：離站決策唯一分類來源，只讀 provider-neutral `StopStatus`、`eta_seconds` 與 `RouteInfo`；不依賴任何上游名稱或 status code。
+  目的地查詢（`render_arrivals_to_destination`）先用 `RouteInfo` 靜態站序判斷哪些路線在本站之後會到目的地（不含上車點本身，循環路線回到本站的那一站仍算），只對命中的路線抓即時 route estimate；查無與聽錯救援的候選站名也全由靜態站序產生，不打上游。
 - `services/route_plans.py`：OTP 路線規劃 facade、Kiosk 起點、雲林邊界、view model。
 - `services/bike.py`：公共自行車 normalized station cache、provider switching、距離查詢；不依賴任何 upstream payload 格式。MOOVO 只是其中一個來源，所以服務層與 `/api/bike/*` 一律用中立的 bike 命名。
 - `services/stop_catalog.py`：TDX / GTFS 更新流程產生的雲林 stop index。

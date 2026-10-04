@@ -19,6 +19,7 @@ from services.departures.rows import (
     _dedup_stop_rows_by_direction,
     _direction_label_from_info,
     _iter_downstream_directions,
+    _iter_route_downstream,
     _rows_for_stop,
     _stops_by_direction_with_seq,
 )
@@ -373,80 +374,93 @@ def _boarding_status(
     boarding = kiosk_rows[0]
     c = _classify_stop(boarding, now)
 
-    # Keep only destination occurrences downstream of the boarding point —
-    # circular routes repeat stop names, and an upstream occurrence would
-    # report a shorter/negative travel time.
+    # Keep only destination occurrences strictly after the boarding point —
+    # circular routes repeat stop names, and an upstream occurrence (or, on a
+    # loop back to the kiosk, the boarding row itself) would report a
+    # shorter/zero travel time.
     boarding_seq = boarding.sequence or 0
     dest_rows = _dedup_stop_rows_by_direction(
-        [row for row in data if _name_matches(canonical_dest, row.stop_name) and row.direction == Direction(direction) and (row.sequence or 0) >= boarding_seq]
+        [row for row in data if _name_matches(canonical_dest, row.stop_name) and row.direction == Direction(direction) and (row.sequence or 0) > boarding_seq]
     )
     dest_suffix = _dest_arrival_text(dest_rows, boarding, canonical_dest, now)
     return f"{_incoming_status_text(c)}{dest_suffix}", c.sort_minutes, c.section
 
 
-async def _check_route_arrivals(
-    route_name: str,
-    route_id: str,
-    provider: BusProvider,
+@dataclass(frozen=True)
+class _DestinationMatch:
+    """A route whose static stop order reaches the destination after the kiosk.
+
+    `directions` pairs each serving direction with the real stop name the
+    query resolved to on it (see `_resolve_forward_match`) — rider-facing text
+    uses that instead of the raw, possibly abbreviated/mis-heard query.
+    [eval E3/E4/E8]
+    """
+
+    route_name: str
+    directions: tuple[tuple[Direction, str], ...]
+
+
+def _match_destination(
+    route_info: dict[str, RouteInfo],
     kiosk_stop: str,
     go_back: int | None,
     destination: str,
+) -> tuple[list[_DestinationMatch], set[str]]:
+    """Find the routes reaching `destination` downstream of the kiosk, from topology alone.
+
+    Returns the matches plus every downstream stop name seen (the pool for
+    fuzzy ASR rescue). Pure function of `route_info` — no upstream request.
+    """
+    matches: list[_DestinationMatch] = []
+    all_downstream: set[str] = set()
+    for route_name, info in route_info.items():
+        directions: list[tuple[Direction, str]] = []
+        for direction, downstream in _iter_route_downstream(info, kiosk_stop, go_back):
+            all_downstream.update(downstream)
+            canonical = _resolve_forward_match(destination, downstream)
+            if canonical is not None:
+                directions.append((direction, canonical))
+        if directions:
+            matches.append(_DestinationMatch(route_name, tuple(directions)))
+    return matches, all_downstream
+
+
+async def _route_arrival_hits(
+    match: _DestinationMatch,
+    provider: BusProvider,
+    kiosk_stop: str,
     route_info: dict[str, RouteInfo],
     now: datetime,
-) -> tuple[list[tuple[str, int, DepartureSection]], set[str], str | None]:
-    """Fetch estimate for one route; return (hits, all_downstream_stop_names, canonical_dest).
+) -> list[tuple[str, int, DepartureSection]]:
+    """Live status lines (display_text, sort_minutes, section) for one matched route.
 
-    hits: list of (display_text, sort_minutes, section).
-    all_downstream: union of all downstream stop names seen (used for fuzzy remap).
-    canonical_dest: the real stop name `destination` resolved to here (see
-    `_resolve_forward_match`), or None if this route doesn't serve it — callers
-    use it instead of the raw, possibly abbreviated/mis-heard `destination`
-    string when building rider-facing text. [eval E3/E4/E8]
+    The route is known to serve the destination, so a failed live fetch still
+    lists it — as 無即時資料 — rather than dropping it and letting the reply
+    claim there is no direct route.
     """
-    try:
-        data = await provider.fetch_route_estimate(route_name)
-    except Exception:
-        return [], set(), None
-    if data is None:
-        return [], set(), None
-
+    data = await _safe_provider_call(provider.fetch_route_estimate(match.route_name)) or []
     hits: list[tuple[str, int, DepartureSection]] = []
-    all_downstream: set[str] = set()
-    canonical_dest: str | None = None
-    for direction, downstream in _iter_downstream_directions(data, kiosk_stop, go_back):
-        all_downstream.update(downstream)
-        canonical = _resolve_forward_match(destination, downstream)
-        if canonical is None:
-            continue
-        canonical_dest = canonical
-
-        dir_label = _direction_label_from_info(route_info, route_name, direction)
+    for direction, canonical in match.directions:
+        dir_label = _direction_label_from_info(route_info, match.route_name, direction)
         # 「往<本站>」tells a rider standing here nothing — this direction departs
         # from the kiosk and comes back to it, so label it as the loop it is.
         if _name_matches(kiosk_stop, dir_label.removeprefix("往")):
             dir_label = "（循環）"
 
         status_text, sort_minutes, section = _boarding_status(data, kiosk_stop, direction, canonical, now)
-        hits.append((f"{route_name} {dir_label}：{status_text}", sort_minutes, section))
+        hits.append((f"{match.route_name} {dir_label}：{status_text}", sort_minutes, section))
+    return hits
 
-    return hits, all_downstream, canonical_dest
 
+def _pick_canonical_destination(matches: list[_DestinationMatch]) -> str:
+    """Resolve the query to the real stop name it matched, across all routes.
 
-def _pick_canonical_destination(
-    results: list[tuple[list[tuple[str, int, DepartureSection]], set[str], str | None]],
-    destination: str,
-) -> str:
-    """Resolve `destination` to the real stop name it matched, across all routes.
-
-    Used in rider-facing text instead of the possibly abbreviated or mis-heard
-    `destination`. Routes can resolve to differently-specific names sharing a
-    prefix ("北港朝天宮" vs bare "北港"); shortest wins, the same
+    Routes can resolve to differently-specific names sharing a prefix
+    ("北港朝天宮" vs bare "北港"); shortest wins, the same
     exact-match-preferred tie-break as `_resolve_forward_match`. The string
-    itself is the secondary key so tied lengths stay deterministic across
-    restarts — `min()` over a `set` otherwise follows hash-seed order.
+    itself is the secondary key so tied lengths stay deterministic.
     """
-    canonical_candidates = {c for _, _, c in results if c}
-    return min(canonical_candidates, key=lambda s: (len(s), s)) if canonical_candidates else destination
+    return min((canonical for match in matches for _, canonical in match.directions), key=lambda s: (len(s), s))
 
 
 def _summarize_route_hits(raw: list[tuple[str, int, DepartureSection]], canonical: str) -> str:
@@ -478,10 +492,11 @@ async def render_arrivals_to_destination(
 ) -> str:
     """Find routes to destination and return each route's next ETA at kiosk_stop.
 
-    Single HTTP round-trip per route (stop sequence + ETA from the same
-    fetch_route_estimate call). Results are sorted by arrival time so the LLM
-    can directly answer "which is faster" without a follow-up tool call.
-    Routes with no real-time data appear last with status_text from _classify_stop.
+    Which routes reach the destination is answered from the static stop order
+    in `RouteInfo` (one cached `load_route_info` call); live estimates are then
+    fetched only for those routes, never for every route at the stop. Results
+    are sorted by arrival time so the LLM can directly answer "which is faster"
+    without a follow-up tool call.
 
     ASR-rescue mirrors `render_arrivals`: on a mis-heard destination the renderer
     re-queries the top phonetic candidate itself and returns its real ETAs behind
@@ -494,20 +509,8 @@ async def render_arrivals_to_destination(
     if not route_info:
         return _QUERY_FAILED
 
-    now = datetime.now(TAIPEI_TZ)
-    # Firing all N routes in parallel causes 429 storms when the cache is cold.
-    sem = asyncio.Semaphore(3)
-
-    async def _guarded(name: str, route_id: str) -> tuple[list[tuple[str, int, DepartureSection]], set[str], str | None]:
-        async with sem:
-            return await _check_route_arrivals(name, route_id, provider, kiosk_stop, go_back, destination, route_info, now)
-
-    results = await asyncio.gather(*(_guarded(name, name) for name in route_info))
-    raw = [item for hits, _, _ in results for item in hits]
-    all_stops = {name for _, stops, _ in results for name in stops}
-    canonical = _pick_canonical_destination(results, destination)
-
-    if not raw:
+    matches, all_stops = _match_destination(route_info, kiosk_stop, go_back, destination)
+    if not matches:
         candidates = [name for name, _ in _fuzzy_candidates(destination, all_stops)]
 
         def _miss() -> str:
@@ -522,7 +525,18 @@ async def render_arrivals_to_destination(
             _miss,
         )
 
-    return _summarize_route_hits(raw, canonical)
+    now = datetime.now(TAIPEI_TZ)
+    # Bounded so a destination served by many routes can't burst the upstream
+    # rate limit on a cold cache.
+    sem = asyncio.Semaphore(3)
+
+    async def _guarded(match: _DestinationMatch) -> list[tuple[str, int, DepartureSection]]:
+        async with sem:
+            return await _route_arrival_hits(match, provider, kiosk_stop, route_info, now)
+
+    results = await asyncio.gather(*(_guarded(match) for match in matches))
+    raw = [hit for hits in results for hit in hits]
+    return _summarize_route_hits(raw, _pick_canonical_destination(matches))
 
 
 async def render_routes_at_stop(stop_name: str) -> str:

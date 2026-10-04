@@ -87,7 +87,13 @@ def test_load_route_info_builds_terminals(monkeypatch):
     _patch_http(monkeypatch, _TOKEN, _STOP_OF_ROUTE)
     provider = TdxBusProvider("id", "secret")
     info = asyncio.run(provider.load_route_info("雲林科技大學"))
-    assert info["201"] == RouteInfo("201", "雲林科技大學", "高鐵雲林站")
+    assert info["201"] == RouteInfo(
+        "201",
+        "雲林科技大學",
+        "高鐵雲林站",
+        outbound_stops=("高鐵雲林站", "雲林科技大學"),
+        inbound_stops=("雲林科技大學", "高鐵雲林站"),
+    )
 
 
 def test_load_route_info_collects_boarding_uids(monkeypatch):

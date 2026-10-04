@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from datetime import datetime
 from unittest.mock import patch
 
@@ -103,6 +104,9 @@ class FakeBusProvider(BusProvider):
         self._routes_at_stop = routes_at_stop or []
         self._eta_error = eta_error
         self._route_estimate_error = route_estimate_error
+        # Live route-estimate requests, in call order — lets tests pin how many
+        # upstream round-trips a renderer costs.
+        self.route_estimate_calls: list[str] = []
 
     async def fetch_routes_at_stop(self, stop_name: str) -> list[RouteAtStop]:
         return [RouteAtStop(route_name=row["sub_route_name"], direction=Direction(row.get("direction", 0))) for row in self._routes_at_stop]
@@ -113,13 +117,26 @@ class FakeBusProvider(BusProvider):
         return [_arrival(row) for row in self._eta_at_stop]
 
     async def fetch_route_estimate(self, sub_route_name: str) -> list[RouteStopEstimate]:
+        self.route_estimate_calls.append(sub_route_name)
         if self._route_estimate_error is not None:
             raise self._route_estimate_error
         rows = self._route_estimate_by_id.get(sub_route_name, self._route_estimate)
         return [_estimate(row, sub_route_name) for row in rows]
 
     async def load_route_info(self, stop_name: str) -> dict[str, RouteInfo]:
-        return _info_map(self._route_info)
+        # Like a real adapter, route topology comes with route discovery: each
+        # route's stop order is read from the same rows its estimate serves.
+        infos = _info_map(self._route_info)
+        return {name: self._with_stops(info) for name, info in infos.items()}
+
+    def _with_stops(self, info: RouteInfo) -> RouteInfo:
+        rows = self._route_estimate_by_id.get(info.route_name, self._route_estimate)
+
+        def _order(direction: int) -> tuple[str, ...]:
+            ordered = sorted((r for r in rows if r.get("direction", 0) == direction and r.get("stop_name")), key=lambda r: r.get("stop_sequence") or 0)
+            return tuple(r["stop_name"] for r in ordered)
+
+        return replace(info, outbound_stops=_order(0), inbound_stops=_order(1))
 
 
 @pytest.fixture
@@ -775,6 +792,99 @@ def test_render_arrivals_to_destination_canonical_prefers_more_specific_route(us
     )
     result = asyncio.run(departures.render_arrivals_to_destination("北港", "雲林科技大學"))
     assert result == "去北港的公車今天班次都跑完了，末班已經開走囉。"
+
+
+def _two_stop_route(kiosk: str, dest: str, *, status: int = 0, eta: int | None = 300) -> list[dict]:
+    return [
+        {"direction": 0, "stop_sequence": 1, "stop_name": kiosk, "stop_status": status, "estimate_seconds": eta},
+        {"direction": 0, "stop_sequence": 2, "stop_name": dest, "stop_status": status, "estimate_seconds": None if eta is None else eta + 600},
+    ]
+
+
+def test_render_arrivals_to_destination_fetches_only_matching_routes(use_provider):
+    """Which routes reach the destination is read from static route topology;
+    live estimates are fetched for those routes only. A busy kiosk (斗六火車站
+    has ~30 routes) used to fetch every route's estimate per query, which blew
+    through the upstream rate limit (78× HTTP 429 in the 2026-09-25 test).
+    """
+    estimates = {f"R{i}": _two_stop_route("雲林科技大學", f"別處{i}") for i in range(30)}
+    estimates["201"] = _two_stop_route("雲林科技大學", "斗六火車站")
+    provider = use_provider(
+        FakeBusProvider(
+            route_info={name: {"go_dest": rows[-1]["stop_name"]} for name, rows in estimates.items()},
+            route_estimate_by_id=estimates,
+        )
+    )
+    result = asyncio.run(departures.render_arrivals_to_destination("斗六火車站", "雲林科技大學"))
+    assert "201" in result
+    assert provider.route_estimate_calls == ["201"]
+
+
+def test_render_arrivals_to_destination_miss_costs_no_live_requests(use_provider):
+    """A destination no route serves is answered from topology alone."""
+    provider = use_provider(
+        FakeBusProvider(
+            route_info={"201": {"go_dest": "高鐵雲林站"}},
+            route_estimate=_two_stop_route("雲林科技大學", "高鐵雲林站"),
+        )
+    )
+    result = asyncio.run(departures.render_arrivals_to_destination("台北101", "雲林科技大學"))
+    assert result == "本站沒有直達「台北101」的路線。"
+    assert provider.route_estimate_calls == []
+
+
+def test_render_arrivals_to_destination_rescue_fetches_only_resolved_route(use_provider):
+    """ASR rescue resolves the candidate from topology, then fetches just that route."""
+    provider = use_provider(
+        FakeBusProvider(
+            route_info={"201": {"go_dest": "斗六火車站"}, "301": {"go_dest": "高鐵雲林站"}},
+            route_estimate_by_id={
+                "201": _two_stop_route("雲林科技大學", "斗六火車站"),
+                "301": _two_stop_route("雲林科技大學", "高鐵雲林站"),
+            },
+        )
+    )
+    result = asyncio.run(departures.render_arrivals_to_destination("斗溜火車站", "雲林科技大學"))
+    assert "最接近的是「斗六火車站」" in result
+    assert provider.route_estimate_calls == ["201"]
+
+
+def test_render_arrivals_to_destination_kiosk_name_matches_only_loops(use_provider):
+    """Asking for the stop you stand at must not match every route through it
+    (2026-09-25 test: 「我欲去斗六火車站」 at 斗六火車站 fetched all ~30 routes).
+    Only a loop that comes back here serves it, with a real travel time."""
+    provider = use_provider(
+        FakeBusProvider(
+            route_info={"201": {"go_dest": "雲林科技大學"}, "Y02": {"go_dest": "斗六火車站"}},
+            route_estimate_by_id={
+                "201": _two_stop_route("斗六火車站", "雲林科技大學"),
+                "Y02": [
+                    {"direction": 0, "stop_sequence": 1, "stop_name": "斗六火車站", "stop_status": 0, "estimate_seconds": 120},
+                    {"direction": 0, "stop_sequence": 2, "stop_name": "高鐵雲林站", "stop_status": 0, "estimate_seconds": 900},
+                    {"direction": 0, "stop_sequence": 3, "stop_name": "斗六火車站", "stop_status": 0, "estimate_seconds": 1800},
+                ],
+            },
+        )
+    )
+    result = asyncio.run(departures.render_arrivals_to_destination("斗六火車站", "斗六火車站"))
+    assert provider.route_estimate_calls == ["Y02"]
+    assert "車程約 28 分鐘" in result
+
+
+def test_render_arrivals_to_destination_live_failure_still_lists_route(use_provider):
+    """The route is known to serve the destination, so a failed live fetch must
+    surface as 無即時資料 — never as 沒有直達, which would be a false answer."""
+    use_provider(
+        FakeBusProvider(
+            route_info={"201": {"go_dest": "斗六火車站"}},
+            route_estimate=_two_stop_route("雲林科技大學", "斗六火車站"),
+            route_estimate_error=RuntimeError("upstream down"),
+        )
+    )
+    result = asyncio.run(departures.render_arrivals_to_destination("斗六火車站", "雲林科技大學"))
+    assert "201" in result
+    assert "無即時資料" in result
+    assert "沒有直達" not in result
 
 
 # ── geo-awareness ────────────────────────────────────────────────────────────

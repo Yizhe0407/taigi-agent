@@ -55,7 +55,8 @@ pnpm dev
 - Route lookup 是 stop-scoped：只查 `KIOSK_STOP` 停靠路線，避免同名 route 歧義。
 - Kiosk 方向設定語意：admin 設「去程」或「回程」→ 直接過濾，不 auto-detect；設「去回程都有」(go_back=None) → `_is_terminal_direction()` 自動過濾終點到站方向，循環路線不過濾。
 - **方向編碼**：TDX Direction 0=去程、1=回程（非舊 ebus 的 1/2）。`kiosk_config.go_back`、`iter_scoped_stop_etas` 的 `go_back` 參數、API response `goBack` 全部用 0/1。
-- **TDX provider**：`providers/tdx_bus.py` 同時查 `City/YunlinCounty` 與 `InterCity` 兩個 endpoint 並合併。`load_route_info` 從 `StopOfRoute` Stops 末站推導 `go_dest`/`back_dest`。
+- **TDX provider**：`providers/tdx_bus.py` 同時查 `City/YunlinCounty` 與 `InterCity` 兩個 endpoint 並合併。`load_route_info` 從 `StopOfRoute` Stops 末站推導 `go_dest`/`back_dest`，並保留完整站序到 `RouteInfo.outbound_stops`/`inbound_stops`。
+- **路線拓撲 vs 即時資料**：「這條路線之後會不會到 X」是靜態問題，用 `RouteInfo` 站序回答（`rows._iter_route_downstream`）；`fetch_route_estimate` 只用來取即時 ETA，不要再為了判斷路線形狀逐條抓。
 - **TDX 欄位**：ETA rows — `sub_route_name`(str)、`direction`(0/1)、`stop_status`(0-4)、`estimate_seconds`(int|None)。route estimate rows 多加 `stop_name`、`stop_sequence`。`route_id` 整個 service/API 層是 `str`。
 - **TDX StopStatus**：0=正常、1=未發車、2=交管不停（`iter_scoped_stop_etas` 靜默過濾）、3=末班已過、4=今日未營運。無 `ComeTime` 等效，`scheduled_time` 永遠 None。
 - **TDX 認證**：`TDX_CLIENT_ID` / `TDX_CLIENT_SECRET` 放 `.env`；token 用 OAuth2 client_credentials 自動取得並快取。

@@ -33,11 +33,25 @@ class StopStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class RouteInfo:
-    """A route serving a stop and its two terminal labels."""
+    """A route serving a stop: its two terminal labels and its static stop order.
+
+    ``outbound_stops`` / ``inbound_stops`` are the route's stop names in travel
+    order (ascending stop sequence), one tuple per direction.  They are route
+    topology, not live data: the adapter already reads the full ordered stop
+    list while discovering which routes serve a stop, so it must keep it here.
+    Services answer "does this route reach X after this stop?" from these
+    tuples without an upstream round-trip per route.  An empty tuple means the
+    source does not know that direction's stops.
+    """
 
     route_name: str
     outbound_destination: str = ""
     inbound_destination: str = ""
+    outbound_stops: tuple[str, ...] = ()
+    inbound_stops: tuple[str, ...] = ()
+
+    def stops(self, direction: Direction) -> tuple[str, ...]:
+        return self.outbound_stops if direction == Direction.OUTBOUND else self.inbound_stops
 
 
 @dataclass(frozen=True, slots=True)

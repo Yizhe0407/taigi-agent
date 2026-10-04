@@ -49,6 +49,33 @@ def _iter_downstream_directions(
             yield direction, downstream
 
 
+def _iter_route_downstream(
+    info: RouteInfo,
+    kiosk_stop: str,
+    go_back: int | None = None,
+) -> Iterator[tuple[Direction, list[str]]]:
+    """Static counterpart of `_iter_downstream_directions`, read from route topology.
+
+    Yields each direction's stop names *after* the kiosk's first occurrence
+    (the boarding point), using `RouteInfo`'s stop order instead of a live
+    route estimate — so asking "where does this route go after here?" costs no
+    upstream request. The boarding point itself is excluded: every route
+    "reaches" the stop you are standing at, so including it made a query for
+    the kiosk's own name match every route here. A loop that comes back to the
+    kiosk still lists that later occurrence.
+    """
+    requested = Direction(go_back) if go_back is not None else None
+    for direction in Direction:
+        if requested is not None and direction != requested:
+            continue
+        stops = info.stops(direction)
+        if not stops:
+            continue
+        downstream = _downstream_names([(index, _strip_paren(name)) for index, name in enumerate(stops)], kiosk_stop)
+        if downstream is not None:
+            yield direction, downstream[1:]
+
+
 def _is_traffic_controlled(stop: StopArrival | RouteStopEstimate) -> bool:
     return stop.status == StopStatus.NOT_STOPPING
 
