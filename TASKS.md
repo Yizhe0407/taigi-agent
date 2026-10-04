@@ -20,6 +20,7 @@
 
 ## Now
 
+- [ ] 升級 TDX 銅級並設 `TDX_RATE_LIMIT=5/s`（基礎會員點數約兩天用完，見 README）
 - [ ] Demo 腳本與報告素材：`tasks/demo-report.md`
 - [ ] 站務員視覺狀態機：`tasks/station-attendant.md`（blocked，等組員 3D 模型）
 
@@ -27,6 +28,8 @@
 
 - [ ] 使用者試用與量化評估：`tasks/evaluation.md`（報告素材）
 - [ ] POI 與在地知識：`tasks/backlog.md`
+- [ ] 到站時間改存絕對時刻：被限流時會用快取舊資料，但「幾分鐘後到」是相對時間，舊資料會念錯
+- [ ] 路線站序快取改成一天一次：站序是靜態資料，可每月省約 20 點
 
 ## Workstreams
 
@@ -51,6 +54,7 @@
 - 路線規劃：OTP graph、TDX stop index、coordinate planner、MapCN route view model、`POST /api/route-plans`；無班次錯誤顯示、地圖自動定位、站牌方向標示。
 - 後台管理：`/admin` 站牌切換 UI；runtime `KioskConfig` singleton；`/api/admin/kiosk` GET/PUT、`/api/admin/stops`；不需重啟即可切換站牌與方向。
 - **公車資料來源解耦**：`providers/bus.py` 定義 provider-neutral 契約（`Direction`、`StopStatus`、`RouteInfo`、`RouteAtStop`、`StopArrival`、`RouteStopEstimate`），上游欄位只在各 adapter 內轉換，service / tool / API 層不再出現任何上游欄位名或 status code。2026-10 起只保留 TDX：TaiwanBus / ebus 爬蟲來源常被封 IP 或掛站，連同 fallback 鏈與 `BUS_PROVIDER_ORDER` 一起移除；`services/departures/provider.py` 直接組裝 `TdxBusProvider`。方向編碼 0=去程、1=回程，`route_id` 全層為 route name string。
+- **延遲與 TDX 限流**（2026-10-04）：目的地查詢改用靜態站序索引，只抓會到的路線（31 條 → 約 5 條）；所有 TDX 請求共用限速器（`TDX_RATE_LIMIT`）；語音工具與首頁每次最多等 3 秒，等不到就用快取。實測免費版：虎尾 119 秒 → 0.07 秒，429 從每輪數次 → 0。
 - 語音基礎：ASR proxy、前端錄音、TTS proxy、台語文字處理、分段播放；ASR 錯誤訊息不外洩原始 Python exception。
 - 正式部署：systemd 單 worker backend、loopback Nginx、immutable release、health check、自動失敗回切與指定版本 rollback；操作文件見 `docs/production-deployment.md`。
 - 串流回覆：`AgentSession.respond_stream` 逐句輸出 → 語音逐句 TTS（首音不等完整回覆）、chat SSE 逐字上屏、departures SSE 隨 ETA warmup tick 推播（取代輪詢相位差）。

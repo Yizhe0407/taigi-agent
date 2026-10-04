@@ -55,3 +55,9 @@
 - 根因：`git stash` 作用於**整個 working tree**，不是呼叫者的檔案子集。只取回自己的路徑再 drop，等於把別人的未 commit 改動連同 stash 一起丟棄；agent 自認「沒碰別人的檔案」而如實回報「其他人的工作原封不動」，但它從未驗證過
 - 規則：(1) 派並行 agent 的 prompt 一律寫死「禁用 `git stash` / `git checkout -- .` / `git reset`，只用 Edit/Write 改授權範圍內的檔案」；(2) 指揮官收到任何提及 git 狀態操作的回報，立刻自己跑 `git status --short` + `grep` 關鍵符號驗證別的 agent 的產出還在，不要採信「我沒碰」；(3) 真的丟了可救——`git fsck --unreachable | grep commit` 找 dangling stash commit，先 `git tag` 保住再取用
 - 證據：dangling stash `bc25688`（tag `salvage-dropped-stash`）內含被丟掉的 departures 改動；本輪最後 departures 是照新設計重寫而非還原舊版
+
+## 2026-10-04 延遲高的真正原因是 TDX 免費方案
+- 症狀：目的地查詢要 5～119 秒，TDX 一直回 429
+- 根因：基礎會員只有每分鐘 5 次、每月 3 點；首頁背景更新加上一題目的地查詢（逐條抓 31 條路線）就超過上限，程式還照 Retry-After 睡 20～40 秒
+- 規則：接外部 API 前先查清楚方案的頻率與額度上限，算出系統每分鐘/每月用量；使用者在等的請求一定要有時間上限，不能跟著上游的 Retry-After 一起等
+- 證據：commit 459654a（站序索引）、0e8bcb9（時間預算）、cfb7c01（限速器）
