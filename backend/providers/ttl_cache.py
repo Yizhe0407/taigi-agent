@@ -21,6 +21,8 @@ import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, MutableMapping
 from contextlib import asynccontextmanager
 
+from upstream_deadline import UpstreamBudgetExceeded, remaining_budget
+
 _log = logging.getLogger(__name__)
 
 # Sweep the store no more often than "once the live set has doubled", so the
@@ -71,7 +73,12 @@ class KeyedLocks[K]:
             return key in self._entries
 
     @asynccontextmanager
-    async def acquire(self, key: K) -> AsyncIterator[None]:
+    async def acquire(self, key: K, *, timeout: float | None = None) -> AsyncIterator[None]:
+        """Hold `key`'s lock for the block.
+
+        `timeout` bounds only the wait to *acquire* (raising `TimeoutError`),
+        never the work done while holding it.
+        """
         loop = asyncio.get_running_loop()
         with self._entries_guard:
             entry = self._entries.get(key)
@@ -83,8 +90,15 @@ class KeyedLocks[K]:
             entry.users += 1
 
         try:
-            async with entry.lock:
+            if timeout is None:
+                await entry.lock.acquire()
+            else:
+                async with asyncio.timeout(timeout):
+                    await entry.lock.acquire()
+            try:
                 yield
+            finally:
+                entry.lock.release()
         finally:
             with self._entries_guard:
                 entry.users -= 1
@@ -153,6 +167,12 @@ class TtlCache[K, V]:
         callers on a miss share one upstream call. If `fetch` raises and a
         value is cached within `stale_ttl` of `ttl` (i.e. not "too stale"),
         that value is served instead of propagating the error.
+
+        Under an upstream budget (`upstream_deadline`), waiting for another
+        caller's in-flight fetch is bounded too: an interactive caller must not
+        queue behind a background refresh sitting out a rate-limit backoff.
+        When the budget runs out first, the stale value is served on the same
+        terms as a failed fetch, or `UpstreamBudgetExceeded` is raised.
         """
         cached = self._store.get(key)
         hit = cached is not None and not self._expired(cached[0], ttl)
@@ -163,25 +183,48 @@ class TtlCache[K, V]:
                 on_hit(key)
             return cached[1]
 
-        async with self._locks.acquire(key):
-            # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
+        acquired = False
+        try:
+            async with self._locks.acquire(key, timeout=remaining_budget()):
+                acquired = True
+                return await self._fetch_locked(key, fetch, ttl=ttl, stale_ttl=stale_ttl, on_hit=on_hit, on_store=on_store)
+        except TimeoutError:
+            if acquired:
+                raise  # the fetch's own timeout, already past stale-serve — not a lock wait
             cached = self._store.get(key)
-            if cached is not None and not self._expired(cached[0], ttl):
-                if on_hit is not None:
-                    on_hit(key)
+            if stale_ttl is not None and cached is not None and not self._expired(cached[0], stale_ttl):
+                _log.warning("%s fetch still in flight past the caller's budget; serving stale cache for %r", self._cache_name, key)
                 return cached[1]
+            raise UpstreamBudgetExceeded(f"{self._cache_name}: no cached value for {key!r} within the caller's budget") from None
 
-            try:
-                value = await fetch()
-            except Exception:
-                if stale_ttl is not None and cached is not None and not self._expired(cached[0], stale_ttl):
-                    _log.warning("%s fetch failed; serving stale cache for %r", self._cache_name, key)
-                    return cached[1]
-                raise
+    async def _fetch_locked(
+        self,
+        key: K,
+        fetch: Callable[[], Awaitable[V]],
+        *,
+        ttl: float | None,
+        stale_ttl: float | None,
+        on_hit: Callable[[K], None] | None,
+        on_store: Callable[[K, V], None] | None,
+    ) -> V:
+        # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
+        cached = self._store.get(key)
+        if cached is not None and not self._expired(cached[0], ttl):
+            if on_hit is not None:
+                on_hit(key)
+            return cached[1]
 
-            self._store[key] = (self._clock(), value)
-            if on_store is not None:
-                on_store(key, value)
-            # Sweep after on_store so a caller-owned LRU trim has already run.
-            self._maybe_sweep(stale_ttl if stale_ttl is not None else ttl)
-            return value
+        try:
+            value = await fetch()
+        except Exception:
+            if stale_ttl is not None and cached is not None and not self._expired(cached[0], stale_ttl):
+                _log.warning("%s fetch failed; serving stale cache for %r", self._cache_name, key)
+                return cached[1]
+            raise
+
+        self._store[key] = (self._clock(), value)
+        if on_store is not None:
+            on_store(key, value)
+        # Sweep after on_store so a caller-owned LRU trim has already run.
+        self._maybe_sweep(stale_ttl if stale_ttl is not None else ttl)
+        return value

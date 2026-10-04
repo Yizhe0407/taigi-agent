@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 from providers.bus import BusProvider, Direction, RouteInfo, RouteStopEstimate
 from services.departures.classification import DepartureSection, StopClassification, _classify_stop
@@ -386,6 +387,15 @@ def _boarding_status(
     return f"{_incoming_status_text(c)}{dest_suffix}", c.sort_minutes, c.section
 
 
+class _RouteHit(NamedTuple):
+    """One direction of one matched route, as a rider-facing status line."""
+
+    text: str
+    sort_minutes: int
+    section: DepartureSection
+    route_name: str
+
+
 @dataclass(frozen=True)
 class _DestinationMatch:
     """A route whose static stop order reaches the destination after the kiosk.
@@ -431,15 +441,15 @@ async def _route_arrival_hits(
     kiosk_stop: str,
     route_info: dict[str, RouteInfo],
     now: datetime,
-) -> list[tuple[str, int, DepartureSection]]:
-    """Live status lines (display_text, sort_minutes, section) for one matched route.
+) -> list[_RouteHit]:
+    """Live status lines for one matched route.
 
     The route is known to serve the destination, so a failed live fetch still
     lists it — as 無即時資料 — rather than dropping it and letting the reply
     claim there is no direct route.
     """
     data = await _safe_provider_call(provider.fetch_route_estimate(match.route_name)) or []
-    hits: list[tuple[str, int, DepartureSection]] = []
+    hits: list[_RouteHit] = []
     for direction, canonical in match.directions:
         dir_label = _direction_label_from_info(route_info, match.route_name, direction)
         # 「往<本站>」tells a rider standing here nothing — this direction departs
@@ -448,7 +458,7 @@ async def _route_arrival_hits(
             dir_label = "（循環）"
 
         status_text, sort_minutes, section = _boarding_status(data, kiosk_stop, direction, canonical, now)
-        hits.append((f"{match.route_name} {dir_label}：{status_text}", sort_minutes, section))
+        hits.append(_RouteHit(f"{match.route_name} {dir_label}：{status_text}", sort_minutes, section, match.route_name))
     return hits
 
 
@@ -463,7 +473,7 @@ def _pick_canonical_destination(matches: list[_DestinationMatch]) -> str:
     return min((canonical for match in matches for _, canonical in match.directions), key=lambda s: (len(s), s))
 
 
-def _summarize_route_hits(raw: list[tuple[str, int, DepartureSection]], canonical: str) -> str:
+def _summarize_route_hits(raw: list[_RouteHit], canonical: str) -> str:
     """Sort route hits by ETA and return only the single most relevant status group.
 
     Only the highest-priority section (AVAILABLE, then NOT_DEPARTED) is
@@ -472,15 +482,21 @@ def _summarize_route_hits(raw: list[tuple[str, int, DepartureSection]], canonica
     conclusion: the 4B re-read the granular list as 無直達, conflating "no bus
     left today" with "no such route". The wording avoids 沒有 so it can't slip
     back into the 無直達 template. [eval v5 hole #1]
+
+    When no route has live data (upstream rate-limited or down), the reply is
+    likewise one sentence: which routes go there — known from topology, so
+    still true — and that arrival times are unavailable right now, instead of
+    a 無即時資料 line per route for the model to read out.
     """
-    by_eta = sorted(raw, key=lambda hit: hit[1])
+    by_eta = sorted(raw, key=lambda hit: hit.sort_minutes)
     for section in (DepartureSection.AVAILABLE, DepartureSection.NOT_DEPARTED):
-        group = [d for d, _, s in by_eta if s == section]
+        group = [hit.text for hit in by_eta if hit.section == section]
         if group:
             return "\n".join(group)
-    if any(s == DepartureSection.LAST_DEPARTED for _, _, s in by_eta):
+    if any(hit.section == DepartureSection.LAST_DEPARTED for hit in by_eta):
         return f"去{canonical}的公車今天班次都跑完了，末班已經開走囉。"
-    return "\n".join(d for d, _, __ in by_eta)
+    routes = "、".join(dict.fromkeys(hit.route_name for hit in raw))
+    return f"去{canonical}可以搭{routes}，不過現在查不到即時到站時間，請稍後再問一次。"
 
 
 async def render_arrivals_to_destination(
@@ -530,7 +546,7 @@ async def render_arrivals_to_destination(
     # rate limit on a cold cache.
     sem = asyncio.Semaphore(3)
 
-    async def _guarded(match: _DestinationMatch) -> list[tuple[str, int, DepartureSection]]:
+    async def _guarded(match: _DestinationMatch) -> list[_RouteHit]:
         async with sem:
             return await _route_arrival_hits(match, provider, kiosk_stop, route_info, now)
 

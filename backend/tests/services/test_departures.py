@@ -873,7 +873,8 @@ def test_render_arrivals_to_destination_kiosk_name_matches_only_loops(use_provid
 
 def test_render_arrivals_to_destination_live_failure_still_lists_route(use_provider):
     """The route is known to serve the destination, so a failed live fetch must
-    surface as 無即時資料 — never as 沒有直達, which would be a false answer."""
+    still name it, collapsed into one "查不到即時" sentence — never 沒有直達,
+    which would be a false answer."""
     use_provider(
         FakeBusProvider(
             route_info={"201": {"go_dest": "斗六火車站"}},
@@ -882,9 +883,7 @@ def test_render_arrivals_to_destination_live_failure_still_lists_route(use_provi
         )
     )
     result = asyncio.run(departures.render_arrivals_to_destination("斗六火車站", "雲林科技大學"))
-    assert "201" in result
-    assert "無即時資料" in result
-    assert "沒有直達" not in result
+    assert result == "去斗六火車站可以搭201，不過現在查不到即時到站時間，請稍後再問一次。"
 
 
 # ── geo-awareness ────────────────────────────────────────────────────────────

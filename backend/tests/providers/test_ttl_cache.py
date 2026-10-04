@@ -291,3 +291,82 @@ def test_cache_hit_semantics_unchanged():
     assert (first, second, third) == (1, 1, 2)
     assert hits == [False, True, False]
     assert calls == 2
+
+
+# ── upstream budget ───────────────────────────────────────────────────────────
+
+
+async def _hold_key(cache: TtlCache[str, str], gate: asyncio.Event) -> asyncio.Task[str]:
+    """Start an unbudgeted (background) fetch that holds key "k" until `gate` is set."""
+
+    async def slow_fetch() -> str:
+        await gate.wait()
+        return "fresh"
+
+    task = asyncio.create_task(cache.get_or_fetch("k", slow_fetch, ttl=10.0, stale_ttl=300.0))
+    while "k" not in cache._locks:
+        await asyncio.sleep(0)
+    return task
+
+
+def test_budgeted_caller_gets_stale_value_instead_of_queueing():
+    """An interactive caller must not wait behind a background refresh (e.g. one
+    sitting out a 429 Retry-After); with a stale value at hand it returns at once."""
+    from upstream_deadline import upstream_deadline
+
+    async def scenario() -> tuple[str, str]:
+        now = [100.0]
+        store: dict[str, tuple[float, str]] = {"k": (0.0, "stale")}  # past ttl, within stale_ttl
+        cache: TtlCache[str, str] = TtlCache(store, clock=lambda: now[0])
+        gate = asyncio.Event()
+        background = await _hold_key(cache, gate)
+
+        async def never() -> str:
+            raise AssertionError("budgeted caller must not fetch while the key is held")
+
+        with upstream_deadline(0.0):
+            interactive = await cache.get_or_fetch("k", never, ttl=10.0, stale_ttl=300.0)
+        gate.set()
+        return interactive, await background
+
+    interactive, background = asyncio.run(scenario())
+    assert interactive == "stale"
+    assert background == "fresh"
+
+
+def test_budgeted_caller_without_stale_value_raises_budget_exceeded():
+    from upstream_deadline import UpstreamBudgetExceeded, upstream_deadline
+
+    async def scenario() -> None:
+        cache: TtlCache[str, str] = TtlCache({}, clock=lambda: 0.0)
+        gate = asyncio.Event()
+        background = await _hold_key(cache, gate)
+
+        async def never() -> str:
+            raise AssertionError("unreachable")
+
+        try:
+            with upstream_deadline(0.0), pytest.raises(UpstreamBudgetExceeded):
+                await cache.get_or_fetch("k", never, ttl=10.0, stale_ttl=300.0)
+        finally:
+            gate.set()
+            await background
+
+    asyncio.run(scenario())
+
+
+def test_fetch_timeout_under_budget_is_not_mistaken_for_a_lock_wait():
+    """A TimeoutError raised by the fetch itself keeps its type: only waiting for
+    the lock is converted to UpstreamBudgetExceeded."""
+    from upstream_deadline import upstream_deadline
+
+    async def scenario() -> None:
+        cache: TtlCache[str, str] = TtlCache({}, clock=lambda: 0.0)
+
+        async def fetch() -> str:
+            raise TimeoutError("upstream request timed out")
+
+        with upstream_deadline(3.0), pytest.raises(TimeoutError, match="upstream request timed out"):
+            await cache.get_or_fetch("k", fetch, ttl=10.0, stale_ttl=300.0)
+
+    asyncio.run(scenario())

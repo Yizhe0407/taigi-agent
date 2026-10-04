@@ -790,3 +790,169 @@ def test_route_info_sweep_keeps_unexpired_entries(monkeypatch):
     assert len(provider._stop_routes_by_stop) == 100
     assert "stop-0" in provider._stop_routes_by_stop
     assert "stop-0" in provider._kiosk_uids
+
+
+# ── upstream budget (interactive callers) ─────────────────────────────────────
+
+
+class _RateLimitedResp(_FakeResp):
+    def __init__(self, retry_after: str):
+        super().__init__([], status_code=429)
+        self.headers = {"Retry-After": retry_after}
+
+
+def test_429_under_budget_fails_fast_instead_of_sleeping(monkeypatch):
+    """A rider-facing call must not sit out a 20-40 s Retry-After."""
+    from upstream_deadline import UpstreamBudgetExceeded, upstream_deadline
+
+    sleeps: list[float] = []
+
+    class Limited:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            return _RateLimitedResp("30")
+
+    async def fake_sleep(s: float) -> None:
+        sleeps.append(s)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: Limited())
+    provider = TdxBusProvider("id", "secret", sleep=fake_sleep)
+
+    async def scenario() -> None:
+        with upstream_deadline(3.0):
+            await provider._get(f"{tdx_bus._BASE}/x", {})
+
+    with pytest.raises(UpstreamBudgetExceeded):
+        asyncio.run(scenario())
+    assert sleeps == []
+
+
+def test_429_without_budget_still_waits_retry_after(monkeypatch):
+    """Background refreshes keep the old behaviour: honour Retry-After, then retry."""
+    sleeps: list[float] = []
+    calls: list[str] = []
+
+    class LimitedOnce:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            return _RateLimitedResp("30") if len(calls) == 1 else _FakeResp([])
+
+    async def fake_sleep(s: float) -> None:
+        sleeps.append(s)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: LimitedOnce())
+    provider = TdxBusProvider("id", "secret", sleep=fake_sleep)
+    assert asyncio.run(provider._get(f"{tdx_bus._BASE}/x", {})) == []
+    assert sleeps == [30.0]
+
+
+def test_request_timeout_is_capped_by_the_budget(monkeypatch):
+    from upstream_deadline import upstream_deadline
+
+    timeouts: list[float] = []
+
+    class Recording:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            return _FakeResp([])
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: Recording())
+    provider = TdxBusProvider("id", "secret")
+
+    async def scenario() -> None:
+        with upstream_deadline(2.0):
+            await provider._get(f"{tdx_bus._BASE}/x", {})
+
+    asyncio.run(scenario())
+    assert timeouts and timeouts[0] <= 2.0
+
+
+def test_route_estimate_rate_limited_under_budget_serves_stale(monkeypatch):
+    """End to end: the interactive path answers from the last estimate at once."""
+    from providers.bus import RouteStopEstimate
+    from upstream_deadline import upstream_deadline
+
+    class Limited:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            return _RateLimitedResp("30")
+
+    now = [1000.0]
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: Limited())
+    provider = TdxBusProvider("id", "secret", clock=lambda: now[0])
+    stale = [RouteStopEstimate(stop_name="A", sequence=1, direction=Direction.OUTBOUND, status=StopStatus.AVAILABLE, eta_seconds=120, route_name="201")]
+    provider._route_estimate_cache["201"] = (now[0] - 45.0, stale)  # past the 30 s TTL, within stale grace
+
+    async def scenario():
+        with upstream_deadline(3.0):
+            return await provider.fetch_route_estimate("201")
+
+    assert asyncio.run(scenario()) == stale
+
+
+def test_failed_route_refresh_keeps_last_complete_snapshot(monkeypatch):
+    """Both StopOfRoute endpoints failing must not replace good topology with an
+    empty snapshot (which would answer 查詢失敗 for the next minute)."""
+    now = [0.0]
+    _patch_http(monkeypatch, _TOKEN, _STOP_OF_ROUTE)
+    provider = TdxBusProvider("id", "secret", clock=lambda: now[0])
+    good = asyncio.run(provider.load_route_info("雲林科技大學"))
+    assert "201" in good
+
+    class Down:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            return _FakeResp([], status_code=503)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: Down())
+    now[0] += tdx_bus._DEFAULT_ROUTE_INFO_TTL + 1
+    assert asyncio.run(provider.load_route_info("雲林科技大學")) == good
+    # Re-stamped as partial: retried after the short TTL, not on every call.
+    assert provider._stop_routes_by_stop["雲林科技大學"][2] is True
+
+
+def test_partial_route_refresh_keeps_last_complete_snapshot(monkeypatch):
+    now = [0.0]
+    _patch_http(monkeypatch, _TOKEN, _STOP_OF_ROUTE)
+    provider = TdxBusProvider("id", "secret", clock=lambda: now[0])
+    good = asyncio.run(provider.load_route_info("雲林科技大學"))
+
+    class HalfDown:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            return _FakeResp([], status_code=503) if "InterCity" in url else _FakeResp([])
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: HalfDown())
+    now[0] += tdx_bus._DEFAULT_ROUTE_INFO_TTL + 1
+    assert asyncio.run(provider.load_route_info("雲林科技大學")) == good
+
+
+def test_route_refresh_with_no_snapshot_and_both_endpoints_down_raises(monkeypatch):
+    import httpx
+
+    class Down:
+        async def post(self, url, **kwargs):
+            return _FakeResp(_TOKEN)
+
+        async def get(self, url, **kwargs):
+            return _FakeResp([], status_code=503)
+
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: Down())
+    provider = TdxBusProvider("id", "secret")
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(provider.load_route_info("雲林科技大學"))
+    assert "雲林科技大學" not in provider._stop_routes_by_stop

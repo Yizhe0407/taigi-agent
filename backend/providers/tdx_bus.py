@@ -64,6 +64,7 @@ from providers.http import get_http_client
 from providers.tdx_auth import TdxTokenClient
 from providers.ttl_cache import KeyedLocks, TtlCache
 from telemetry import get_telemetry
+from upstream_deadline import UpstreamBudgetExceeded, remaining_budget
 
 _log = logging.getLogger(__name__)
 
@@ -198,16 +199,28 @@ class TdxBusProvider(BusProvider):
             return default
 
     async def _get(self, url: str, params: dict) -> list[dict]:
+        """GET a TDX endpoint, honouring the caller's upstream budget.
+
+        Background callers (no budget) sit out a 429's Retry-After and retry.
+        Interactive callers (`upstream_deadline`) never block past their budget:
+        the request timeout is capped to what is left, and a 429 whose backoff
+        would overrun it raises `UpstreamBudgetExceeded` at once, so the cache
+        layer can serve stale data instead of the rider waiting 20-40 s.
+        """
         http = get_http_client()
         attempt = 0
         while True:
+            budget = remaining_budget()
+            if budget is not None and budget <= 0:
+                raise UpstreamBudgetExceeded(f"TDX {url.removeprefix(_BASE)}: caller's budget spent")
+            request_timeout = _REQUEST_TIMEOUT_SECONDS if budget is None else min(_REQUEST_TIMEOUT_SECONDS, budget)
 
-            async def _do(token: str, url: str = url, params: dict = params) -> httpx.Response:
+            async def _do(token: str, url: str = url, params: dict = params, timeout: float = request_timeout) -> httpx.Response:
                 return await http.get(
                     url,
                     params={**params, "$format": "JSON"},
                     headers={"Authorization": f"Bearer {token}"},
-                    timeout=_REQUEST_TIMEOUT_SECONDS,
+                    timeout=timeout,
                 )
 
             # Handles the 401 refresh-and-retry dance internally, independent of
@@ -217,6 +230,9 @@ class TdxBusProvider(BusProvider):
                 get_telemetry().record_provider_rate_limit(provider="tdx", endpoint=url.removeprefix(_BASE))
                 if attempt < _MAX_RETRIES:
                     wait = self._retry_after_seconds(resp, float(1 << attempt))
+                    budget = remaining_budget()
+                    if budget is not None and wait >= budget:
+                        raise UpstreamBudgetExceeded(f"TDX 429 on {url.removeprefix(_BASE)}: Retry-After {wait:.0f}s exceeds the caller's budget")
                     _log.warning("TDX 429 on %s; retry in %.0fs (attempt %d/%d)", url, wait, attempt + 1, _MAX_RETRIES)
                     await self._sleep(wait)
                     attempt += 1
@@ -349,26 +365,61 @@ class TdxBusProvider(BusProvider):
 
         # Not a TtlCache: the TTL here depends on had_failures from the
         # *previous* fetch, which doesn't fit TtlCache's fixed-ttl/2-tuple shape.
-        async with self._stop_routes_locks.acquire(stop_name):
-            # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
-            cached = self._stop_routes_by_stop.get(stop_name)
-            ttl = self._route_info_ttl if cached is None or not cached[2] else _ROUTE_INFO_PARTIAL_TTL
-            if cached is not None and not self._expired(cached[0], ttl):
+        # Same budget rule as TtlCache: an interactive caller does not queue
+        # behind a background refresh; it takes the last snapshot, any age.
+        acquired = False
+        try:
+            async with self._stop_routes_locks.acquire(stop_name, timeout=remaining_budget()):
+                acquired = True
+                return await self._refresh_stop_routes(stop_name)
+        except TimeoutError:
+            if acquired:
+                raise
+            if cached is not None:
+                _log.warning("TDX StopOfRoute refresh still in flight past the caller's budget; serving last snapshot for %s", stop_name)
                 return cached[1]
+            raise UpstreamBudgetExceeded(f"TDX StopOfRoute for {stop_name}: no snapshot within the caller's budget") from None
 
+    async def _refresh_stop_routes(self, stop_name: str) -> _StopRoutes:
+        """Refetch one stop's `StopOfRoute` snapshot; caller holds the stop's lock.
+
+        Route topology changes rarely, so the last complete snapshot beats a
+        failed or partial refresh (rate-limited, over budget, endpoint down):
+        it is kept and re-stamped as partial, which retries after
+        `_ROUTE_INFO_PARTIAL_TTL` instead of hammering the upstream. A partial
+        result is only cached when there is nothing better.
+        """
+        # Re-check after acquiring: first caller fills cache, subsequent callers hit it.
+        cached = self._stop_routes_by_stop.get(stop_name)
+        ttl = self._route_info_ttl if cached is None or not cached[2] else _ROUTE_INFO_PARTIAL_TTL
+        if cached is not None and not self._expired(cached[0], ttl):
+            return cached[1]
+
+        try:
             city, intercity, had_failures = await self._stop_of_route(stop_name)
-            records = city + intercity
-            info, boarding_uids = self._build_route_info(records, stop_name)
-            stop_routes = _StopRoutes(
-                route_info=info,
-                routes=self._build_routes_at_stop(records),
-                boarding_uids=frozenset(boarding_uids),
-            )
-            self._stop_routes_by_stop[stop_name] = (self._clock(), stop_routes, had_failures)
-            if boarding_uids:
-                self._kiosk_uids[stop_name] = boarding_uids
-            self._maybe_sweep_stop_routes()
-            return stop_routes
+        except Exception as exc:
+            if cached is None:
+                raise
+            _log.warning("TDX StopOfRoute refresh failed for %s (%s); keeping last snapshot", stop_name, exc)
+            self._stop_routes_by_stop[stop_name] = (self._clock(), cached[1], True)
+            return cached[1]
+        if had_failures and cached is not None and not cached[2]:
+            _log.warning("TDX StopOfRoute refresh for %s was partial; keeping last complete snapshot", stop_name)
+            self._stop_routes_by_stop[stop_name] = (self._clock(), cached[1], True)
+            return cached[1]
+
+        records = city + intercity
+        info, boarding_uids = self._build_route_info(records, stop_name)
+        stop_routes = _StopRoutes(
+            route_info=info,
+            routes=self._build_routes_at_stop(records),
+            boarding_uids=frozenset(boarding_uids),
+        )
+        self._stop_routes_by_stop[stop_name] = (self._clock(), stop_routes, had_failures)
+        if boarding_uids:
+            self._kiosk_uids[stop_name] = boarding_uids
+        self._maybe_sweep_stop_routes()
+        return stop_routes
 
     def _maybe_sweep_stop_routes(self) -> None:
         """Evict expired `_stop_routes_by_stop` entries (and their `_kiosk_uids`).
@@ -453,6 +504,8 @@ class TdxBusProvider(BusProvider):
         Returns (city_rows, intercity_rows, had_failures) — had_failures is True
         when either endpoint errored, so callers can cache the (possibly
         incomplete) result with a short TTL instead of the full route-info TTL.
+        Raises when *both* endpoints failed: an empty result there is an
+        outage, not "no routes at this stop".
         """
         results = await asyncio.gather(
             self._get(
@@ -465,6 +518,8 @@ class TdxBusProvider(BusProvider):
             ),
             return_exceptions=True,
         )
+        if all(isinstance(r, BaseException) for r in results):
+            raise results[0]  # type: ignore[misc]
         had_failures = any(isinstance(r, BaseException) for r in results)
         return _safe_list(results[0]), _safe_list(results[1]), had_failures
 

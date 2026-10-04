@@ -15,8 +15,14 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from telemetry import AgentTelemetry
+from upstream_deadline import upstream_deadline
 
 ToolHandler = Callable[..., Awaitable[str]]
+
+# Upstream time budget for one tool call. A rider is waiting on the reply, so a
+# rate-limited upstream must fall back to cached data or a "查不到" answer
+# rather than sit out its Retry-After (20-40 s). Normal TDX calls take 0.05-0.3 s.
+TOOL_UPSTREAM_BUDGET_SECONDS = 3.0
 
 
 class _ToolCallFunction(Protocol):
@@ -124,7 +130,8 @@ async def _execute_one(
                 return ToolCallResult(msg, is_error=True)
 
             try:
-                result = await handler(**tool_args)
+                with upstream_deadline(TOOL_UPSTREAM_BUDGET_SECONDS):
+                    result = await handler(**tool_args)
             except Exception as e:
                 outcome = "handler_error"
                 telemetry.record_tool_error(tool_name=tool_name, error_type=type(e).__name__)
