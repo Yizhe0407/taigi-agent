@@ -1,8 +1,6 @@
-# 讓後端安全地用到模型主機
+# 模型服務設定（Cloudflare Tunnel + Access）
 
-LLM、ASR（語音辨識）、TTS（語音合成）跑在學校的 GPU 主機上，後端跑在別台。中間隔著網路，模型不能裸露在公網上。
-
-做法是 **Cloudflare Tunnel + Access**：
+LLM、ASR（語音辨識）、TTS（語音合成）跑在學校的 GPU 主機上，後端在另一台機器。後端透過 Cloudflare Tunnel 連到模型主機，並用 Cloudflare Access 的 Service Token 驗證，模型服務不直接對外開放：
 
 ```
 後端 ──HTTPS + Service Token──▶ Cloudflare ──Tunnel──▶ 模型主機（只聽 127.0.0.1）
@@ -50,7 +48,7 @@ CF_ACCESS_CLIENT_SECRET=<Service Token 的 Client Secret>
 
 ## 容易誤會的地方
 
-Access 只保護**公開網址**。在模型主機上直接打 `localhost:8000`，或對方知道主機 IP 且 port 對外開放，都不經過 Access。
+Access 只保護公開網址。在模型主機上直接打 `localhost:8000`，或對方知道主機 IP 且 port 對外開放，都不經過 Access。
 
 所以要做到「只能走 Cloudflare」，必須：
 

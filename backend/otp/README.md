@@ -1,6 +1,6 @@
-# OTP：路線規劃的資料與服務
+# OTP
 
-路線規劃（地圖選點）用 OpenTripPlanner。這個資料夾放它的建置輸入；下載的 GTFS、OSM 和 graph 都不進 git。為什麼這樣設計見 [路線規劃](../../docs/route-planning.md)。
+地圖路線規劃使用 OpenTripPlanner（OTP）。這個資料夾放它的建置輸入；下載的 GTFS、OSM 和 graph 都不進 git。為什麼這樣設計見 [路線規劃](../../docs/route-planning.md)。
 
 ```
 TDX GTFS ─┐
@@ -26,9 +26,9 @@ otp/data/yunlin-stop-index.json
 
 已經下載過全台 GTFS 的話，用 `--input <zip> --output otp/data/yunlin-gtfs.zip` 跳過下載（仍會連 TDX 更新站牌索引）。
 
-**怎麼判定「雲林的路線」**：`YUN_` 開頭業者的路線，或至少有一個站的 TDX `LocationCityCode` 是 `YUN`。所以公總的 `7120`、`7126` 也會被留下。留下的班次會保留完整停靠序列（不裁切），因為 OTP 要靠最後一站的時間內插，裁掉會讓 graph build 失敗。
+判定「雲林的路線」的規則：`YUN_` 開頭業者的路線，或至少有一個站的 TDX `LocationCityCode` 是 `YUN`。所以公總的 `7120`、`7126` 也會被留下。留下的班次會保留完整停靠序列（不裁切），因為 OTP 要靠最後一站的時間內插，裁掉會讓 graph build 失敗。
 
-**已知資料問題**：TDX 靜態 GTFS 有 `7000D`，Kiosk 上顯示的是 `7000B`，需要人工確認。
+已知資料問題：TDX 靜態 GTFS 有 `7000D`，Kiosk 上顯示的是 `7000B`，需要人工確認。
 
 ## 2. 準備 OSM（路網）
 

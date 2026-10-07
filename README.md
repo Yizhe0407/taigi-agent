@@ -1,35 +1,37 @@
-# 站牌前，用台語問「還有車無？」
+# taigi-agent
 
-![Kiosk 畫面：左邊是下一班車，右邊是本站所有路線；右下角是數位站務員「小芸」](docs/images/kiosk-with-assistant.png)
+雲林縣公車站牌的資訊服務機（Kiosk）系統，雲林科技大學實務專題。螢幕顯示所在站牌每條路線目前的狀態；使用者也可以用台語發問，由數位站務員「小芸」用台語回答。
 
-雲林鄉下的站牌，阿嬤不用滑手機、不用看地圖。站牌旁的資訊服務機（**Kiosk**）直接顯示這站每條路線現在的狀態：**即將到站、可以等、尚未發車、末班已過**。她也可以對著它說台語，站務員小芸會用台語回答：
+![Kiosk 畫面：左側是下一班車，右側是本站所有路線，右下角是數位站務員小芸](docs/images/kiosk-with-assistant.png)
 
-> 201 往高鐵雲林站，大約七分鐘後到。
+主要功能：
 
-這是大學專題：**台語友善的固定站牌離站決策系統**。它不教你從 A 走到 B，只回答站在這裡的人最想知道的事：現在還有車可以搭嗎？
+- 離站首頁：每條路線、每個方向顯示即將到站、可以等、等待較久、尚未發車或末班已過。
+- 台語語音問答：例如「201 幾分鐘到」「我要去虎尾」。
+- 地圖路線規劃：在地圖上選目的地，顯示候選路線。
+- 後台 `/admin`：設定 Kiosk 所在的站牌與方向。
 
-## 為什麼可靠
+到站資料來自交通部 TDX。到站時間、方向與末班狀態由程式查詢與判斷，語言模型負責理解問題，並把查詢結果寫成回答。流程與限制見 [架構](docs/architecture.md)。
 
-語言模型很會說話，也很會編數字。所以這裡**數字不讓模型決定**：到站時間、方向、末班狀態由程式向交通部 TDX 查好、算好，模型只負責聽懂問題、把查到的結果說成一句話，再由程式轉成台語唸出來。怎麼做到的、還有哪些缺口，看 [架構](docs/architecture.md)。
-
-## 跑起來
+## 本機啟動
 
 ```bash
 cp backend/.env.example backend/.env   # 填 LLM_BASE_URL、LLM_MODEL、TDX_CLIENT_ID、TDX_CLIENT_SECRET、ADMIN_TOKEN
 brew install process-compose           # 只需一次
-process-compose up backend frontend    # 裝依賴，啟動後端與前端
+process-compose up backend frontend    # 安裝依賴，啟動後端與前端
 ```
 
-開 Vite 印出的網址，會看到上面那個畫面。路線規劃、觀測、模型主機和不用 process-compose 的跑法，看 [本地開發](docs/deployment/local-development.md)；要上正式主機，看 [正式部署](docs/deployment/production.md)。
+啟動後開啟 Vite 顯示的網址。路線規劃、觀測、模型服務與其他啟動方式見 [本地開發](docs/deployment/local-development.md)；正式環境見 [正式部署](docs/deployment/production.md)。
 
-## 往下讀
+## 文件
 
-| 想知道 | 看 |
+| 文件 | 內容 |
 |---|---|
-| 一句話怎麼變成答案、程式怎麼分工 | [架構](docs/architecture.md) |
-| 為什麼不做成「台語版 Google Maps」 | [產品定位](docs/product-positioning.md) |
-| 免費的 TDX 方案兩天就用完 | [TDX 方案與限流](docs/tdx-tiers.md) |
-| 出事時怎麼查 | [觀測](docs/observability.md) |
-| 做了什麼、沒做什麼 | [開發紀錄](docs/changelog.md) |
-| 要改某個模組的細節 | [架構參考](docs/architecture-reference.md) |
-| AI agent 作業規範 | [CLAUDE.md](CLAUDE.md) |
+| [架構](docs/architecture.md) | 處理流程、工具、模組位置、限制 |
+| [產品定位](docs/product-positioning.md) | 功能範圍與取捨、狀態定義 |
+| [路線規劃](docs/route-planning.md) | 地圖路線規劃與 OTP |
+| [TDX 方案與限流](docs/tdx-tiers.md) | TDX 計費方案、限流與快取 |
+| [觀測](docs/observability.md) | OpenTelemetry 與 SigNoz |
+| [開發紀錄](docs/changelog.md) | 已完成、未完成與不做的項目 |
+| [架構參考](docs/architecture-reference.md) | 各模組的職責與注意事項 |
+| [CLAUDE.md](CLAUDE.md) | AI agent 作業規範 |

@@ -1,14 +1,16 @@
-# SigNoz：看每一輪對話發生了什麼
+# SigNoz
+
+本專案的觀測後端。怎麼查資料見 [觀測](../../docs/observability.md)。
 
 ```bash
 docker compose up -d       # UI 在 http://127.0.0.1:8085
 ```
 
-然後在 `backend/.env` 打開 `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`。在 repo root 跑 `process-compose up` 也會一起帶起來。正式環境由 `deploy/install.sh` / `update.sh` 自動啟動（見 [正式部署](../../docs/deployment/production.md)）。怎麼看資料見 [出事時怎麼看](../../docs/observability.md)。
+然後在 `backend/.env` 打開 `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`。在 repo root 跑 `process-compose up` 也會一起帶起來。正式環境由 `deploy/install.sh` / `update.sh` 自動啟動（見 [正式部署](../../docs/deployment/production.md)）。
 
 ## 第一次啟動必做
 
-打開 UI 完成**註冊精靈**（建 org 和 admin 帳號）。部署腳本不會替你做。
+打開 UI 完成註冊精靈（建立 org 和 admin 帳號）。部署腳本不會替你做。
 
 沒註冊前送資料會失敗：4318 連線直接被 reset，SigNoz log 會印 `cannot create agent without orgId`。這是 SigNoz 正常的首次流程，不是壞掉。
 
@@ -29,11 +31,11 @@ docker compose up -d       # UI 在 http://127.0.0.1:8085
 
 SigNoz 官方改用 [Foundry](https://github.com/SigNoz/foundry) 產生 compose，不再手寫。這裡的檔案是用 `foundryctl forge` 對預設的 `casting.yaml` 產生後放進來的。
 
-**唯一手改的地方**是 port：
+唯一手改的地方是 port：
 
 | | 預設 | 這裡 | 為什麼 |
 |---|---|---|---|
-| UI | 8080 | **8085** | 正式 backend 佔 8080 |
+| UI | 8080 | 8085 | 正式 backend 佔 8080 |
 | `ingester` | 4317/4318 | 同，但綁 `127.0.0.1` | 不對外網開放 |
 
 UI 只能經 Cloudflare Tunnel + Access 的 `signoz.yizhe.dev` 從外部連（見 production.md 第 5 節）。

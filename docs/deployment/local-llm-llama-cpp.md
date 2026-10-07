@@ -1,10 +1,10 @@
-# 在自己的 GPU 上跑 LLM
+# 用 llama.cpp 部署 LLM
 
-用 llama.cpp 跑量化的 Qwen3.5-4B，提供 OpenAI 相容 API，給後端當 LLM。
+以 llama.cpp 執行量化的 Qwen3.5-4B，提供 OpenAI 相容 API 給後端使用。
 
-選 llama.cpp 而不是 vLLM：它是單一執行檔，不會碰到 Python / CUDA 編譯衝突，顯存也是用多少拿多少，可以和其他服務共用同一張卡。
+選擇 llama.cpp 而非 vLLM 的原因：它是單一執行檔，不會遇到 Python / CUDA 編譯衝突；顯存依需求配置，可與其他服務共用同一張 GPU。
 
-我們的環境：RTX 4000 Ada（20 GB），Qwen3.5-4B Q8_0，context 8K。
+使用環境：RTX 4000 Ada（20 GB），Qwen3.5-4B Q8_0，context 8K。
 
 ## 安裝與啟動
 

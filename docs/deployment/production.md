@@ -1,11 +1,11 @@
-# 部署到正式主機
+# 正式部署
 
 ```
 瀏覽器 ──▶ Cloudflare Tunnel ──▶ Nginx :3000 ──┬─ 前端靜態檔
                                                └─ /api/* ──▶ 後端 :8080（systemd，單 worker）
 ```
 
-Ubuntu + systemd，照順序做。用正式服務帳號登入，不要用 root。本地開發看 [local-development.md](local-development.md)。
+適用 Ubuntu + systemd，依序執行以下步驟。請用正式服務帳號登入，不要用 root。本地開發見 [local-development.md](local-development.md)。
 
 ## 1. 裝套件
 
@@ -84,7 +84,7 @@ SigNoz 已由安裝腳本帶起來，綁在 `127.0.0.1:8085`。要從瀏覽器�
 
 存檔後開 `https://signoz.yizhe.dev`，應該先看到 Access 登入頁。第一次進 SigNoz 還要另外建它自己的帳號。
 
-再到 `backend/.env` 加 `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`，跑 `./deploy/update.sh`。怎麼看資料見 [出事時怎麼看](../observability.md)。
+再到 `backend/.env` 加 `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`，跑 `./deploy/update.sh`。查詢方式見 [觀測](../observability.md)。
 
 ## 常用檢查指令
 
