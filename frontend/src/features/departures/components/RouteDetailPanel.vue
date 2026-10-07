@@ -6,6 +6,7 @@ import { useRouteColors } from "@/lib/useRouteColors"
 
 import { useDepartureRouteDetail } from "../composables/useDepartureRouteDetail"
 import type { DepartureRouteStatus } from "../types"
+import { splitDirectionLabel } from "../utils/departure-status"
 import StopTimeline from "./StopTimeline.vue"
 
 const props = defineProps<{
@@ -34,6 +35,9 @@ const selectedDirection = computed(
     ) ??
     directions.value[0] ??
     null,
+)
+const directionLabel = computed(() =>
+  splitDirectionLabel(selectedDirection.value?.label ?? props.route.direction),
 )
 const stops = computed(() => selectedDirection.value?.stops ?? [])
 const currentStopIndex = computed(() =>
@@ -99,9 +103,9 @@ const routeTextClass = computed(() => {
         >{{ route.route }}</div>
         <div class="flex-1 min-w-0">
           <div class="flex items-baseline gap-2">
-            <span class="text-base text-kiosk-muted font-medium">往</span>
+            <span v-if="directionLabel.prefix" class="text-base text-kiosk-muted font-medium">{{ directionLabel.prefix }}</span>
             <span class="text-[26px] font-extrabold text-kiosk-ink tracking-[-0.02em]">
-              {{ selectedDirection?.label ?? route.direction }}
+              {{ directionLabel.destination }}
             </span>
           </div>
           <div class="text-[13px] text-kiosk-muted mt-1 font-medium">

@@ -39,6 +39,21 @@ export function departureMinutesLabel(route: DepartureRouteStatus): string {
   return route.statusText
 }
 
+/**
+ * Split a backend direction label into a muted "往" prefix and the emphasised
+ * destination. The backend sends "往{終點}" when the terminal is known and a
+ * bare "去程"/"回程" otherwise, so only the former gets a prefix.
+ */
+export function splitDirectionLabel(label: string): {
+  prefix: string | null
+  destination: string
+} {
+  if (label.startsWith("往") && label.length > 1) {
+    return { prefix: "往", destination: label.slice(1) }
+  }
+  return { prefix: null, destination: label }
+}
+
 export function heroStatusState(
   route: DepartureRouteStatus | null,
 ): DepartureDisplayState {
