@@ -48,6 +48,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -143,6 +144,7 @@ class TdxBusProvider(BusProvider):
         route_estimate_ttl_seconds: float | None = _DEFAULT_ROUTE_ESTIMATE_TTL,
         eta_ttl_seconds: float | None = _DEFAULT_ETA_TTL,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         rate_limiter: TdxRateLimiter | None = None,
     ) -> None:
         self._client_id = client_id
@@ -151,6 +153,7 @@ class TdxBusProvider(BusProvider):
         self._route_estimate_ttl = route_estimate_ttl_seconds
         self._eta_ttl = eta_ttl_seconds
         self._clock = clock
+        self._wall_clock = wall_clock
         # Shared with every other TDX consumer on this key (bike stations, …).
         self._limiter = rate_limiter or tdx_rate_limiter(client_id)
         # Passed as a factory (not called here) so tests that monkeypatch
@@ -266,8 +269,32 @@ class TdxBusProvider(BusProvider):
         plate = str(value or "").strip()
         return plate if plate and plate != "-1" else None
 
+    @staticmethod
+    def _norm_arrival_at(row: dict, received_at: datetime) -> datetime | None:
+        """The absolute instant TDX's relative `EstimateTime` points at.
+
+        EstimateTime counts from TDX's `UpdateTime`, not from our read, and the
+        row may then sit in a cache for minutes; only an absolute instant lets
+        a stale-served row still count down. `UpdateTime` is TDX's own clock
+        (operators' `SrcUpdateTime` clocks are less trustworthy). Missing,
+        unparseable, or ahead of our clock (skew) → anchor on our read instead.
+        """
+        eta = row.get("EstimateTime")
+        if not isinstance(eta, int | float):
+            return None
+        anchor = received_at
+        raw = row.get("UpdateTime")
+        if isinstance(raw, str):
+            try:
+                updated_at = datetime.fromisoformat(raw)
+            except ValueError:
+                updated_at = None
+            if updated_at is not None and updated_at.tzinfo is not None and updated_at < received_at:
+                anchor = updated_at
+        return anchor + timedelta(seconds=eta)
+
     @classmethod
-    def _norm_eta(cls, row: dict) -> StopArrival:
+    def _norm_eta(cls, row: dict, received_at: datetime) -> StopArrival:
         return StopArrival(
             route_name=_zh(row.get("SubRouteName")),
             direction=Direction(row.get("Direction", 0)),
@@ -275,10 +302,11 @@ class TdxBusProvider(BusProvider):
             eta_seconds=row.get("EstimateTime"),
             sequence=row.get("StopSequence"),
             vehicle_id=cls._norm_plate(row.get("PlateNumb")),
+            arrival_at=cls._norm_arrival_at(row, received_at),
         )
 
     @classmethod
-    def _norm_stop_eta(cls, row: dict, route_name: str) -> RouteStopEstimate:
+    def _norm_stop_eta(cls, row: dict, route_name: str, received_at: datetime) -> RouteStopEstimate:
         return RouteStopEstimate(
             stop_name=_zh(row.get("StopName")),
             sequence=row.get("StopSequence"),
@@ -287,6 +315,7 @@ class TdxBusProvider(BusProvider):
             eta_seconds=row.get("EstimateTime"),
             route_name=route_name,
             vehicle_id=cls._norm_plate(row.get("PlateNumb")),
+            arrival_at=cls._norm_arrival_at(row, received_at),
         )
 
     # ── BusProvider ───────────────────────────────────────────────────────────
@@ -332,7 +361,8 @@ class TdxBusProvider(BusProvider):
                     f"{_BASE}/EstimatedTimeOfArrival/City/{_CITY}",
                     {"$filter": f"SubRouteName/Zh_tw eq '{_odata_escape(route_name)}'"},
                 )
-            return [self._norm_stop_eta(r, route_name) for r in raw]
+            received_at = self._wall_clock()
+            return [self._norm_stop_eta(r, route_name, received_at) for r in raw]
 
         def _touch(key: str) -> None:
             self._route_estimate_cache.move_to_end(key)
@@ -473,8 +503,9 @@ class TdxBusProvider(BusProvider):
         # chunk failed; a partial outage should still surface the rows that succeeded.
         if all_results and all(isinstance(r, BaseException) for r in all_results):
             raise all_results[0]  # type: ignore[misc]
+        received_at = self._wall_clock()
         rows = [row for r in all_results for row in _safe_list(r)]
-        return [self._norm_eta(r) for r in rows]
+        return [self._norm_eta(r, received_at) for r in rows]
 
     async def _fetch_eta_by_name(self, stop_name: str) -> list[StopArrival]:
         """Fallback: query by stop name and dedup by min sequence."""
@@ -493,7 +524,8 @@ class TdxBusProvider(BusProvider):
         intercity_rows = _safe_list(results[1])
         if isinstance(results[0], BaseException) and isinstance(results[1], BaseException):
             raise results[0]
-        all_rows = [self._norm_eta(r) for r in city_rows + intercity_rows]
+        received_at = self._wall_clock()
+        all_rows = [self._norm_eta(r, received_at) for r in city_rows + intercity_rows]
         return self._dedup_by_min_sequence(all_rows)
 
     # ── Internal ──────────────────────────────────────────────────────────────

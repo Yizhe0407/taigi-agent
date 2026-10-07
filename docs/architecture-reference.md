@@ -77,9 +77,9 @@ backend/
 
 ### 領域層
 
-- `providers/bus.py`：provider-neutral `BusProvider` Protocol 與 `RouteInfo`、`RouteAtStop`、`StopArrival`、`RouteStopEstimate` model。`RouteInfo` 除去回終點外也帶靜態站序（`outbound_stops` / `inbound_stops`，依站序排列）：各 adapter 在 `load_route_info` 探索路線時本來就讀到完整站序，必須保留。契約裡沒有任何上游欄位名或 status code，adapter 必須回傳完整 typed row（不再有 dict 相容層或 `as_*` coercion）。
+- `providers/bus.py`：provider-neutral `BusProvider` Protocol 與 `RouteInfo`、`RouteAtStop`、`StopArrival`、`RouteStopEstimate` model。`RouteInfo` 除去回終點外也帶靜態站序（`outbound_stops` / `inbound_stops`，依站序排列）：各 adapter 在 `load_route_info` 探索路線時本來就讀到完整站序，必須保留。到站時間的 `eta_seconds` 是上游估算當下的「再幾秒」，一進快取就開始過時，所以 adapter 知道估算時刻時還要填絕對時刻 `arrival_at`；消費端一律問 `seconds_until_arrival(now)`，不直接讀 `eta_seconds`。契約裡沒有任何上游欄位名或 status code，adapter 必須回傳完整 typed row（不再有 dict 相容層或 `as_*` coercion）。
 - `providers/http.py`：process-wide 共用 `httpx.AsyncClient`（連線池重用）；TTS/ASR/OTP/TDX 都透過它發請求，各呼叫點自帶 per-request timeout，app shutdown 時由 lifespan 關閉。
-- `providers/tdx_bus.py`：TDX 的 provider-neutral adapter；整合 City/InterCity endpoint，OAuth2、TTL、LRU 與 retry 都封裝在 adapter 內。互動呼叫（工具派發設的 `upstream_deadline`）被 429 時不等 Retry-After，直接讓快取供舊資料；StopOfRoute 重抓失敗或只抓到一半時保留上一份完整快照。
+- `providers/tdx_bus.py`：TDX 的 provider-neutral adapter；整合 City/InterCity endpoint，OAuth2、TTL、LRU 與 retry 都封裝在 adapter 內。互動呼叫（工具派發設的 `upstream_deadline`）被 429 時不等 Retry-After，直接讓快取供舊資料（`arrival_at` 以 TDX `UpdateTime` 為起點，沒有或比本機時鐘還新時改用讀到的時刻，所以舊資料照樣倒數）；StopOfRoute 重抓失敗或只抓到一半時保留上一份完整快照。
 - `providers/tdx_rate_limit.py`：每把 TDX 金鑰一個全程序共用的滑動視窗限速器（`TDX_RATE_LIMIT`，預設 5/min）。公車與單車 adapter 每個請求都先取額度；背景呼叫只能用約 60%，其餘留給有預算的互動呼叫；429 依 Retry-After 暫停整把金鑰。所有等待都在這裡，provider 不自己 sleep。
 - `upstream_deadline.py`：每次請求的上游時間預算（ContextVar）。`agent/tool_dispatch.py` 給每次工具呼叫 3 秒，`api/departures.py` 給 Kiosk 畫面的到站讀取 3 秒；`providers/ttl_cache.py` 與 TDX adapter 依剩餘預算決定是否等待。
 - `services/departures/provider.py`：composition root，固定組裝 `TdxBusProvider`（TaiwanBus / ebus 爬蟲來源已移除）；`set_provider()` / `provider_override()` / `reset_provider()` 供測試替換，其他層不需要知道具體供應商。
@@ -92,7 +92,7 @@ backend/
 - `providers/asr.py`：ASR upstream provider（config 讀取 + multipart 上傳），供 `api/asr.py` 與 `voice/stt_breeze.py` 共用，兩邊都不再互相 import 私有符號。
 - `services/taigi_tts.py`：TTS config、Tailo 切段、`synthesize_segments` 有界並發派送；`prepare_tailo()` 收斂 normalize 後→text-process→split 的共用序列（回傳解碼前的 hanlo/tailo/segments），`api/tts.py` 與 `voice/tts_taigi.py` 各自接手 `synthesize_segments` 的錯誤轉換與音訊解碼（WAV vs PCM）。`make_silence_pcm()` 是兩邊共用的靜音位元組運算。
 - `services/kiosk_config.py`：Runtime kiosk 設定 singleton（stop_name、direction、lat/lon）；先原子落盤再發布記憶體狀態，並用 mtime 觀察其他 worker 的更新。持久化至 `.agent_state/kiosk_config.json`，預設雲林科技大學／回程。
-- `services/departures/`：離站決策唯一分類來源，只讀 provider-neutral `StopStatus`、`eta_seconds` 與 `RouteInfo`；不依賴任何上游名稱或 status code。
+- `services/departures/`：離站決策唯一分類來源，只讀 provider-neutral `StopStatus`、`seconds_until_arrival(now)` 與 `RouteInfo`；不依賴任何上游名稱或 status code。
   目的地查詢（`render_arrivals_to_destination`）先用 `RouteInfo` 靜態站序判斷哪些路線在本站之後會到目的地（不含上車點本身，循環路線回到本站的那一站仍算），只對命中的路線抓即時 route estimate；查無與聽錯救援的候選站名也全由靜態站序產生，不打上游。
 - `services/route_plans.py`：OTP 路線規劃 facade、Kiosk 起點、雲林邊界、view model。
 - `services/bike.py`：公共自行車 normalized station cache、provider switching、距離查詢；不依賴任何 upstream payload 格式。MOOVO 只是其中一個來源，所以服務層與 `/api/bike/*` 一律用中立的 bike 命名。
@@ -122,7 +122,7 @@ frontend/
 
 ## 已知技術債
 
-- TDX 是唯一公車資料來源，也是外部契約：欄位或 endpoint 改版只修 `providers/tdx_bus.py`。TDX 沒有 `scheduled_time`（未發車的預計發車時刻）與 `vehicle_id`，畫面上「尚未發車」不會附時刻；TDX 掛掉時沒有備援，只能回「查詢失敗」。
+- TDX 是唯一公車資料來源，也是外部契約：欄位或 endpoint 改版只修 `providers/tdx_bus.py`。TDX 沒有 `scheduled_time`（未發車的預計發車時刻）與 `vehicle_id`，畫面上「尚未發車」不會附時刻；TDX 掛掉時沒有備援，舊快取撐過約 6 分鐘後只能回「查詢失敗」。
 - Chat session 持久化在 `.agent_state/sessions.db`，目前仍綁單機檔案；scale out 需改外部 KV / Redis。
 - API rate limit 是單 worker、最多 2048 client bucket 的 in-process token bucket；多 worker 或多機部署必須在 gateway 另設全域限流。
 - Backend runtime 採 async 單一路徑；HTTP-facing providers、services、AgentSession tool dispatch 與 LLM client 都是 async。GTFS 更新腳本可用同步 requests，不屬於線上 API 路徑。

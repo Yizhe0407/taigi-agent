@@ -61,6 +61,7 @@ pnpm dev
 - **路線拓撲 vs 即時資料**：「這條路線之後會不會到 X」是靜態問題，用 `RouteInfo` 站序回答（`rows._iter_route_downstream`）；`fetch_route_estimate` 只用來取即時 ETA，不要再為了判斷路線形狀逐條抓。
 - **TDX 欄位**：ETA rows — `sub_route_name`(str)、`direction`(0/1)、`stop_status`(0-4)、`estimate_seconds`(int|None)。route estimate rows 多加 `stop_name`、`stop_sequence`。`route_id` 整個 service/API 層是 `str`。
 - **TDX StopStatus**：0=正常、1=未發車、2=交管不停（`iter_scoped_stop_etas` 靜默過濾）、3=末班已過、4=今日未營運。無 `ComeTime` 等效，`scheduled_time` 永遠 None。
+- **到站倒數**：`eta_seconds` 是上游估算當下的相對秒數，被快取供舊資料後就過時；service 一律用 `row.seconds_until_arrival(now)`（TDX adapter 以 `UpdateTime` 填 `arrival_at`），不要直接讀 `eta_seconds`（證據：`test_stale_eta_counts_down_while_served_from_cache`）。
 - **TDX 認證**：`TDX_CLIENT_ID` / `TDX_CLIENT_SECRET` 放 `.env`；token 用 OAuth2 client_credentials 自動取得並快取。
 - 站名/路線沒有人工縮寫對照表；ASR 聽錯救援統一走「工具查無時回候選清單（路線清單或 `departures/fuzzy_match._fuzzy_candidates` 相近站名）→ LLM 挑音近者重查 → 用確認句回答」，邏輯在 `agent/prompt.py`【聽錯救援】。
 - 截斷 messages 必須以 tool-call 輪次為單位，不能讓 `tool_call_id` 失去對應 tool result。

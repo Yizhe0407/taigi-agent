@@ -67,7 +67,7 @@ def _unknown() -> StopClassification:
 def _classify_stop(stop: StopArrival | RouteStopEstimate, now: datetime) -> StopClassification:
     """Classify a provider-neutral arrival row for rider-facing output."""
     status = stop.status
-    eta_seconds = stop.eta_seconds
+    eta_seconds = stop.seconds_until_arrival(now)
 
     if status is StopStatus.LAST_DEPARTED:
         return StopClassification(

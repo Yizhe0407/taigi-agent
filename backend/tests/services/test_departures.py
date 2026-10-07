@@ -1,6 +1,6 @@
 import asyncio
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +16,8 @@ from providers.bus import (
 )
 from services import departures
 from services.departures import provider as _departures_provider
+from services.departures.normalize import TAIPEI_TZ
+from services.departures.renderers import _dest_arrival_text
 from services.departures.rows import _is_terminal_direction
 
 
@@ -650,6 +652,26 @@ def test_render_arrivals_to_destination_no_dest_eta_when_kiosk_not_departed(use_
     result = asyncio.run(departures.render_arrivals_to_destination("高鐵雲林站", "雲林科技大學"))
     assert "未發車" in result
     assert "抵達" not in result
+
+
+def test_destination_arrival_time_comes_from_the_estimate_not_from_now():
+    """A cached estimate observed 200 s ago still arrives when it said it would:
+    「預計 HH:MM 抵達」 must not slide later by the time the row sat in the cache."""
+    observed = datetime(2026, 10, 7, 8, 0, tzinfo=TAIPEI_TZ)
+    now = observed + timedelta(seconds=200)
+
+    def _row(stop_name: str, sequence: int, eta: int) -> RouteStopEstimate:
+        return RouteStopEstimate(
+            stop_name=stop_name,
+            sequence=sequence,
+            direction=Direction.OUTBOUND,
+            status=StopStatus.AVAILABLE,
+            eta_seconds=eta,
+            arrival_at=observed + timedelta(seconds=eta),
+        )
+
+    suffix = _dest_arrival_text([_row("高鐵雲林站", 5, 920)], _row("雲林科技大學", 1, 320), "高鐵雲林站", now)
+    assert suffix == "，預計 08:15 抵達高鐵雲林站，車程約 10 分鐘"
 
 
 def test_render_arrivals_to_destination_all_last_departed_single_conclusion(use_provider):
