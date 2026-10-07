@@ -6,7 +6,7 @@
 
 ## 開場協議
 
-1. 專案已進入維護期，無進行中任務；要重啟開發時，先讀 `docs/changelog.md` 的「未完成」與 `docs/archive/` 的設計紀錄。
+1. 專案已進入維護期，無進行中任務；要重啟開發時，先讀 `docs/changelog.md` 的「## 未完成」與 `docs/archive/` 的設計紀錄。
 2. 完成任一修改 → 依下方文件規則更新對應文件。
 3. 派 subagent 前 → 照 `docs/playbook/model-dispatch.md` 選模型、用 `docs/playbook/prompts.md` 範本。
 
@@ -59,10 +59,10 @@ pnpm dev
 - **TDX 限速器**：所有 TDX API 請求（公車＋單車，同一把金鑰）都要先 `tdx_rate_limiter(client_id).acquire()`，額度由 `TDX_RATE_LIMIT` 設定（預設 `5/min` 基礎會員）。背景呼叫只能用約 60% 額度，其餘保留給有預算的互動呼叫；429 用 `penalize()` 暫停整把金鑰，不要在 provider 內自己 sleep。
 - **上游時間預算**：工具派發用 `upstream_deadline(TOOL_UPSTREAM_BUDGET_SECONDS)` 包住每次工具呼叫；會阻塞的上游程式碼（TDX `_get` 的 429 退避、`TtlCache` / StopOfRoute 的鎖等待）要看 `remaining_budget()`，不得等超過，改丟 `UpstreamBudgetExceeded` 讓快取供舊資料。背景工作沒有預算，照常等 Retry-After。
 - **路線拓撲 vs 即時資料**：「這條路線之後會不會到 X」是靜態問題，用 `RouteInfo` 站序回答（`rows._iter_route_downstream`）；`fetch_route_estimate` 只用來取即時 ETA，不要再為了判斷路線形狀逐條抓。
-- **TDX 欄位**：ETA rows — `sub_route_name`(str)、`direction`(0/1)、`stop_status`(0-4)、`estimate_seconds`(int|None)。route estimate rows 多加 `stop_name`、`stop_sequence`。`route_id` 整個 service/API 層是 `str`。
+- **到站資料欄位**（`providers/bus.py`，provider-neutral）：`StopArrival` — `route_name`、`direction`(0/1)、`status`(`StopStatus`)、`eta_seconds`(int|None)、`sequence`、`scheduled_time`、`vehicle_id`。`RouteStopEstimate` 多了 `stop_name`，`route_name` 可為 None。`route_id` 整個 service/API 層是 `str`。
 - **TDX StopStatus**：0=正常、1=未發車、2=交管不停（`iter_scoped_stop_etas` 靜默過濾）、3=末班已過、4=今日未營運。無 `ComeTime` 等效，`scheduled_time` 永遠 None。
 - **TDX 認證**：`TDX_CLIENT_ID` / `TDX_CLIENT_SECRET` 放 `.env`；token 用 OAuth2 client_credentials 自動取得並快取。
-- 站名/路線沒有人工縮寫對照表；ASR 聽錯救援統一走「工具查無時回候選清單（路線清單或 `departures/fuzzy_match._fuzzy_candidates` 相近站名）→ LLM 挑音近者重查 → 用確認句回答」，邏輯在 `agent/prompt.py`【聽錯救援】。
+- 站名/路線沒有人工縮寫對照表；ASR 聽錯救援由工具自己做：查無時 renderer 用音近排序（`departures/fuzzy_match`）挑第一名重查一次，把真實狀態連同確認句前綴回給 LLM（`renderers._rescue_or`）；LLM 只改寫成「你是要問 X 嗎？X…」，不再呼叫工具。prompt 端規則在 `agent/prompt.py`【聽錯救援】。
 - 截斷 messages 必須以 tool-call 輪次為單位，不能讓 `tool_call_id` 失去對應 tool result。
 - Tool round limit 達上限時，不可先把新的 assistant `tool_calls` append 進 history 再跳出。
 - `.agent_state/` 是 runtime state（`sessions.db`、`kiosk_config.json`），已由 `.gitignore` 排除；測試要把寫入路徑指向 `tmp_path`（如 `ChatSessionStore(tmp_path / "sessions.db")`）。
