@@ -12,7 +12,7 @@
 - 症狀：pipecat 計劃 Phase 2 完成與否要靠 git status 反推
 - 根因：`tasks/*.md` 只有設計、沒有「現在做到哪」
 - 規則：進行中計劃檔頂部維護「## 目前狀態」≤5 行，每完成一步立即更新
-- 證據：tasks/pipecat_webrtc_plan.md（2026-07-04 時的狀態）
+- 證據：docs/archive/pipecat-webrtc-plan.md（2026-07-04 時的狀態）
 
 ## 2026-07-12 宣稱串流上線但體感沒變快
 - 症狀：LLM→TTS 改串流後，使用者實測首音仍等很久、chat 看不到逐字

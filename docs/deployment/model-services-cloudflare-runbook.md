@@ -1,4 +1,6 @@
-# Cloudflare Tunnel + Access 模型服務設定
+# Cloudflare Tunnel + Access 逐步設定手冊
+
+> 先讀 [model-services-cloudflare.md](model-services-cloudflare.md) 了解全貌。本檔是照著做的完整步驟與驗證指令。
 
 ## 目標
 
@@ -79,7 +81,7 @@ trap - EXIT
 
 `llama-4b` 是目前 LLM 的 systemd unit；ASR／TTS 若由 Docker 執行，以 `docker ps` 顯示的實際 container name 管理。任何檢查失敗時先修復 origin。
 
-LLM 4B 啟動參數見 [`docs/llama.md`](llama.md)。
+LLM 4B 啟動參數見 [`docs/deployment/local-llm-llama-cpp.md`](local-llm-llama-cpp.md)。
 
 ## 2. 建立或確認 Tunnel connector
 
@@ -557,7 +559,7 @@ trap - EXIT
 ### 設定與驗證開機恢復
 
 1. `cloudflared`：第 2 節的 `sudo systemctl enable --now cloudflared` 已同時設定開機啟動並立即啟動 connector。
-2. LLM：依 [`docs/llama.md`](llama.md) 的 `llama-4b.service` 段落建立 unit；它使用 `127.0.0.1:8000`、`network-online.target`、`Restart=always`，並以 `enable --now` 啟用。
+2. LLM：依 [`docs/deployment/local-llm-llama-cpp.md`](local-llm-llama-cpp.md) 的 `llama-4b.service` 段落建立 unit；它使用 `127.0.0.1:8000`、`network-online.target`、`Restart=always`，並以 `enable --now` 啟用。
 3. ASR／TTS 若由 Docker 執行，先查看實際 container name：
 
 ```bash
@@ -618,7 +620,7 @@ sudo ss -ltnp | grep -E ':(5000|8000|9000)\b'
 
 要讓外部只能走 Cloudflare：
 
-1. LLM 綁 `127.0.0.1`；[`docs/llama.md`](llama.md) 的 4B 範例已使用此設定。只有確實需要 LAN 直連時才改為 `0.0.0.0`，並自行設定防火牆；`cloudflared` 同機即可連線。
+1. LLM 綁 `127.0.0.1`；[`docs/deployment/local-llm-llama-cpp.md`](local-llm-llama-cpp.md) 的 4B 範例已使用此設定。只有確實需要 LAN 直連時才改為 `0.0.0.0`，並自行設定防火牆；`cloudflared` 同機即可連線。
 2. Docker ASR／TTS 的 port publish 綁 `127.0.0.1`，不要 publish 到 `0.0.0.0`。
 3. 防火牆封鎖外部到 TCP `5000`、`8000`、`9000`；SSH `22` 也可只允許管理網段。修改 SSH 防火牆前先用第二個 Cloudflare SSH session 測試，避免把自己鎖在主機外。
 4. 從外部只使用三個 HTTPS hostname；後端的 `LLM_BASE_URL`、`ASR_BASE_URL`、`TTS_BASE_URL` 保持使用上述 public hostname。
@@ -641,5 +643,5 @@ sudo ss -ltnp | grep -E ':(5000|8000|9000)\b'
 | TTS 回 JSON 而非 WAV | 查看 HTTP status 與 response body；確認 model、voice、endpoint。 |
 | ASR 回 200 但辨識錯誤 | 播放 WAV，確認 TTS 輸出，再檢查取樣率、ASR 模型與語言資料。 |
 | SSH 無法連線 | 確認 SSH route、SSH Access application、用戶端 `cloudflared` 與登入 policy。 |
-| `uv: command not found` | 先安裝 README「前置需求」中的 `uv`。 |
+| `uv: command not found` | 先安裝 `uv`（見 local-development.md）。 |
 | 後端 port `8000` 被占用 | 同機執行時改用其他 port；模型主機的 `8000` 保留給 LLM。 |

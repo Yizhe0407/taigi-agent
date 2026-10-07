@@ -7,7 +7,7 @@ import type { ConversationState } from "../types"
  * AgentState). Every transition is driven by exactly one backend event —
  * no ad hoc booleans (`isWebRTCThinking` etc.) shadow this state elsewhere.
  *
- * Table (see tasks/pip-voice-ux.md):
+ * Table (see docs/archive/pip-voice-ux.md):
  *   connecting -> listening -> userSpeaking -> processing -> thinking -> speaking -> listening
  *
  * Defensive transitions:

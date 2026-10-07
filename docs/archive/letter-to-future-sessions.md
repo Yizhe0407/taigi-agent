@@ -41,4 +41,4 @@ backend 有 22 個測試檔，品質底線 = `uv run pytest` 綠。你對自己 
 
 - Phase 1–4 完成（custom services、pipeline+barge-in、前端 useWebRTC 遷移、REST voice 清理）。
 - **Phase 5 進行中**，未完項目：平板 AEC 實測、barge-in 延遲驗證（目標 <200ms）、斷線重連 fallback、telemetry 整合、`docs/architecture.md` voice pipeline 段落更新（已部分修改）。
-- Working tree 有約 30 個未 commit 檔案，全屬此計劃。下個 session：先讀 `tasks/pipecat_webrtc_plan.md` 頂部「目前狀態」，考慮先把 Phase 1–4 commit 掉再繼續 Phase 5。
+- Working tree 有約 30 個未 commit 檔案，全屬此計劃。下個 session：先讀 `docs/archive/pipecat-webrtc-plan.md` 頂部「目前狀態」，考慮先把 Phase 1–4 commit 掉再繼續 Phase 5。

@@ -1,84 +1,78 @@
-# SigNoz（觀測後端）
-
-跑 `docker compose up -d` 即可，UI 在 http://127.0.0.1:8085。在 repo root 跑 `process-compose up` 時也會一起帶起來（`signoz` process）。啟動後把 `.env` 的
-`OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` 打開（見 `backend/.env.example`）。
-
-正式環境由 `deploy/install.sh`/`deploy/update.sh` 自動 `docker compose up -d`
-這個 stack（見 `docs/production-deployment.md`）；本機開發一樣手動跑上面那行即可。
-
-## Port 對外行為（偏離 vendor 原檔）
-
-`ingester`（4317/4318）與 `signoz-signoz-0`（UI，host port 改成 **8085**，避開正式環境
-backend 佔用的 8080）都 bind `127.0.0.1`，不對外網開放，只有透過 Cloudflare Tunnel +
-Access 掛的 `signoz.yizhe.dev` 才能從外部連到（設定步驟見
-`docs/production-deployment.md` 第 5 節）。
-
-這兩處 port mapping 是唯一手改的地方（其餘見下方「這份檔案哪來的」）；下次用
-`foundryctl forge` 重新產生時要記得重新套用這個 patch，否則會被蓋回
-`8080:8080`／`4317:4317`／`4318:4318` 而跟正式環境 backend port 衝突。
-
-## 這份檔案哪來的
-
-SigNoz 官方已棄用手寫 docker-compose，改用 [Foundry](https://github.com/SigNoz/foundry)
-CLI 動態產生。`docker-compose.yml` 與其餘 config（`ingester/`、`telemetrykeeper/`、
-`telemetrystore/`）是用官方 `foundryctl forge` 對 `casting.yaml`（docker compose flavor，
-全預設值）產生後 vendor 進來的，唯一手改是上面那組 port mapping——其餘沒有手改內容，
-手改容易跟官方實際架構漂移。
-
-## 升版
+# SigNoz：看每一輪對話發生了什麼
 
 ```bash
-curl -L "https://github.com/SigNoz/foundry/releases/latest/download/foundry_darwin_$(uname -m | sed 's/x86_64/amd64/;s/arm64/arm64/').tar.gz" -o /tmp/foundry.tar.gz
-tar -xzf /tmp/foundry.tar.gz -C /tmp
-/tmp/foundry_darwin_*/bin/foundryctl forge -f casting.yaml -p /tmp/signoz-pours
-diff -r /tmp/signoz-pours/deployment .   # 核對差異後手動覆蓋
+docker compose up -d       # UI 在 http://127.0.0.1:8085
 ```
 
-`forge` 只產檔、不啟動 container；真要本機跑起來另外 `cast`（forge + docker compose up 一次做完）。
+然後在 `backend/.env` 打開 `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`。在 repo root 跑 `process-compose up` 也會一起帶起來。正式環境由 `deploy/install.sh` / `update.sh` 自動啟動（見 [正式部署](../../docs/deployment/production.md)）。怎麼看資料見 [出事時怎麼看](../../docs/observability.md)。
 
-## 服務組成（無 zookeeper，改用 ClickHouse Keeper）
+## 第一次啟動必做
 
-| Service | Image | 說明 |
-|---|---|---|
-| `signoz-signoz-0` | `signoz/signoz:latest` | App（取代舊版 query-service + frontend），port 8080 |
-| `ingester` | `signoz/signoz-otel-collector:latest` | OTLP collector，port 4317 (gRPC) / 4318 (HTTP) |
-| `signoz-telemetrystore-clickhouse-0-0` | `clickhouse/clickhouse-server` | 主資料庫（trace/metric/log） |
-| `signoz-telemetrykeeper-clickhousekeeper-0` | `clickhouse/clickhouse-keeper` | ClickHouse 協調服務 |
-| `signoz-metastore-postgres-0` | `postgres:16` | SigNoz 自身 metadata（dashboard、alert 設定等） |
-| `signoz-telemetrystore-migrator` | `signoz/signoz-otel-collector` | 一次性 schema migration，跑完自動退出 |
-| `signoz-telemetrystore-clickhouse-user-scripts` | `clickhouse/clickhouse-server` | 一次性下載 histogramQuantile UDF，跑完自動退出 |
+打開 UI 完成**註冊精靈**（建 org 和 admin 帳號）。部署腳本不會替你做。
 
-## 已知坑
+沒註冊前送資料會失敗：4318 連線直接被 reset，SigNoz log 會印 `cannot create agent without orgId`。這是 SigNoz 正常的首次流程，不是壞掉。
 
-- 本機開發用預設 port（8080/4317/4318）跟本專案其他服務（backend 8000、frontend、
-  `backend/otp` 的 8081）不衝突，已核對過。正式環境 UI port 改成 8085（見上方
-  「Port 對外行為」），因為正式 backend 佔用 8080。
-- 資料存在 named volume（`signoz-telemetrystore-0-0-data` 等），`docker compose down` 不會清；要重置環境用 `docker compose down -v`。
-- 這是單機部署（無叢集/多副本），正式環境跟本機開發用同一份 compose；量大到需要獨立
-  telemetry 主機或叢集時再重新評估。
-- **正式主機第一次啟動必做**：`deploy/install.sh` 跑完 `docker compose up -d` 後，
-  開 `https://signoz.yizhe.dev`（Cloudflare Tunnel 設好之後）完成註冊精靈（建立
-  org + admin 帳號），OTLP 送進來的資料才有 org 可歸屬。這一步部署腳本不會自動做，
-  只是把 container 啟動起來。
-  在完成註冊前送 span/metric 到 4317/4318 會失敗（`ingester` 對 4318 的
-  連線直接被 reset，因為 collector 透過 opamp 跟 `signoz-signoz-0` 要完整
-  pipeline 設定時被拒絕，signoz app log 會印
-  `"cannot create agent without orgId"`）——這是 SigNoz 本身的正常首次啟動
-  流程，已用本機環境驗證（container 全綠、`docker compose config` 通過），
-  不是這份 vendor 檔案的問題。
-- **ClickHouse table 卡 readonly、送什麼都進不去（無 error，但 trace 永遠查不到）**：
-  症狀是 `docker exec signoz-telemetrystore-clickhouse-0-0 clickhouse-client --query
-  "SELECT count() FROM system.replicas WHERE is_readonly = 1"` 回非 0，
-  且 `docker logs signoz-telemetrystore-clickhouse-0-0` 有
-  `Table is in readonly mode since table metadata was not found in zookeeper`。
-  根因：ClickHouse 本地 metadata（volume 裡持久化的 replica UUID / path）跟
-  ClickHouse Keeper 當下實際登記的 znode 對不上——一旦發生，重啟 container、
-  重啟整個 stack、甚至重啟 OrbStack 本身都沒用，因為兩邊的 volume 都還在，
-  mismatch 會一直被帶著跑。已實測驗證（2026-07-09）。
-  **解法只有清 volume 重來**：`docker compose down -v && docker compose up -d`，
-  代價是 SigNoz 的 org/帳號（存在 postgres volume）也會一起清掉，
-  重開後要重新跑一次註冊精靈（本機開發開 http://127.0.0.1:8085，正式環境開
-  https://signoz.yizhe.dev）。
-  尚未查出是什麼操作觸發這個 mismatch 第一次發生（懷疑跟不完整關閉
-  / container 各自獨立重啟導致 clickhouse-server 與 keeper 不同步有關，
-  但沒有再現最小條件）；乾淨開機（volume 全新）目前沒遇過這問題。
+## 服務組成
+
+| Service | 做什麼 |
+|---|---|
+| `signoz-signoz-0` | SigNoz 本體（UI 與查詢） |
+| `ingester` | OTLP collector，收 4317 (gRPC) / 4318 (HTTP) |
+| `signoz-telemetrystore-clickhouse-0-0` | 主資料庫（trace / metric / log） |
+| `signoz-telemetrykeeper-clickhousekeeper-0` | ClickHouse 協調（取代 zookeeper） |
+| `signoz-metastore-postgres-0` | SigNoz 自己的設定（dashboard、帳號、alert） |
+| `...-migrator`、`...-user-scripts` | 一次性初始化，跑完自動退出 |
+
+單機部署，本機和正式環境用同一份 compose。
+
+## 這份檔案怎麼來的、哪裡手改過
+
+SigNoz 官方改用 [Foundry](https://github.com/SigNoz/foundry) 產生 compose，不再手寫。這裡的檔案是用 `foundryctl forge` 對預設的 `casting.yaml` 產生後放進來的。
+
+**唯一手改的地方**是 port：
+
+| | 預設 | 這裡 | 為什麼 |
+|---|---|---|---|
+| UI | 8080 | **8085** | 正式 backend 佔 8080 |
+| `ingester` | 4317/4318 | 同，但綁 `127.0.0.1` | 不對外網開放 |
+
+UI 只能經 Cloudflare Tunnel + Access 的 `signoz.yizhe.dev` 從外部連（見 production.md 第 5 節）。
+
+**升版後要記得重新套用這兩處 port**，否則會被蓋回預設值，和正式 backend 衝突：
+
+```bash
+curl -L "https://github.com/SigNoz/foundry/releases/latest/download/foundry_darwin_$(uname -m | sed 's/x86_64/amd64/').tar.gz" -o /tmp/foundry.tar.gz
+tar -xzf /tmp/foundry.tar.gz -C /tmp
+/tmp/foundry_darwin_*/bin/foundryctl forge -f casting.yaml -p /tmp/signoz-pours
+diff -r /tmp/signoz-pours/deployment .    # 核對差異後手動覆蓋
+```
+
+`forge` 只產檔，不啟動 container。
+
+## 資料送進去卻永遠查不到
+
+**症狀**：沒有 error，但 trace 一直是空的。檢查：
+
+```bash
+docker exec signoz-telemetrystore-clickhouse-0-0 clickhouse-client \
+  --query "SELECT count() FROM system.replicas WHERE is_readonly = 1"
+```
+
+回非 0，且 `docker logs signoz-telemetrystore-clickhouse-0-0` 有 `Table is in readonly mode since table metadata was not found in zookeeper`，就是這個問題。
+
+**原因**：ClickHouse 本地的 replica metadata 和 Keeper 裡登記的對不上。兩邊 volume 都還在，所以重啟 container、整個 stack、甚至重啟 Docker 都沒用。（2026-07-09 實測）
+
+**解法只有清 volume 重來**：
+
+```bash
+docker compose down -v && docker compose up -d
+```
+
+代價：SigNoz 的帳號（在 postgres volume）也會清掉，要重跑註冊精靈。
+
+觸發條件還沒查出來，懷疑是 container 沒有一起乾淨關閉。全新 volume 的乾淨開機沒遇過。
+
+## 其他
+
+- 資料在 named volume，`docker compose down` 不會清；要重置才用 `down -v`。
+- 本機預設 port 和專案其他服務（backend 8000、OTP 8081）不衝突。

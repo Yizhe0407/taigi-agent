@@ -1,61 +1,43 @@
-# 路線規劃邊界
+# 路線規劃
 
-本專案的核心是固定站牌離站決策；路線規劃是第二層流程，用來支援展示、觀光客、陪同者或需要地圖選點的使用者。聊天 Agent 不直接做自由文字目的地規劃。
+路線規劃是**次要功能**：使用者在地圖上點目的地，系統畫出從這個站牌過去的候選路線。聊天不做這件事，被問「怎麼去某地」時，助理只引導使用者去用地圖。
 
-## 產品邊界
+## 為什麼用地圖選點
 
-- 起點固定為 `KIOSK_STOP` 對應的站牌或座標。
-- 目的地由前端地圖選點確認後傳入，不讓自由文字 geocoding 成為主路徑。
-- 前端呼叫 `POST /api/route-plans`，後端回傳 MapCN 可渲染的 route view model。
-- Agent 收到「怎麼去某地」時，只引導使用者進入地圖選點流程，不猜目的地。
-- 若 OTP 找不到方案、座標不可用或 service 不可用，API 要明確回錯誤，不用 LLM 補答案。
+讓語言模型或文字去猜目的地座標會猜錯。由前端地圖給出確切座標，後端就只做規劃，不做猜測。
 
-## OTP 與即時到站分工
+## 流程
 
-| 能力 | 資料來源 |
-|------|----------|
-| 該搭哪條路線、上下車站、轉乘 | OpenTripPlanner |
-| 排程式預估旅程與班次可行性 | OTP + GTFS |
-| 本站下一班車目前到站狀態 | TDX |
-
-OTP 負責 GTFS / OSM graph 上的路線規劃，TDX 負責固定站牌的即時到站狀態。兩者不要混在 provider 層；需要整合時由 service / facade 組合結果。
-
-## 後端流程
-
-```text
-frontend destination picker
-    -> POST /api/route-plans
-    -> services.route_plans
-    -> providers.otp planConnection
-    -> route view model
-    -> MapCN coordinates: [lng, lat]
+```
+地圖點選目的地 → POST /api/route-plans → OTP 規劃 → 轉成地圖可畫的路線 → 畫在 MapCN
 ```
 
-主要責任：
+- 起點固定是 Kiosk 站牌。
+- 找不到方案、座標不可用、OTP 沒開，API 直接回明確錯誤，不叫 LLM 補答案。
+- 找不到方案時，畫面保留選點，讓使用者重選。
 
-- `backend/providers/otp.py`：包裝 OTP GTFS GraphQL `planConnection`、timeout、錯誤處理、itinerary parser。
-- `backend/services/route_plans.py`：解析 Kiosk 起點、套用雲林邊界、轉成產品層 route plan 與前端 view model。
-- `backend/api/route_plans.py`：驗證 request、映射 HTTP status、回傳前端需要的 shape。
-- `backend/otp/README.md`：記錄 GTFS / OSM / OTP graph build 與 service 啟動細節。
+## OTP 和 TDX 各管什麼
 
-## 前端流程
+| 問題 | 誰回答 |
+|---|---|
+| 該搭哪條、在哪上下車、要不要轉乘 | OTP（吃 GTFS 時刻表與 OSM 路網） |
+| 本站下一班現在到哪了 | TDX |
 
-- 路線規劃是全頁 secondary flow，不是首頁主體。
-- 使用者在 MapCN 地圖點選或拖曳 destination pin。
-- 確認後送出座標；結果頁顯示候選路線、legs 摘要，並用 `[lng, lat]` coordinates 畫線。
-- 找不到方案時保留選點狀態，讓使用者重選。
+兩邊不要在 provider 層混在一起；要整合就在 service 層組合。
 
-## 已知資料風險
+## 程式在哪
 
-- TDX static GTFS route naming 可能和 Kiosk 顯示的 route code 不完全一致，例如目前資料有 `7000D`，但 Kiosk 可能顯示 `7000B`。
-- Kiosk 站名必須穩定映到 OTP stop 或座標。
-- 地圖選點若落在路網不可達點、河道另一側或離站牌過遠，前端與 API 需要清楚引導重選。
-- OSM 步行路網可能讓站牌 snap 或轉乘步行結果失真。
-- 低班次路線在「現在出發」查詢時常可能無方案，因此保留指定出發時間功能。
+| 檔案 | 職責 |
+|---|---|
+| `backend/providers/otp.py` | 呼叫 OTP、處理逾時與錯誤 |
+| `backend/services/route_plans.py` | 起點、雲林邊界、轉成前端用的格式 |
+| `backend/api/route_plans.py` | 驗證輸入、對應 HTTP 狀態 |
+| `backend/otp/README.md` | GTFS / OSM 下載與 graph 建置 |
 
-## 參考
+## 會踩到的資料問題
 
-- [OTP container image](https://docs.opentripplanner.org/en/latest/Container-Image/)
-- [OTP APIs](https://docs.opentripplanner.org/en/latest/apis/Apis/)
-- [GTFS GraphQL API](https://docs.opentripplanner.org/en/latest/apis/GTFS-GraphQL-API/)
-- [GraphQL routing tutorial](https://docs.opentripplanner.org/en/latest/apis/GraphQL-Tutorial/)
+- 路線名稱對不上：GTFS 有 `7000D`，Kiosk 可能顯示 `7000B`。
+- 目的地選在河對岸或離站牌太遠，OSM 步行路網會讓結果失真。
+- 班次少的路線在「現在出發」常常無方案，所以保留指定出發時間。
+
+參考：[OTP 文件](https://docs.opentripplanner.org/en/latest/)

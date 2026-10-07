@@ -1,114 +1,58 @@
-# OTP data
+# OTP：路線規劃的資料與服務
 
-This directory keeps the local OpenTripPlanner build inputs for frontend-driven
-route planning. Generated GTFS, OSM extracts and OTP graph files stay out of
-git.
+路線規劃（地圖選點）用 OpenTripPlanner。這個資料夾放它的建置輸入；下載的 GTFS、OSM 和 graph 都不進 git。為什麼這樣設計見 [路線規劃](../../docs/route-planning.md)。
 
-## Fetch Yunlin GTFS
+```
+TDX GTFS ─┐
+          ├─▶ OTP build ─▶ graph ─▶ OTP :8081 ◀── POST /api/route-plans
+OSM 路網 ─┘
+```
 
-TDX serves a Taiwan GTFS bundle. Use the project script to download it with
-TDX client credentials and emit the Yunlin OTP GTFS zip plus the generated
-Yunlin stop index:
+## 1. 準備 GTFS（時刻表）
+
+TDX 提供全台 GTFS。這支腳本下載後只留雲林，並產生雲林站牌索引：
 
 ```bash
 cd backend
-uv run python scripts/update_yunlin_gtfs.py --env-file <path-to-env>
+uv run python scripts/update_yunlin_gtfs.py --env-file <.env 路徑>
 ```
 
-The script reads `TDX_CLIENT_ID` and `TDX_CLIENT_SECRET` from the process
-environment first, then from `--env-file`. The default outputs are:
+需要 `TDX_CLIENT_ID` / `TDX_CLIENT_SECRET`（先讀環境變數，再讀 `--env-file`）。產出：
 
 ```text
 otp/data/yunlin-gtfs.zip
 otp/data/yunlin-stop-index.json
 ```
 
-Use `--download-output <path>` only when debugging the full TDX bundle. Keep
-that large source zip outside git.
+已經下載過全台 GTFS 的話，用 `--input <zip> --output otp/data/yunlin-gtfs.zip` 跳過下載（仍會連 TDX 更新站牌索引）。
 
-To filter an already downloaded TDX GTFS zip instead of downloading the full
-static bundle again:
+**怎麼判定「雲林的路線」**：`YUN_` 開頭業者的路線，或至少有一個站的 TDX `LocationCityCode` 是 `YUN`。所以公總的 `7120`、`7126` 也會被留下。留下的班次會保留完整停靠序列（不裁切），因為 OTP 要靠最後一站的時間內插，裁掉會讓 graph build 失敗。
 
-```bash
-cd backend
-uv run python scripts/update_yunlin_gtfs.py \
-  --input <path-to-tdx-gtfs.zip> \
-  --output otp/data/yunlin-gtfs.zip
-```
+**已知資料問題**：TDX 靜態 GTFS 有 `7000D`，Kiosk 上顯示的是 `7000B`，需要人工確認。
 
-`--input` still calls TDX stop metadata endpoints with the same credentials so
-the county stop index stays current.
+## 2. 準備 OSM（路網）
 
-The filter uses TDX stop metadata as the county boundary for planning. It keeps:
-
-- bus routes owned by `YUN_` agencies
-- bus routes with at least one GTFS stop whose TDX `LocationCityCode` is `YUN`
-
-It trims dependent GTFS tables to the trips, stops, services and shapes that
-those routes reference. It keeps selected trips' full stop sequences: TDX has
-trips whose intermediate stop times are interpolated by OTP, and clipping those
-rows to the OSM bounds can remove the final time needed for graph build. It also
-removes `stops.txt` `level_id` references and deduplicates `trip_id` rows before
-OTP sees the feed. The generated `yunlin-stop-index.json` keeps only canonical
-Yunlin stop UIDs present in that graph feed; the Kiosk planner resolves the
-configured origin stop against that index while frontend map selection provides
-the destination coordinate.
-
-`7120` and `7126` come from TDX THB agencies and are included because TDX marks
-their Yunlin stops with `LocationCityCode=YUN`. The current TDX static GTFS has
-`7000D`, not the ebus Kiosk variant
-`7000B`; treat that route name mismatch as a product/data validation item.
-
-## Build and run OTP
-
-The first OSM input is the Yunlin extract in:
-
-```text
-otp/data/yunlin.osm.pbf
-```
-
-This file is not committed and has no fetch script; it was previously
-generated ad hoc and the source was never recorded. To regenerate it:
+`otp/data/yunlin.osm.pbf` 不在 git 裡。重做：
 
 ```bash
-# 1. Download the Taiwan-wide extract (~300 MB)
-curl -L -o /tmp/taiwan-latest.osm.pbf https://download.geofabrik.de/asia/taiwan-latest.osm.pbf
-
-# 2. Clip to Yunlin County's official OSM boundary (relation 2915930) plus a
-#    ~0.1° buffer so routes that cross the county line (e.g. THB intercity
-#    routes 7120/7126) don't get cut off mid-road. Bounding box source:
-#    https://nominatim.openstreetmap.org/search?q=Yunlin+County,+Taiwan&format=json
+curl -L -o /tmp/taiwan-latest.osm.pbf https://download.geofabrik.de/asia/taiwan-latest.osm.pbf   # 約 300 MB
 brew install osmium-tool
-osmium extract -b 119.88,23.31,120.84,23.97 \
-  /tmp/taiwan-latest.osm.pbf -o otp/data/yunlin.osm.pbf
+osmium extract -b 119.88,23.31,120.84,23.97 /tmp/taiwan-latest.osm.pbf -o otp/data/yunlin.osm.pbf
 ```
 
-Build the OTP graph after GTFS and OSM inputs are present:
+範圍是雲林縣邊界（OSM relation 2915930）外加約 0.1° 緩衝，這樣跨縣的 `7120`、`7126` 才不會在路中間被切掉。
+
+## 3. 建 graph 並啟動
 
 ```bash
 cd backend
-docker run --rm \
-  -e JAVA_TOOL_OPTIONS="-Xmx4g" \
+docker run --rm -e JAVA_TOOL_OPTIONS="-Xmx4g" \
   -v "$(pwd)/otp/data:/var/opentripplanner" \
-  docker.io/opentripplanner/opentripplanner:2.9.0 \
-  --build --save
-```
+  docker.io/opentripplanner/opentripplanner:2.9.0 --build --save
 
-Start the local OTP service:
-
-```bash
-cd backend
 docker compose -f otp/docker-compose.yml up -d
 ```
 
-The GTFS GraphQL endpoint is served by OTP on:
+GraphQL 在 `http://localhost:8081/otp/gtfs/v1`。前端不直接打 OTP，而是打 `POST /api/route-plans`，由後端回傳地圖可畫的路線。
 
-```text
-http://localhost:8081/otp/gtfs/v1
-```
-
-GraphQL route planning was verified with `planConnection` from the NYUST stop
-area to map-selected Yunlin coordinates after building this graph. Keep
-route-planning queries on BUS mode for the first coordinate planner iteration.
-The frontend does not call OTP directly; it calls `POST /api/route-plans`, and
-the Python API returns MapCN-ready route geometry.
+目前只用 BUS 模式。已驗證可用 `planConnection` 從雲科大站規劃到地圖上任選的雲林座標。

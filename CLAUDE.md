@@ -2,12 +2,12 @@
 
 雲林固定站牌台語友善離站決策系統。Agent harness 架構：one loop + tools + prompt = agent。
 
-詳細架構見 `docs/architecture.md`（模組職責的唯一真相源）；產品定位見 `docs/product-positioning.md`；進度見 `TASKS.md`。
+架構全貌見 `docs/architecture.md`，逐模組職責見 `docs/architecture-reference.md`（唯一真相源）；產品定位見 `docs/product-positioning.md`；完成功能與未做項目見 `docs/changelog.md`；部署見 `docs/deployment/`。
 
 ## 開場協議
 
-1. 接續進行中的工作 → 先讀對應 `tasks/*.md` 頂部的「## 目前狀態」區塊，不要從頭讀整份計劃。
-2. 完成任一步驟 → 立刻更新該狀態區塊（≤5 行：做到哪、下一步、阻塞）。
+1. 專案已進入維護期，無進行中任務；要重啟開發時，先讀 `docs/changelog.md` 的「未完成」與 `docs/archive/` 的設計紀錄。
+2. 完成任一修改 → 依下方文件規則更新對應文件。
 3. 派 subagent 前 → 照 `docs/playbook/model-dispatch.md` 選模型、用 `docs/playbook/prompts.md` 範本。
 
 ## Playbook 索引（按需讀取，勿全載）
@@ -17,7 +17,7 @@
 - `docs/playbook/judgment.md` — 判斷 rubric：何時升級、何時算完成、何時問使用者、方向錯的訊號。**卡住或準備說「完成」前讀。**
 - `docs/playbook/maintenance.md` — 哪些檔可自行改、踩雷教訓寫哪裡。**踩雷後讀。**
 - `docs/playbook/lessons.md` — 踩雷教訓帳本。
-- `docs/playbook/diagnosis.md` — 環境已知弱點與修法。
+- `docs/archive/` — 已完成計劃與一次性診斷（pipecat、PiP UX、diagnosis、letter-to-future-sessions），僅供參考。
 
 ## 常用指令
 
@@ -39,7 +39,7 @@ pnpm dev
 - `backend/agent/session.py` 只處理 messages、LLM call、tool dispatch、context recovery；公車 prefetch、provider 規則與領域邏輯留在 `backend/tools/`、`backend/services/`、`backend/providers/`。
 - Tool handler 必須回傳 `str`；`session.py` 會把 tool result 直接送回 LLM。
 - 修改 code 後要說明「做了什麼、為什麼這樣寫、可能的坑」。
-- 修改 code 後自行判斷文件更新：使用方式改變更新 `README.md`；功能進度改變更新 `TASKS.md`；架構/邊界改變更新 `docs/architecture.md` 或相關 `docs/`。
+- 修改 code 後自行判斷文件更新：使用方式改變更新 `README.md`；功能/限制改變更新 `docs/changelog.md`；架構/邊界改變更新 `docs/architecture.md` 或相關 `docs/`。
 - 每完成一個 phase 就 commit，不要讓 working tree 累積跨任務改動。
 
 ## 新增工具流程

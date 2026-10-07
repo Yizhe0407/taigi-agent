@@ -1,6 +1,11 @@
-# Production deployment
+# 部署到正式主機
 
-Ubuntu/systemd 主機，照順序做就能部署起來。用正式服務帳號登入，不要用 root。
+```
+瀏覽器 ──▶ Cloudflare Tunnel ──▶ Nginx :3000 ──┬─ 前端靜態檔
+                                               └─ /api/* ──▶ 後端 :8080（systemd，單 worker）
+```
+
+Ubuntu + systemd，照順序做。用正式服務帳號登入，不要用 root。本地開發看 [local-development.md](local-development.md)。
 
 ## 1. 裝套件
 
@@ -67,34 +72,19 @@ Cloudflare Tunnel 指到 `http://127.0.0.1:3000` 即可，不用開 backend port
 ./deploy/rollback.sh    # 回到上一版（只回退程式，env 維持目前那份）
 ```
 
-## 5.（選用）開通觀測 Dashboard
+## 5.（選用）開觀測 Dashboard
 
-SigNoz 已經跑起來，bind 在 `127.0.0.1:8085`。要用瀏覽器直接連 `https://signoz.yizhe.dev`
-看，走既有的 Cloudflare Tunnel `ai2-school-server`（跟 `llm.`/`asr.`/`tts.`/`ai2.` 同一個，
-設定方式見 `docs/cloudflare-model-services.md`）：
+SigNoz 已由安裝腳本帶起來，綁在 `127.0.0.1:8085`。要從瀏覽器看，在既有的 Tunnel `ai2-school-server` 加一個 public hostname：
 
-1. Cloudflare Dashboard → Zero Trust → 網路 → 連接器 → Cloudflare Tunnels →
-   `ai2-school-server` → Public Hostnames → Add a public hostname。
-2. Subdomain 填 `signoz`，Domain 選 `yizhe.dev`，Path 留空，Service type 選 `HTTP`，
-   URL 填 `localhost:8085`。
-3. `Additional application settings → Access` 開啟 `Protect with Access`，建立一個
-   Access application 掛在 `signoz.yizhe.dev`，policy 用互動登入（誰能登入自行設定，
-   不要沿用 LLM/ASR/TTS 那種 Service Token policy——那是機器對機器用的，人要用瀏覽器
-   登入的話需要一般登入方式）。
-4. 儲存，確認 `dig +short signoz.yizhe.dev` 有解析，瀏覽器開
-   `https://signoz.yizhe.dev` 應該先看到 Access 登入頁，登入後才進 SigNoz。
+| 欄位 | 填 |
+|---|---|
+| Subdomain / Domain | `signoz` / `yizhe.dev` |
+| Service | `HTTP`，`localhost:8085` |
+| Access | 開 `Protect with Access`，policy 用**互動登入**（不要沿用 LLM/ASR/TTS 的 Service Token policy，那是機器用的） |
 
-第一次打開要先建立 SigNoz 自己的 org/帳號（跟 Cloudflare Access 登入是兩層，各自獨立）。
+存檔後開 `https://signoz.yizhe.dev`，應該先看到 Access 登入頁。第一次進 SigNoz 還要另外建它自己的帳號。
 
-再到 `backend/.env` 加：
-
-```dotenv
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-OTEL_SERVICE_NAME=taigi-bus-agent
-```
-
-跑 `./deploy/update.sh` 套用。細節、已知問題見
-`backend/telemetry/README.md`、`docs/observability.md`。
+再到 `backend/.env` 加 `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`，跑 `./deploy/update.sh`。怎麼看資料見 [出事時怎麼看](../observability.md)。
 
 ## 常用檢查指令
 

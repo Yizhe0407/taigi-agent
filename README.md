@@ -1,143 +1,25 @@
-# taigi-bus-agent
+# 站牌前，用台語問「還有車無？」
 
-雲林公車台語語音助理（大學專題）。
+![Kiosk 畫面：左邊是下一班車，右邊是本站所有路線；右下角是數位站務員「小芸」](docs/images/kiosk-with-assistant.png)
 
-以 **agent harness** 為架構核心，讓使用者用台語詢問雲林縣公車資訊。
-前端為 Vue Kiosk app（語音 ASR + TTS），後端為 FastAPI HTTP API。
+雲林鄉下的站牌，阿嬤不用滑手機、不用看地圖。站牌旁的 **Kiosk**（立式觸控螢幕）直接顯示這站每條路線的狀態：**7 分後到、可以等、未發車、末班已過**。她也可以對著它說台語，站務員小芸會用台語回答：
 
-## 架構概念
+> 201 往高鐵雲林站，七分鐘後到。
 
-```
-使用者輸入
-    ↓
-IntentRouter（Python regex，deterministic）
-    ├─ canned response（直接回，無 LLM）
-    ├─ tool call → 執行工具 → LLM phrasing
-    └─ UNKNOWN → LLM loop（呼叫工具或直接回）
-    ↓
-使用者看到答案
-```
+這是大學專題：**台語友善的固定站牌離站決策系統**。它不教你從 A 走到 B，只回答站在這裡的人最想知道的事：現在還有車可以搭嗎？
 
-參考架構：[learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)
-產品定位詳見 `docs/product-positioning.md`，架構與目錄細節見 `docs/architecture.md`。
+## 為什麼可靠
 
-`AgentSession` 輸入輸出為文字，ASR/TTS 在 API 層處理。Context 以輪為單位
-硬上限（預設 5 輪），過長工具輸出直接截斷成預覽，不另外保存完整內容。
+語言模型很會說話，也很會編數字。所以這裡**數字不讓模型說**：到站時間、方向、末班狀態由程式向交通部 TDX 查好、算好，模型只負責聽懂問題，再把結果改寫成一句台語。
 
-## 場域
-
-專題範圍是雲林縣內的站牌 Kiosk。部署站牌由 `/admin` 後台管理並原子持久化到
-`backend/.agent_state/kiosk_config.json`；寫入必須提供 `ADMIN_TOKEN`。系統只回答
-目前 Kiosk 站牌可查到的到站與路線資訊。
-
-公車資料來源只用交通部 TDX（`backend/providers/tdx_bus.py`，需 `TDX_CLIENT_ID` /
-`TDX_CLIENT_SECRET`）。以前串接的 TaiwanBus、雲林 ebus 都是爬別人網站，常被封 IP
-或掛站，已移除。service 層只認 provider-neutral 契約（`backend/providers/bus.py`），
-TDX 改版時只需調整 adapter。
-
-**TDX 方案很重要：**
-
-| 方案 | 頻率上限 | 每月點數 | 夠不夠用 |
-|------|----------|----------|----------|
-| 基礎會員（免費） | 5 次/分 | 3 點 | 不夠：約兩天就用完，之後整個月查不到 |
-| 銅級（200 元/月，學生可減半） | 5 次/秒 | 200 點 | 夠：本系統每月約用 76 點 |
-
-換方案後在 `backend/.env` 設 `TDX_RATE_LIMIT`（基礎 `5/min`，銅級 `5/s`）。
-系統會照這個上限自己排隊，不會撞到 TDX 的 429；使用者提問最多等 3 秒，
-等不到就用快取或回「暫時查不到」。
-
-## 使用者分眾
-
-公車 Kiosk 不是單一產品。同一套 harness + 同份雲林資料，依部署站牌服務不同人群，
-聊天到站與地圖路線規劃的權重也不同：
-
-| Kiosk 部署 | 主要使用者 | 高頻需求 | UI 重心 |
-|------------|------------|----------|---------|
-| 雲科大、虎尾科大 | 學生、教職員、接送家長 | 到站對話 + 校外景點 / 車站路線 | 兩者並重 |
-| 虎尾火車站、高鐵雲林站 | 觀光客轉乘 | 景點 POI 路線規劃 | 路線規劃 + 高頻 POI 為主 |
-| 鄉鎮小站（口湖、四湖、台西…） | 在地長輩 | 「現在還有車嗎」、「末班開了沒」 | 到站對話為主，路線規劃隱藏或縮成 3 個 POI |
-
-設計依據：
-
-- 長輩多半已經知道搭哪條（看過時刻表牌、坐過很多次），真實痛點是
-  「這班還來嗎」、「末班會不會開走」、「現在幾分到」，這些由聊天到站工具解決
-- 「未知目的地座標」是工程錯覺。公車目的地本質上是雲林 stop catalog 的有限集，
-  不是連續地圖座標
-- 地圖 pan / zoom / 拖圖釘對 60+ 使用者認知負擔高。路線規劃實際上是給
-  陪同子女、外籍看護、觀光客用，承認分眾比假裝單一 UI 萬用更誠實
-- 技術面幾乎不變：`KIOSK_STOP` 已是場域變數，後續若要分流 UI，加一個
-  `KIOSK_AUDIENCE=elderly | tourist | mixed` 控制首頁 tab 預設與功能顯隱即可，
-  後端 API 不動
-
-## 前置需求
-
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/)
-- OpenAI-compatible LLM API（Ollama 或 vLLM）
-
-### vLLM 啟動參數（若使用 vLLM）
-
-tool calling 與非思考模式需要額外參數：
+## 跑起來
 
 ```bash
-vllm serve Qwen/Qwen3.5-4B \
-  --enable-auto-tool-choice --tool-call-parser hermes \
-  --reasoning-parser qwen3
-```
-
-## 安裝與執行
-
-repo root 現在只放跨前後端文件與 app 目錄；Python agent、HTTP API、OTP
-與後端測試都在 `backend/`，Vue app 在 `frontend/`。
-
-```bash
-# 1. 安裝依賴
 cd backend
 uv sync
-
-# 2. 設定環境變數
-cp .env.example .env
-# 必填：LLM_BASE_URL、LLM_MODEL
-# 管理後台寫入必填：ADMIN_TOKEN（高熵隨機值）
-# Kiosk 預設為「雲林科技大學／回程」，啟動後由 /admin 修改
-
-# 3. 啟動後端
+cp .env.example .env     # 填 LLM_BASE_URL、LLM_MODEL、TDX_CLIENT_ID、TDX_CLIENT_SECRET、ADMIN_TOKEN
 uv run uvicorn api:app --reload --port 8000
 ```
-
-正式環境部署（systemd + Nginx + release/rollback）見
-[`docs/production-deployment.md`](docs/production-deployment.md)。正式 backend 使用
-`127.0.0.1:8080`；模型服務可保留在 `127.0.0.1:8000`。前端 production build
-使用 same-origin `/api/*`，由 Nginx 轉送到 backend。
-
-LLM、ASR、TTS 若透過 Cloudflare Tunnel 與 Access Service Token 發布，完整設定與
-驗證步驟見 [`docs/cloudflare-model-services.md`](docs/cloudflare-model-services.md)。
-
-離站決策首頁使用：
-
-- `GET /api/departures/here`：本站路線、方向、到站 / 未發車 / 末班決策
-- `GET /api/departures/routes/{route}/detail`：本站停靠路線的真實站序詳情
-
-路線規劃需要本機 OTP graph、雲林 stop index 與 service。GTFS / stop index
-更新、graph build 與 Docker 啟動步驟見 `backend/otp/README.md`；預設 OTP
-service 位置是 `http://localhost:8081`。
-OTP / ebus / MapCN 的分工與資料風險見 `docs/route-planning.md`。
-
-`POST /api/route-plans` 只收前端已確認的目的地座標與可選出發時間：
-
-```json
-{
-  "destination": { "lat": 23.717831598831527, "lng": 120.53840824484192 },
-  "departureTime": "2026-05-22T08:00:00+08:00"
-}
-```
-
-回應含 Kiosk 起點、目的地與可給 MapCN `MapRoute` 的 `[lng, lat]`
-候選路徑。若前端 dev server 不走 Vite `/api` proxy，而是跨 origin 直接打
-API，再用 `API_CORS_ORIGINS` 明確開放前端來源。
-
-Vue Kiosk 前端放在 `frontend/`。目前第一個畫面是本站離站決策 dashboard；
-點「規劃路線」後進入 MapCN Vue 地圖選點流程：
 
 ```bash
 cd frontend
@@ -145,102 +27,16 @@ pnpm install
 pnpm dev
 ```
 
-## 快速驗證
+開 Vite 印出的網址，會看到上面那個畫面。要接模型主機、路線規劃、觀測，看 [本地開發](docs/deployment/local-development.md)；要上正式主機，看 [正式部署](docs/deployment/production.md)。
 
-後端測試：
+## 往下讀
 
-```bash
-cd backend
-uv run pytest
-uv run ruff check .
-uv run pyright
-uv run pip-audit --local --ignore-vuln PYSEC-2026-597
-```
-
-前端型別檢查與 production build：
-
-```bash
-cd frontend
-pnpm typecheck
-pnpm build
-pnpm audit --prod --audit-level high
-```
-
-首頁顯示固定 Kiosk 站牌的可搭、未發車與末班狀態；點路線可查看後端
-`/api/departures/routes/{route}/detail` 回傳的真實站序。路線規劃頁固定顯示
-雲林科技大學 Kiosk 起點，可點地圖或拖曳圖釘確認目的地；確認後會呼叫
-route planning API，在地圖畫出目前選取的候選路線，面板顯示轉乘、時間與
-legs。Vite dev server 預設把 `/api` 轉送到本機 `8000` port；需要不同 API
-目標時再設定 `frontend/.env` 的 `VITE_API_PROXY_TARGET`。
-
-### 路線色策略
-
-首頁 Hero 大卡、右側路線列表、路線詳情與路線規劃共用同一套路線色流程：
-
-- 底層在 `frontend/src/features/departures/kiosk-data.ts`
-- 畫面層入口在 `frontend/src/features/departures/composables/useRouteColors.ts`
-
-目前演算法是：
-
-1. 先把 `routeCode` 正規化並做 deterministic hash
-2. 對每條路線產生固定候選色順序
-3. 針對同一畫面實際出現的 route set 做 greedy `max-min` assignment
-4. 優先拉開同屏路線間的感知距離，必要時才重用顏色
-
-目前候選色池是 24 色，刻意維持和 kiosk 主題一致：明亮、乾淨、少量活潑，
-但不使用過暗、過灰或過螢光的色。
-
-這套策略目前判定為**可正式使用**，但邊界要講清楚：
-
-- 適用情境：Kiosk 首頁、路線詳情、路線規劃這種同屏約 6 到 12 條路線的 UI
-- 設計目標：提升同屏辨識度，不是替全雲林所有路線建立永久唯一色
-- 已知限制：若一次拿上百條 route code 一起測，因為色池有限，重複仍然必然發生
-
-也就是說，這不是「全資料集 collision-free」演算法，而是「符合目前產品畫面密度、
-視覺主題與可讀性需求」的實務版本。
-
-## 可觀測性
-
-目前預設觀測後端選 SigNoz。Agent runtime 只依賴 OpenTelemetry，透過
-OTLP/HTTP 把 traces 與 metrics 送到 SigNoz；未設定 endpoint 時不會送出
-telemetry。若 self-host SigNoz 跑在本機，在 `backend/.env` 設定：
-詳細 spans、metrics 與不收集內容見 `docs/observability.md`。
-
-```bash
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-OTEL_SERVICE_NAME=taigi-bus-agent
-```
-
-目前 spans 包含 `agent.turn`、`agent.llm.call`、`agent.tool.routing`、
-`agent.tool.call`。metrics 包含 `agent.llm.duration`、`agent.llm.retry`、
-`agent.tool.duration`、`agent.tool.error`。harness 預設不把 user input、
-prompt 或 tool result 放進 span attributes。
-
-## 目前支援功能
-
-系統為 Kiosk 模式，部署在固定站牌，查詢「這站」的到站資訊。
-
-| 問法 | 工具 | 資料來源 |
-|------|------|----------|
-資料來源一律是 TDX，工具本身只認 provider-neutral 契約。
-
-| 問法 | 工具 | 資料 |
-|------|------|------|
-| 「201 幾分鐘到」 | `get_arrivals_here` | 本站即時到站 |
-| 「目前還有哪些車」 | `get_stop_arrival_statuses_here` | 本站全部路線狀態 |
-| 「7126 下一班幾分鐘到」 | `get_arrivals_here` | 本站即時到站 |
-| 「201 停哪些站」 | `get_route_stops` | 從路線到站資料重組站序 |
-| 「7126 停哪些站」 | `get_route_stops` | 限本站停靠路線 |
-| 「這站有哪些路線」 | `get_routes_at_stop_here` | 本站停靠路線表 |
-| 「我要去虎尾」 | `get_arrivals_to_destination` | geo-aware 路線篩選 + 到站時間 |
-| 「201 有沒有停斗六火車站」 | `check_stop_on_route` | 路線站序比對 |
-
-路線規劃不是聊天文字 tool。產品主流程是前端地圖讓使用者選目的地座標，
-後端 `plan_route_to_coordinate(latitude, longitude)` 從 Kiosk 起點做 OTP
-規劃，再用 route view model 給 MapCN 畫候選路徑；聊天中問「怎麼去某地」時，
-助理只引導使用地圖選點。聊天工具不支援：
-完整一日時刻表、文字目的地路線規劃、站間即時行駛時間。
-
-## 舊專案
-
-架構重寫前的版本（含 LiveKit 語音、Admin 後台）：`/Users/yizhe/Developer/taigi-flow`（唯讀參考）
+| 想知道 | 看 |
+|---|---|
+| 一句話怎麼變成答案、程式怎麼分工 | [架構](docs/architecture.md) |
+| 為什麼不做成「台語版 Google Maps」 | [產品定位](docs/product-positioning.md) |
+| 免費的 TDX 方案兩天就用完 | [TDX 方案與限流](docs/tdx-tiers.md) |
+| 出事時怎麼查 | [觀測](docs/observability.md) |
+| 做了什麼、沒做什麼 | [開發紀錄](docs/changelog.md) |
+| 要改某個模組的細節 | [架構參考](docs/architecture-reference.md) |
+| AI agent 作業規範 | [CLAUDE.md](CLAUDE.md) |
