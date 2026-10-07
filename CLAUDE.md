@@ -59,8 +59,9 @@ pnpm dev
 - **TDX 限速器**：所有 TDX API 請求（公車＋單車，同一把金鑰）都要先 `tdx_rate_limiter(client_id).acquire()`，額度由 `TDX_RATE_LIMIT` 設定（預設 `5/min` 基礎會員）。背景呼叫只能用約 60% 額度，其餘保留給有預算的互動呼叫；429 用 `penalize()` 暫停整把金鑰，不要在 provider 內自己 sleep。
 - **上游時間預算**：工具派發用 `upstream_deadline(TOOL_UPSTREAM_BUDGET_SECONDS)` 包住每次工具呼叫；會阻塞的上游程式碼（TDX `_get` 的 429 退避、`TtlCache` / StopOfRoute 的鎖等待）要看 `remaining_budget()`，不得等超過，改丟 `UpstreamBudgetExceeded` 讓快取供舊資料。背景工作沒有預算，照常等 Retry-After。
 - **路線拓撲 vs 即時資料**：「這條路線之後會不會到 X」是靜態問題，用 `RouteInfo` 站序回答（`rows._iter_route_downstream`）；`fetch_route_estimate` 只用來取即時 ETA，不要再為了判斷路線形狀逐條抓。
-- **到站資料欄位**（`providers/bus.py`，provider-neutral）：`StopArrival` — `route_name`、`direction`(0/1)、`status`(`StopStatus`)、`eta_seconds`(int|None)、`sequence`、`scheduled_time`、`vehicle_id`。`RouteStopEstimate` 多了 `stop_name`，`route_name` 可為 None。`route_id` 整個 service/API 層是 `str`。
+- **到站資料欄位**（`providers/bus.py`，provider-neutral）：`StopArrival` — `route_name`、`direction`(0/1)、`status`(`StopStatus`)、`eta_seconds`(int|None)、`arrival_at`(datetime|None)、`sequence`、`scheduled_time`、`vehicle_id`。`RouteStopEstimate` 多了 `stop_name`，`route_name` 可為 None。`route_id` 整個 service/API 層是 `str`。
 - **TDX StopStatus**：0=正常、1=未發車、2=交管不停（`iter_scoped_stop_etas` 靜默過濾）、3=末班已過、4=今日未營運。無 `ComeTime` 等效，`scheduled_time` 永遠 None。
+- **到站倒數**：`eta_seconds` 是上游估算當下的相對秒數，被快取供舊資料後就過時；service 一律用 `row.seconds_until_arrival(now)`（TDX adapter 以 `UpdateTime` 填 `arrival_at`），不要直接讀 `eta_seconds`（證據：`test_stale_eta_counts_down_while_served_from_cache`）。
 - **TDX 認證**：`TDX_CLIENT_ID` / `TDX_CLIENT_SECRET` 放 `.env`；token 用 OAuth2 client_credentials 自動取得並快取。
 - 站名/路線沒有人工縮寫對照表；ASR 聽錯救援由工具自己做：查無時 renderer 用音近排序（`departures/fuzzy_match`）挑第一名重查一次，把真實狀態連同確認句前綴回給 LLM（`renderers._rescue_or`）；LLM 只改寫成「你是要問 X 嗎？X…」，不再呼叫工具。prompt 端規則在 `agent/prompt.py`【聽錯救援】。
 - 截斷 messages 必須以 tool-call 輪次為單位，不能讓 `tool_call_id` 失去對應 tool result。

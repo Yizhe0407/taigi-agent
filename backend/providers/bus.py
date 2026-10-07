@@ -4,11 +4,17 @@ Concrete upstream clients translate their native payloads into these models befo
 anything leaves ``providers``.  The services layer must not know whether data came
 from TDX or a test double, and never sees an upstream field name
 or status code — adapters are responsible for producing fully typed rows.
+
+ETAs: ``eta_seconds`` is relative to when the upstream estimated it, so it goes
+stale the moment a row is cached.  Adapters that know that moment also set
+``arrival_at``, the absolute instant the estimate points at; consumers ask a row
+``seconds_until_arrival(now)`` instead of reading ``eta_seconds`` directly.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import IntEnum, StrEnum
 from typing import Protocol
 
@@ -62,6 +68,13 @@ class RouteAtStop:
     direction: Direction
 
 
+def _seconds_until(arrival_at: datetime | None, eta_seconds: int | None, now: datetime) -> int | None:
+    if arrival_at is None:
+        return eta_seconds
+    # Whole seconds, rounded: a few ms between the read and `now` must not knock a minute off.
+    return round((arrival_at - now).total_seconds())
+
+
 @dataclass(frozen=True, slots=True)
 class StopArrival:
     """The next vehicle status for a route at one stop."""
@@ -73,6 +86,11 @@ class StopArrival:
     sequence: int | None = None
     scheduled_time: str | None = None
     vehicle_id: str | None = None
+    arrival_at: datetime | None = None
+
+    def seconds_until_arrival(self, now: datetime) -> int | None:
+        """Seconds from ``now`` to the estimated arrival (negative once it has passed)."""
+        return _seconds_until(self.arrival_at, self.eta_seconds, now)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +105,11 @@ class RouteStopEstimate:
     scheduled_time: str | None = None
     vehicle_id: str | None = None
     route_name: str | None = None
+    arrival_at: datetime | None = None
+
+    def seconds_until_arrival(self, now: datetime) -> int | None:
+        """Seconds from ``now`` to the estimated arrival (negative once it has passed)."""
+        return _seconds_until(self.arrival_at, self.eta_seconds, now)
 
 
 class BusProvider(Protocol):

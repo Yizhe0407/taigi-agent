@@ -350,8 +350,8 @@ def _dest_arrival_text(
     or mis-heard form back at the rider instead of the real stop name.
     """
     if dest_rows:
-        dest_est = dest_rows[0].eta_seconds
-        kiosk_est = kiosk_row.eta_seconds
+        dest_est = dest_rows[0].seconds_until_arrival(now)
+        kiosk_est = kiosk_row.seconds_until_arrival(now)
         if dest_est is not None and kiosk_est is not None and dest_est > kiosk_est:
             dest_arrival = now + timedelta(seconds=dest_est)
             travel_min = round((dest_est - kiosk_est) / 60)

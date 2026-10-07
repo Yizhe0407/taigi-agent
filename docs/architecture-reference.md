@@ -18,15 +18,15 @@
 
 | 資料 | 新鮮多久 | 上游失敗時，舊資料最多再用多久 | 存的是 |
 |---|---|---|---|
-| 本站到站（`fetch_eta_at_stop`） | 60 秒 | 再 300 秒 | TDX 的**相對秒數** |
-| 單一路線預估（`fetch_route_estimate`） | 30 秒 | 再 300 秒 | TDX 的**相對秒數** |
+| 本站到站（`fetch_eta_at_stop`） | 60 秒 | 再 300 秒 | 絕對到站時刻 `arrival_at` |
+| 單一路線預估（`fetch_route_estimate`） | 30 秒 | 再 300 秒 | 絕對到站時刻 `arrival_at` |
 | 路線站序（StopOfRoute） | 10 分鐘；上次只抓到一半則 60 秒 | 重抓失敗就保留上一份快照 | 靜態站序 |
 | TDX token | 依 `expires_in` 提前 60 秒換新；沒給就當 1 小時 | — | OAuth token |
 | 公共自行車站（`services/bike.py`） | 60 秒（`BIKE_CACHE_TTL_SECONDS`） | — | 站點與可借車數 |
 
 另外，背景 warmup 每 25 秒檢查一次本站到站；因為快取 60 秒才過期，實際約每 75 秒才重抓上游一次。每次檢查後都經 SSE 推最新狀態給首頁。
 
-**已知問題**：到站存的是抓取當下的相對秒數，拿舊資料時不會扣掉已經過去的時間。本站到站的資料最舊可到 60 + 300 = 360 秒，所以被限流時「約 N 分鐘後」最多可能差約 6 分鐘。
+到站時刻 `arrival_at` 以 TDX 的 `UpdateTime` 加上 `eta_seconds` 算出（沒有 `UpdateTime` 或比本機時鐘還新時，改用讀到的時刻），消費端一律用 `seconds_until_arrival(now)`，所以舊資料也會照現在時間倒數。本站到站的資料最舊可到 60 + 300 = 360 秒。
 
 ## 後端
 
@@ -87,7 +87,7 @@ backend/
 
 ### 領域層
 
-- `providers/bus.py`：provider-neutral `BusProvider` Protocol 與 `RouteInfo`、`RouteAtStop`、`StopArrival`、`RouteStopEstimate` model。`RouteInfo` 除去回終點外也帶靜態站序（`outbound_stops` / `inbound_stops`，依站序排列）。契約裡沒有任何上游欄位名或 status code，adapter 必須回傳完整 typed row。
+- `providers/bus.py`：provider-neutral `BusProvider` Protocol 與 `RouteInfo`、`RouteAtStop`、`StopArrival`、`RouteStopEstimate` model。到站 row 帶絕對時刻 `arrival_at`，消費端用 `seconds_until_arrival(now)`，不直接讀 `eta_seconds`。`RouteInfo` 除去回終點外也帶靜態站序（`outbound_stops` / `inbound_stops`，依站序排列）。契約裡沒有任何上游欄位名或 status code，adapter 必須回傳完整 typed row。
 - `providers/http.py`：process-wide 共用 `httpx.AsyncClient`（連線池重用）；TTS/ASR/OTP/TDX 都透過它發請求，各呼叫點自帶 per-request timeout，app shutdown 時由 lifespan 關閉。
 - `providers/tdx_bus.py`：TDX 的 provider-neutral adapter；整合 City/InterCity endpoint，OAuth2、快取（見「快取」）與 retry 都封裝在 adapter 內。互動呼叫被 429 時不等 Retry-After，直接讓快取供舊資料。
 - `providers/tdx_rate_limit.py`：每把 TDX 金鑰一個程序內共用的滑動視窗限速器（`TDX_RATE_LIMIT`，預設 5/min）。公車與單車 adapter 每個請求都先取額度；背景呼叫只能用約 60%，其餘留給有預算的互動呼叫；429 依 Retry-After 暫停整把金鑰。所有等待都在這裡，provider 不自己 sleep。
@@ -102,7 +102,7 @@ backend/
 - `providers/asr.py`：ASR upstream provider（config 讀取 + multipart 上傳），供 `api/asr.py` 與 `voice/stt_breeze.py` 共用。
 - `services/taigi_tts.py`：TTS config、Tailo 切段、`synthesize_segments` 有界並發派送；`prepare_tailo()` 收斂 normalize → text-process → split 的共用序列，`api/tts.py` 與 `voice/tts_taigi.py` 各自接手錯誤轉換與音訊解碼（WAV vs PCM）。
 - `services/kiosk_config.py`：Runtime kiosk 設定 singleton（stop_name、direction、lat/lon）；先原子落盤再發布記憶體狀態，並用 mtime 觀察其他 worker 的更新。持久化至 `.agent_state/kiosk_config.json`，預設雲林科技大學／回程。
-- `services/departures/`：離站決策唯一分類來源，只讀 provider-neutral `StopStatus`、`eta_seconds` 與 `RouteInfo`。狀態門檻在 `classification.py`（≤3 分即將到站、≤20 分可以等）。
+- `services/departures/`：離站決策唯一分類來源，只讀 provider-neutral `StopStatus`、`seconds_until_arrival(now)` 與 `RouteInfo`。狀態門檻在 `classification.py`（≤3 分即將到站、≤20 分可以等）。
   目的地查詢（`render_arrivals_to_destination`）先用 `RouteInfo` 靜態站序判斷哪些路線在本站之後會到目的地（不含上車點本身，循環路線回到本站的那一站仍算），只對命中的路線抓即時 route estimate；查無與聽錯救援的候選也全由靜態站序產生，不打上游。
 - `services/route_plans.py`：OTP 路線規劃 facade、Kiosk 起點、雲林邊界、view model。
 - `services/bike.py`：公共自行車 normalized station cache、provider switching、距離查詢；服務層與 `/api/bike/*` 一律用中立的 bike 命名。
@@ -134,7 +134,6 @@ frontend/
 
 ## 已知技術債
 
-- 快取的到站時間不會隨時間遞減（見「快取」）。
 - TDX 是唯一公車資料來源：沒有 `scheduled_time`（未發車的預計發車時刻），畫面上「尚未發車」不會附時刻；TDX 掛掉超過舊資料寬限（約 5 分鐘）就只能回「查詢失敗」。
 - Chat session 持久化在 `.agent_state/sessions.db`，綁單機檔案；scale out 需改外部 KV / Redis。
 - API rate limit 與 TDX 限速器都是單一程序內的；多 worker 或多機部署要在 gateway 另設全域限流。

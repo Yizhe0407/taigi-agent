@@ -7,6 +7,7 @@ estimate caching, and the UID-based ETA path.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -14,6 +15,8 @@ from providers import tdx_bus
 from providers.bus import Direction, RouteInfo, StopArrival, StopStatus
 from providers.tdx_bus import TdxBusProvider
 from providers.tdx_rate_limit import RateLimit, TdxRateLimiter
+from services.departures.classification import _classify_stop
+from services.departures.normalize import TAIPEI_TZ
 
 
 def _limiter(sleeps: list[float] | None = None, now: list[float] | None = None) -> TdxRateLimiter:
@@ -666,6 +669,92 @@ def test_fetch_eta_at_stop_returns_stale_on_error(monkeypatch):
     fake_now[0] = 30.0 + tdx_bus._MAX_STALE_SECONDS + 1.0
     with pytest.raises(Exception):  # noqa: B017 — any upstream failure, not a specific type
         asyncio.run(provider.fetch_eta_at_stop("A"))
+
+
+class _OkThen429:
+    """Serves `payload` until `fail` is set, then answers every request with 429."""
+
+    def __init__(self, payload: list[dict]) -> None:
+        self.payload = payload
+        self.fail = False
+
+    async def post(self, url, **kwargs):
+        return _FakeResp(_TOKEN)
+
+    async def get(self, url, **kwargs):
+        return _FakeResp([], status_code=429) if self.fail else _FakeResp(self.payload)
+
+
+_T0 = datetime(2026, 10, 7, 8, 0, tzinfo=TAIPEI_TZ)
+
+
+def _clocked_provider(monkeypatch, client: _OkThen429, now: list[float]) -> TdxBusProvider:
+    """A provider whose TTL clock and wall clock both read `now` (seconds after `_T0`)."""
+    monkeypatch.setattr(tdx_bus, "get_http_client", lambda: client)
+    return TdxBusProvider(
+        "id",
+        "secret",
+        clock=lambda: now[0],
+        wall_clock=lambda: _T0 + timedelta(seconds=now[0]),
+        rate_limiter=_limiter(),
+    )
+
+
+def test_stale_eta_counts_down_while_served_from_cache(monkeypatch):
+    """Rate-limited, the cache serves a 200 s old row: "約N分鐘後" must have
+    shrunk by those 200 s, not be announced as if TDX had just said it."""
+    client = _OkThen429([{"SubRouteName": {"Zh_tw": "201"}, "Direction": 0, "StopStatus": 0, "EstimateTime": 600, "UpdateTime": "2026-10-07T08:00:00+08:00"}])
+    now = [0.0]
+    provider = _clocked_provider(monkeypatch, client, now)
+
+    fresh = asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))
+    assert _classify_stop(fresh[0], _T0).minutes == 10
+
+    now[0] += 200
+    client.fail = True
+    stale = asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))
+    assert stale == fresh  # served from cache, not refetched
+    assert _classify_stop(stale[0], _T0 + timedelta(seconds=200)).minutes == 6
+
+
+def test_eta_counts_from_tdx_update_time_not_from_our_read(monkeypatch):
+    """EstimateTime is relative to TDX's UpdateTime: a row TDX updated 60 s
+    before we read it is already a minute old."""
+    client = _OkThen429([{"SubRouteName": {"Zh_tw": "201"}, "Direction": 0, "StopStatus": 0, "EstimateTime": 600, "UpdateTime": "2026-10-07T07:59:00+08:00"}])
+    provider = _clocked_provider(monkeypatch, client, [0.0])
+
+    rows = asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))
+    assert rows[0].arrival_at == _T0 + timedelta(seconds=540)
+
+
+def test_eta_anchors_on_read_time_without_a_usable_update_time(monkeypatch):
+    """No UpdateTime, or one ahead of our clock (skew), anchors on when we read the row."""
+    client = _OkThen429(
+        [
+            {"SubRouteName": {"Zh_tw": "201"}, "Direction": 0, "StopStatus": 0, "EstimateTime": 300},
+            {"SubRouteName": {"Zh_tw": "301"}, "Direction": 0, "StopStatus": 0, "EstimateTime": 300, "UpdateTime": "2026-10-07T08:05:00+08:00"},
+            {"SubRouteName": {"Zh_tw": "401"}, "Direction": 0, "StopStatus": 1, "EstimateTime": None},
+        ]
+    )
+    provider = _clocked_provider(monkeypatch, client, [0.0])
+
+    rows = {row.route_name: row for row in asyncio.run(provider.fetch_eta_at_stop("雲林科技大學"))}
+    assert rows["201"].arrival_at == _T0 + timedelta(seconds=300)
+    assert rows["301"].arrival_at == _T0 + timedelta(seconds=300)
+    assert rows["401"].arrival_at is None
+
+
+def test_stale_route_estimate_counts_down_while_served_from_cache(monkeypatch):
+    """Same countdown for route estimates (route details, destination ETAs)."""
+    client = _OkThen429([{"StopName": {"Zh_tw": "A"}, "StopSequence": 1, "Direction": 0, "StopStatus": 0, "EstimateTime": 600}])
+    now = [0.0]
+    provider = _clocked_provider(monkeypatch, client, now)
+
+    asyncio.run(provider.fetch_route_estimate("201"))
+    now[0] += 200
+    client.fail = True
+    stale = asyncio.run(provider.fetch_route_estimate("201"))
+    assert _classify_stop(stale[0], _T0 + timedelta(seconds=200)).minutes == 6
 
 
 # ── Cache-growth bounds (see providers/ttl_cache.py) ──────────────────────────
