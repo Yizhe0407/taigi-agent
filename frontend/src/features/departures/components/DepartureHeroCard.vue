@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Route } from "@lucide/vue"
+import { computed } from "vue"
 import { useRouter } from "vue-router"
 
 import { usePip } from "@/composables/usePip"
@@ -9,10 +10,15 @@ import {
   formatMinutes,
   heroStatusState,
   heroStatusText,
+  splitDirectionLabel,
   statusChipClasses,
 } from "../utils/departure-status"
 
-defineProps<{ nextBest: DepartureRouteStatus | null }>()
+const props = defineProps<{ nextBest: DepartureRouteStatus | null }>()
+
+const direction = computed(() =>
+  splitDirectionLabel(props.nextBest?.direction ?? "無可搭班次"),
+)
 
 const router = useRouter()
 const { open: openPip } = usePip()
@@ -38,15 +44,15 @@ const { open: openPip } = usePip()
       {{ nextBest?.route ?? "—" }}
     </div>
     <div class="flex items-baseline gap-3.5 mt-2.5 shrink-0">
-      <span class="text-2xl text-kiosk-muted font-medium">往</span>
-      <span class="text-[44px] font-extrabold text-kiosk-ink tracking-[-0.02em]">{{ nextBest?.direction ?? "無可搭班次" }}</span>
+      <span v-if="direction.prefix" class="text-2xl text-kiosk-muted font-medium">{{ direction.prefix }}</span>
+      <span class="text-[44px] font-extrabold text-kiosk-ink tracking-[-0.02em]">{{ direction.destination }}</span>
     </div>
 
     <div class="h-0.5 bg-kiosk-line my-4 rounded shrink-0" />
 
     <div class="flex justify-between items-end mb-4 shrink-0">
       <div>
-        <div class="text-base text-kiosk-muted font-medium mb-1">預定發車</div>
+        <div class="text-base text-kiosk-muted font-medium mb-1">預計到站</div>
         <div class="text-[54px] font-bold text-kiosk-ink tabular-nums tracking-[-0.03em] leading-none font-mono">
           {{ nextBest?.minutes != null ? formatMinutes(nextBest.minutes) : (nextBest?.statusText ?? "—") }}
         </div>

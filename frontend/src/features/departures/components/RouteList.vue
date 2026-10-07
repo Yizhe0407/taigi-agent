@@ -7,6 +7,7 @@ import type { DepartureRouteStatus } from "../types"
 import {
   departureDisplayState,
   departureMinutesLabel,
+  splitDirectionLabel,
   statusChipClasses,
 } from "../utils/departure-status"
 import RouteRefreshCountdown from "./RouteRefreshCountdown.vue"
@@ -51,8 +52,8 @@ function bgClass(routeCode: string): string {
       >{{ route.route }}</div>
 
       <div class="col-start-2 row-start-1 flex items-baseline gap-2 min-w-0">
-        <span class="whitespace-nowrap text-base text-kiosk-muted font-medium shrink-0">往</span>
-        <span class="overflow-hidden [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [overflow-wrap:anywhere] text-[22px] font-bold leading-[1.15] text-kiosk-ink max-[420px]:text-lg">{{ route.direction.replace(/^往/, '') }}</span>
+        <span v-if="splitDirectionLabel(route.direction).prefix" class="whitespace-nowrap text-base text-kiosk-muted font-medium shrink-0">{{ splitDirectionLabel(route.direction).prefix }}</span>
+        <span class="overflow-hidden [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [overflow-wrap:anywhere] text-[22px] font-bold leading-[1.15] text-kiosk-ink max-[420px]:text-lg">{{ splitDirectionLabel(route.direction).destination }}</span>
       </div>
 
       <div class="col-start-3 row-start-1 justify-self-center flex flex-row items-center gap-2 max-[1180px]:col-start-2 max-[1180px]:row-start-2 max-[1180px]:justify-self-start max-[1180px]:self-start max-[340px]:col-start-1 max-[340px]:col-span-2 max-[340px]:justify-self-center">
